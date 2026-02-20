@@ -27,5 +27,12 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Virtual environments
+.venv
+.env
+sessions/
+.codex
+需求文档.md
+openspec
 # Project specific
 需求文档.md

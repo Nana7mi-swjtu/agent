@@ -1,6 +1,8 @@
-def main():
-    print("Hello from agent!")
+from app import create_app
+
+
+app = create_app()
 
 
 if __name__ == "__main__":
-    main()
+    app.run(debug=True)
