@@ -1,12 +1,31 @@
-# Python-generated files
+# Virtual environment
+venv/
+.venv/
+env/
+ENV/
+
+# Python generated files
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Build outputs
 build/
 dist/
-wheels/
-*.egg-info
+*.egg-info/
+*.egg
 
-# Virtual environments
-.venv
-.codex
+# Package manager files
+.python-version
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
 需求文档.md
