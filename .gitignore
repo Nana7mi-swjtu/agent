@@ -8,5 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+.env
+sessions/
 .codex
 需求文档.md
+openspec
