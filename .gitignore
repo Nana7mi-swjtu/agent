@@ -1,10 +1,31 @@
-# Python-generated files
+# Virtual environment
+venv/
+.venv/
+env/
+ENV/
+
+# Python generated files
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Build outputs
 build/
 dist/
-wheels/
-*.egg-info
+*.egg-info/
+*.egg
+
+# Package manager files
+.python-version
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
 
 # Virtual environments
 .venv
@@ -13,3 +34,5 @@ sessions/
 .codex
 需求文档.md
 openspec
+# Project specific
+需求文档.md
