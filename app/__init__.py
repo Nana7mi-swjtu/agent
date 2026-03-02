@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import Flask
+from flask import Flask, request, session
 from flask_session import Session
 
 from .config import Config
@@ -34,6 +34,33 @@ def create_app(config_overrides: dict | None = None) -> Flask:
         app.extensions["email_outbox"] = []
 
     app.register_blueprint(auth_bp, url_prefix="/auth")
+
+    csrf_exempt_paths = {
+        "/auth/login",
+        "/auth/register/send-code",
+        "/auth/register/verify-code",
+        "/auth/forgot-password/send-code",
+        "/auth/forgot-password/verify-code",
+    }
+
+    @app.before_request
+    def enforce_csrf_for_authenticated_writes():
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return None
+
+        if request.path in csrf_exempt_paths:
+            return None
+
+        if not session.get("user_id"):
+            return None
+
+        csrf_header_name = app.config.get("CSRF_HEADER_NAME", "X-CSRF-Token")
+        provided_token = request.headers.get(csrf_header_name)
+        session_token = session.get("csrf_token")
+        if not session_token or provided_token != session_token:
+            return {"ok": False, "error": "csrf token missing or invalid"}, 403
+
+        return None
 
     @app.get("/")
     def index():
