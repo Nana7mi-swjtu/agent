@@ -1,14 +1,72 @@
 const { createApp, ref, reactive } = Vue;
 const { createRouter, createWebHashHistory } = VueRouter;
 
-const apiFetch = async (url, payload) => {
+const authStore = reactive({
+  user: null,
+  isLoggedIn: false,
+  csrfToken: "",
+  initialized: false,
+  initializing: false,
+});
+
+const setAuthState = (user, csrfToken = "") => {
+  authStore.user = user;
+  authStore.isLoggedIn = Boolean(user);
+  authStore.csrfToken = csrfToken || authStore.csrfToken || "";
+};
+
+const clearAuthState = () => {
+  authStore.user = null;
+  authStore.isLoggedIn = false;
+  authStore.csrfToken = "";
+};
+
+let routerRef = null;
+
+const apiFetch = async (url, payload, options = {}) => {
+  const method = options.method || "POST";
+  const headers = { ...(options.headers || {}) };
+  const upperMethod = method.toUpperCase();
+
+  if (payload !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(upperMethod) && authStore.csrfToken) {
+    headers["X-CSRF-Token"] = authStore.csrfToken;
+  }
+
   const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    method: upperMethod,
+    headers,
+    body: payload === undefined ? undefined : JSON.stringify(payload),
   });
   const data = await response.json().catch(() => ({}));
+
+  if (response.status === 401 && authStore.isLoggedIn) {
+    clearAuthState();
+    if (routerRef) {
+      const redirect = routerRef.currentRoute.value.fullPath || "/app";
+      routerRef.replace({ path: "/login", query: { redirect } });
+    }
+  }
+
   return { ok: response.ok, status: response.status, data };
+};
+
+const ensureAuthInitialized = async () => {
+  if (authStore.initialized || authStore.initializing) {
+    return;
+  }
+
+  authStore.initializing = true;
+  const result = await apiFetch("/auth/me", undefined, { method: "GET" });
+  if (result.ok) {
+    setAuthState(result.data.user || null, result.data.csrfToken || "");
+  } else {
+    clearAuthState();
+  }
+  authStore.initialized = true;
+  authStore.initializing = false;
 };
 
 const useCooldown = () => {
@@ -52,6 +110,7 @@ const LoginView = {
     const form = reactive({ email: "", password: "" });
     const error = ref("");
     const router = VueRouter.useRouter();
+    const route = VueRouter.useRoute();
 
     const onSubmit = async () => {
       error.value = "";
@@ -60,7 +119,10 @@ const LoginView = {
         error.value = result.data.error || "登录失败";
         return;
       }
-      router.push("/app");
+
+      setAuthState(result.data.user || null, result.data.csrfToken || "");
+      const redirect = typeof route.query.redirect === "string" ? route.query.redirect : "/app";
+      router.push(redirect || "/app");
     };
 
     return { form, error, onSubmit };
@@ -208,9 +270,9 @@ const ForgotPasswordView = {
 
 const routes = [
   { path: "/", redirect: "/login" },
-  { path: "/login", component: LoginView },
-  { path: "/app", component: HomeView },
-  { path: "/register", component: RegisterView },
+  { path: "/login", component: LoginView, meta: { guestOnly: true } },
+  { path: "/app", component: HomeView, meta: { requiresAuth: true } },
+  { path: "/register", component: RegisterView, meta: { guestOnly: true } },
   { path: "/forgot-password", component: ForgotPasswordView },
 ];
 
@@ -219,18 +281,51 @@ const router = createRouter({
   routes,
 });
 
+routerRef = router;
+
+router.beforeEach(async (to) => {
+  await ensureAuthInitialized();
+
+  if (to.meta.requiresAuth && !authStore.isLoggedIn) {
+    return { path: "/login", query: { redirect: to.fullPath } };
+  }
+
+  if (to.meta.guestOnly && authStore.isLoggedIn) {
+    return { path: "/app" };
+  }
+
+  return true;
+});
+
 const App = {
   template: `
     <div>
       <nav class="container">
-        <router-link to="/login">登录</router-link>
-        <router-link to="/app">主页</router-link>
-        <router-link to="/register">注册</router-link>
-        <router-link to="/forgot-password">忘记密码</router-link>
+        <template v-if="!authStore.isLoggedIn">
+          <router-link to="/login">登录</router-link>
+          <router-link to="/register">注册</router-link>
+          <router-link to="/forgot-password">忘记密码</router-link>
+        </template>
+        <template v-else>
+          <router-link to="/app">主页</router-link>
+          <span class="note">欢迎，{{ authStore.user?.username || authStore.user?.email || '用户' }}</span>
+          <button type="button" @click="logout">退出登录</button>
+        </template>
       </nav>
       <router-view></router-view>
     </div>
   `,
+  setup() {
+    const router = VueRouter.useRouter();
+
+    const logout = async () => {
+      await apiFetch("/auth/logout", {});
+      clearAuthState();
+      router.push("/login");
+    };
+
+    return { authStore, logout };
+  },
 };
 
 createApp(App).use(router).mount("#app");
