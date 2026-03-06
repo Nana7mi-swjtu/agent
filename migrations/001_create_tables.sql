@@ -2,9 +2,13 @@
 
 CREATE TABLE IF NOT EXISTS users (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    nickname VARCHAR(64),
     email VARCHAR(255) NOT NULL UNIQUE,
+    avatar_url VARCHAR(512),
+    preferences JSON,
     password_hash VARCHAR(255) NOT NULL,
-    created_at DATETIME NOT NULL
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS email_codes (

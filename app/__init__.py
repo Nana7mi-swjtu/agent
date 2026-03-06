@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import Flask, request, session
+from flask import Flask
+from flask import send_from_directory
 from flask_session import Session
 
 from .config import Config
 from .db import init_db
 from .db_bootstrap import ensure_database_exists
 from .auth.routes import auth_bp
+from .user.routes import user_bp
+from .workspace.routes import workspace_bp
 
 
 def create_app(config_overrides: dict | None = None) -> Flask:
@@ -34,6 +37,16 @@ def create_app(config_overrides: dict | None = None) -> Flask:
         app.extensions["email_outbox"] = []
 
     app.register_blueprint(auth_bp, url_prefix="/auth")
+    app.register_blueprint(user_bp, url_prefix="/api/user")
+    app.register_blueprint(workspace_bp, url_prefix="/api/workspace")
+
+    avatar_url = app.config["AVATAR_BASE_URL"].rstrip("/")
+
+    @app.get(f"{avatar_url}/<path:filename>")
+    def uploaded_avatar(filename: str):
+        upload_dir = Path(app.root_path).parent / app.config["AVATAR_UPLOAD_DIR"]
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        return send_from_directory(upload_dir, filename)
 
     csrf_exempt_paths = {
         "/auth/login",
