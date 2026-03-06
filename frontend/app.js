@@ -184,6 +184,15 @@ const apiRequest = async (url, options = {}) => {
   });
 
   const data = await response.json().catch(() => ({}));
+
+  if (response.status === 401 && authStore.isLoggedIn) {
+    clearAuthState();
+    if (routerRef) {
+      const redirect = routerRef.currentRoute.value.fullPath || "/app";
+      routerRef.replace({ path: "/login", query: { redirect } });
+    }
+  }
+
   return { ok: response.ok, status: response.status, data };
 };
 
@@ -1210,6 +1219,17 @@ const App = {
       </div>
     </div>
   `,
+  setup() {
+    const router = VueRouter.useRouter();
+
+    const logout = async () => {
+      await apiFetch("/auth/logout", {});
+      clearAuthState();
+      router.push("/login");
+    };
+
+    return { authStore, logout };
+  },
 };
 
 createApp(App).use(router).mount("#app");

@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 
 from dotenv import load_dotenv
 
@@ -11,11 +12,16 @@ class Config:
 
     SESSION_TYPE = os.getenv("SESSION_TYPE", "filesystem")
     SESSION_FILE_DIR = os.getenv("SESSION_FILE_DIR", "sessions")
-    SESSION_PERMANENT = False
+    SESSION_PERMANENT = os.getenv("SESSION_PERMANENT", "true").lower() == "true"
+    SESSION_LIFETIME_DAYS = int(os.getenv("SESSION_LIFETIME_DAYS", "7"))
+    PERMANENT_SESSION_LIFETIME = timedelta(days=SESSION_LIFETIME_DAYS)
+    SESSION_REFRESH_EACH_REQUEST = os.getenv("SESSION_REFRESH_EACH_REQUEST", "true").lower() == "true"
     SESSION_USE_SIGNER = True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
     SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
+
+    CSRF_HEADER_NAME = os.getenv("CSRF_HEADER_NAME", "X-CSRF-Token")
 
     CODE_TTL_SECONDS = int(os.getenv("CODE_TTL_SECONDS", "600"))
     CODE_RESEND_COOLDOWN_SECONDS = int(os.getenv("CODE_RESEND_COOLDOWN_SECONDS", "60"))
