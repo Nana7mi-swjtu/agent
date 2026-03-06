@@ -22,6 +22,16 @@ class Config:
     CODE_LOCKOUT_SECONDS = int(os.getenv("CODE_LOCKOUT_SECONDS", "600"))
     CODE_MAX_ATTEMPTS = int(os.getenv("CODE_MAX_ATTEMPTS", "5"))
     MIN_PASSWORD_LENGTH = int(os.getenv("MIN_PASSWORD_LENGTH", "8"))
+    NICKNAME_MAX_LENGTH = int(os.getenv("NICKNAME_MAX_LENGTH", "32"))
+
+    AVATAR_UPLOAD_DIR = os.getenv("AVATAR_UPLOAD_DIR", "uploads/avatars")
+    AVATAR_BASE_URL = os.getenv("AVATAR_BASE_URL", "/uploads/avatars")
+    MAX_AVATAR_BYTES = int(os.getenv("MAX_AVATAR_BYTES", str(2 * 1024 * 1024)))
+    ALLOWED_AVATAR_EXTENSIONS = {
+        ext.strip().lower()
+        for ext in os.getenv("ALLOWED_AVATAR_EXTENSIONS", "jpg,jpeg,png,webp").split(",")
+        if ext.strip()
+    }
 
     EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "console")  # console | smtp | memory
     SMTP_HOST = os.getenv("SMTP_HOST", "")

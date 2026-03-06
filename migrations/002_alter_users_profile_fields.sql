@@ -1,0 +1,6 @@
+-- 002_alter_users_profile_fields.sql
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS nickname VARCHAR(64) NULL AFTER id,
+    ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(512) NULL AFTER email,
+    ADD COLUMN IF NOT EXISTS updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER created_at;

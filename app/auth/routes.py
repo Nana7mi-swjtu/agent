@@ -139,6 +139,14 @@ def logout():
     return {"ok": True}
 
 
+@auth_bp.get("/session")
+def auth_session():
+    user_id = session.get("user_id")
+    if not isinstance(user_id, int):
+        return _json_error("authentication required", 401)
+    return {"ok": True, "data": {"userId": user_id}}
+
+
 @auth_bp.post("/forgot-password/send-code")
 def forgot_password_send_code():
     data = _get_payload()
