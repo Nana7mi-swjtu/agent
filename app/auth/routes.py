@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import secrets
 
 from flask import Blueprint, current_app, request, session
 from sqlalchemy import select
@@ -9,6 +10,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from ..db import session_scope
 from ..email_service import get_email_sender
 from ..models import User
+from .security import login_required
 from .services import issue_code, verify_code
 
 
@@ -36,6 +38,20 @@ def _json_error(message: str, status_code: int, **extras):
     payload = {"ok": False, "error": message}
     payload.update(extras)
     return payload, status_code
+
+
+def _build_user_payload(user: User) -> dict:
+    return {
+        "id": user.id,
+        "username": user.email,
+        "email": user.email,
+    }
+
+
+def _rotate_csrf_token() -> str:
+    token = secrets.token_urlsafe(32)
+    session["csrf_token"] = token
+    return token
 
 
 @auth_bp.post("/register/send-code")
@@ -129,8 +145,24 @@ def login():
         if not user or not check_password_hash(user.password_hash, password):
             return _json_error("email or password is incorrect", 401)
 
+    session.permanent = bool(current_app.config.get("SESSION_PERMANENT", True))
     session["user_id"] = user.id
-    return {"ok": True}
+    csrf_token = _rotate_csrf_token()
+    return {"ok": True, "user": _build_user_payload(user), "csrfToken": csrf_token}
+
+
+@auth_bp.get("/me")
+@login_required
+def me():
+    user_id = int(session["user_id"])
+    with session_scope() as db:
+        user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+        if not user:
+            session.clear()
+            return _json_error("unauthorized", 401)
+
+    csrf_token = session.get("csrf_token") or _rotate_csrf_token()
+    return {"ok": True, "user": _build_user_payload(user), "csrfToken": csrf_token}
 
 
 @auth_bp.post("/logout")

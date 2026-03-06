@@ -48,6 +48,33 @@ def create_app(config_overrides: dict | None = None) -> Flask:
         upload_dir.mkdir(parents=True, exist_ok=True)
         return send_from_directory(upload_dir, filename)
 
+    csrf_exempt_paths = {
+        "/auth/login",
+        "/auth/register/send-code",
+        "/auth/register/verify-code",
+        "/auth/forgot-password/send-code",
+        "/auth/forgot-password/verify-code",
+    }
+
+    @app.before_request
+    def enforce_csrf_for_authenticated_writes():
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return None
+
+        if request.path in csrf_exempt_paths:
+            return None
+
+        if not session.get("user_id"):
+            return None
+
+        csrf_header_name = app.config.get("CSRF_HEADER_NAME", "X-CSRF-Token")
+        provided_token = request.headers.get(csrf_header_name)
+        session_token = session.get("csrf_token")
+        if not session_token or provided_token != session_token:
+            return {"ok": False, "error": "csrf token missing or invalid"}, 403
+
+        return None
+
     @app.get("/")
     def index():
         return app.send_static_file("index.html")

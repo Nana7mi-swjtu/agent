@@ -59,11 +59,22 @@ def test_login_logout_session(client, db_session):
 
     response = client.post("/auth/login", json={"email": "login@example.com", "password": "password123"})
     assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["csrfToken"]
+    assert payload["user"]["id"] == user.id
 
     with client.session_transaction() as sess:
         assert sess.get("user_id") == user.id
+        csrf_token = sess.get("csrf_token")
 
-    response = client.post("/auth/logout")
+    me_response = client.get("/auth/me")
+    assert me_response.status_code == 200
+    assert me_response.get_json()["user"]["id"] == user.id
+
+    missing_csrf = client.post("/auth/logout")
+    assert missing_csrf.status_code == 403
+
+    response = client.post("/auth/logout", headers={"X-CSRF-Token": csrf_token})
     assert response.status_code == 200
 
     with client.session_transaction() as sess:
