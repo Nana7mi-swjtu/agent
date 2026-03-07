@@ -1,7 +1,7 @@
 const { createApp, ref, reactive, computed, onMounted, watch } = Vue;
 const { createRouter, createWebHashHistory } = VueRouter;
 
-const TOKEN_KEY = "user_token";
+const CSRF_TOKEN_KEY = "csrf_token";
 const PREFERENCES_KEY = "user_preferences";
 const SESSIONS_KEY = "workspace_chat_sessions";
 
@@ -152,22 +152,34 @@ const t = (key) => {
   return COPY[lang]?.[key] || COPY["zh-CN"][key] || key;
 };
 
-const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
-const setToken = (token) => {
+const getCsrfToken = () => localStorage.getItem(CSRF_TOKEN_KEY) || "";
+const setCsrfToken = (token) => {
   if (!token) {
-    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(CSRF_TOKEN_KEY);
     return;
   }
-  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(CSRF_TOKEN_KEY, token);
 };
 
+const clearAuthState = () => {
+  setCsrfToken("");
+  authStore.authenticated = false;
+  authStore.userId = null;
+  workspaceStore.ready = false;
+  workspaceStore.roles = [];
+  workspaceStore.selectedRole = "";
+  workspaceStore.systemPrompt = "";
+};
+
+let routerRef = null;
+
 const apiRequest = async (url, options = {}) => {
-  const token = getToken();
+  const csrfToken = getCsrfToken();
   const method = options.method || "GET";
   const headers = new Headers(options.headers || {});
 
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase()) && csrfToken) {
+    headers.set("X-CSRF-Token", csrfToken);
   }
 
   let body = options.body;
@@ -185,7 +197,11 @@ const apiRequest = async (url, options = {}) => {
 
   const data = await response.json().catch(() => ({}));
 
-  if (response.status === 401 && authStore.isLoggedIn) {
+  if (typeof data?.csrfToken === "string") {
+    setCsrfToken(data.csrfToken);
+  }
+
+  if (response.status === 401 && authStore.authenticated) {
     clearAuthState();
     if (routerRef) {
       const redirect = routerRef.currentRoute.value.fullPath || "/app";
@@ -403,7 +419,7 @@ const LoginView = {
         error.value = result.data.error || "登录失败";
         return;
       }
-      setToken(result.data.token || "");
+      setCsrfToken(result.data.csrfToken || "");
       await refreshSession();
       await loadWorkspaceContext();
       router.push("/app");
@@ -1070,6 +1086,8 @@ const router = createRouter({
   routes,
 });
 
+routerRef = router;
+
 const PUBLIC_ROUTES = new Set(["/login", "/register", "/forgot-password"]);
 
 router.beforeEach(async (to) => {
@@ -1135,12 +1153,7 @@ const App = {
 
     const logout = async () => {
       await apiRequest("/auth/logout", { method: "POST" });
-      setToken("");
-      authStore.authenticated = false;
-      authStore.userId = null;
-      workspaceStore.ready = false;
-      workspaceStore.selectedRole = "";
-      workspaceStore.systemPrompt = "";
+      clearAuthState();
       router.push("/login");
     };
 
@@ -1219,17 +1232,6 @@ const App = {
       </div>
     </div>
   `,
-  setup() {
-    const router = VueRouter.useRouter();
-
-    const logout = async () => {
-      await apiFetch("/auth/logout", {});
-      clearAuthState();
-      router.push("/login");
-    };
-
-    return { authStore, logout };
-  },
 };
 
 createApp(App).use(router).mount("#app");

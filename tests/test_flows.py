@@ -80,8 +80,6 @@ def test_login_logout_session(client, db_session):
     with client.session_transaction() as sess:
         assert sess.get("user_id") is None
 
-
-<<<<<<< HEAD
 def test_auth_session_endpoint(client, db_session):
     user = User(email="session@example.com", password_hash=generate_password_hash("password123"))
     db_session.add(user)
@@ -227,8 +225,6 @@ def test_workspace_chat_requires_role(client, db_session):
     payload = response.get_json()
     assert payload["data"]["role"] == "regulator"
     assert "已收到你的问题" in payload["data"]["reply"]
-=======
 def test_me_requires_login(client):
     response = client.get("/auth/me")
     assert response.status_code == 401
->>>>>>> 4585afa3e59645ff8165e299724fe6f34fa8ab77

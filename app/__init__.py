@@ -2,12 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-<<<<<<< HEAD
-from flask import Flask
 from flask import send_from_directory
-=======
 from flask import Flask, request, session
->>>>>>> 4585afa3e59645ff8165e299724fe6f34fa8ab77
 from flask_session import Session
 
 from .config import Config
