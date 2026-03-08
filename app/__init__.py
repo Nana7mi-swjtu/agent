@@ -4,6 +4,7 @@ from pathlib import Path
 
 from flask import Flask
 from flask import send_from_directory
+from flask import request, session
 from flask_session import Session
 
 from .config import Config
