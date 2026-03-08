@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import Flask
-from flask import send_from_directory
-from flask import request, session
+from flask import Flask, request, send_from_directory, session
 from flask_session import Session
 
 from .config import Config

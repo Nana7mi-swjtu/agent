@@ -1,7 +1,7 @@
 const { createApp, ref, reactive, computed, onMounted, watch } = Vue;
 const { createRouter, createWebHashHistory } = VueRouter;
 
-const TOKEN_KEY = "user_token";
+const CSRF_TOKEN_KEY = "csrf_token";
 const PREFERENCES_KEY = "user_preferences";
 const SESSIONS_KEY = "workspace_chat_sessions";
 
@@ -110,6 +110,45 @@ const COPY = {
     accountSecurity: "账号安全",
     profileRole: "默认工作角色",
     profileRoleHint: "在这里切换后，主页和工作台都会同步此模式。",
+    emailLabel: "邮箱",
+    passwordLabel: "密码",
+    confirmPasswordLabel: "确认密码",
+    codeLabel: "验证码",
+    sendCode: "发送验证码",
+    resendCountdown: "后可重发",
+    completeRegister: "完成注册",
+    resetPasswordButton: "重置密码",
+    uploadAvatar: "上传头像",
+    avatarCompressHint: "前端会先压缩图片再上传。",
+    nicknameLabel: "昵称",
+    nicknameHint: "支持中英文、数字、下划线、空格、连字符，2-32 个字符",
+    registerEmailLabel: "注册邮箱",
+    emailFormatOk: "邮箱格式合法",
+    emailFormatBad: "邮箱格式不合法",
+    emailFormatInvalid: "邮箱格式异常",
+    oldPasswordLabel: "旧密码",
+    newPasswordLabel: "新密码",
+    confirmNewPasswordLabel: "确认新密码",
+    passwordStrengthLabel: "密码强度",
+    saveAccountButton: "保存账户",
+    nicknameInvalidError: "昵称格式不合法",
+    passwordOldNewRequired: "修改密码时必须填写旧密码和新密码",
+    passwordNotMatch: "两次新密码不一致",
+    passwordTooShortClient: "新密码至少 8 位",
+    avatarProcessFailed: "头像处理失败",
+    profileSaveFailed: "保存失败",
+    profileSaveSuccess: "保存成功",
+    preferencesSaveFailed: "偏好保存失败",
+    roleSaveFailed: "角色保存失败",
+    roleSwitchFailed: "角色切换失败",
+    needLoginFirst: "请先登录",
+    loadFailed: "加载失败",
+    loginFailed: "登录失败",
+    sendFailed: "发送失败",
+    registerFailed: "注册失败",
+    registerSuccess: "注册成功，请登录",
+    resetFailed: "重置失败",
+    resetSuccess: "密码已重置，请登录",
   },
   "en-US": {
     login: "Login",
@@ -119,7 +158,8 @@ const COPY = {
     profile: "Profile",
     workspace: "Workspace",
     roleSelection: "Choose Role",
-    roleSelectionDesc: "Select your mode, then the Agent prompt will be loaded accordingly.",
+    roleSelectionDesc:
+      "Select your mode, then the Agent prompt will be loaded accordingly.",
     startChat: "Start Chat",
     switchRole: "Switch Mode",
     chatHistory: "Chat History",
@@ -144,6 +184,47 @@ const COPY = {
     accountSecurity: "Account Security",
     profileRole: "Default Workspace Role",
     profileRoleHint: "Changes here are synchronized to home and workspace.",
+    emailLabel: "Email",
+    passwordLabel: "Password",
+    confirmPasswordLabel: "Confirm Password",
+    codeLabel: "Verification code",
+    sendCode: "Send code",
+    resendCountdown: "until you can resend",
+    completeRegister: "Complete registration",
+    resetPasswordButton: "Reset password",
+    uploadAvatar: "Upload avatar",
+    avatarCompressHint: "The frontend will compress the image before uploading.",
+    nicknameLabel: "Nickname",
+    nicknameHint:
+      "Supports letters, numbers, underscore, spaces and hyphen, 2-32 characters.",
+    registerEmailLabel: "Registered email",
+    emailFormatOk: "Email format is valid",
+    emailFormatBad: "Email format is invalid",
+    emailFormatInvalid: "Email format is abnormal",
+    oldPasswordLabel: "Old password",
+    newPasswordLabel: "New password",
+    confirmNewPasswordLabel: "Confirm new password",
+    passwordStrengthLabel: "Password strength",
+    saveAccountButton: "Save account",
+    nicknameInvalidError: "Nickname format is invalid",
+    passwordOldNewRequired:
+      "Old and new password are both required to change password",
+    passwordNotMatch: "The two new passwords do not match",
+    passwordTooShortClient: "New password must be at least 8 characters",
+    avatarProcessFailed: "Avatar processing failed",
+    profileSaveFailed: "Save failed",
+    profileSaveSuccess: "Saved successfully",
+    preferencesSaveFailed: "Failed to save preferences",
+    roleSaveFailed: "Failed to save role",
+    roleSwitchFailed: "Failed to switch role",
+    needLoginFirst: "Please log in first",
+    loadFailed: "Load failed",
+    loginFailed: "Login failed",
+    sendFailed: "Send failed",
+    registerFailed: "Registration failed",
+    registerSuccess: "Registration successful, please log in",
+    resetFailed: "Reset failed",
+    resetSuccess: "Password has been reset, please log in",
   },
 };
 
@@ -152,22 +233,34 @@ const t = (key) => {
   return COPY[lang]?.[key] || COPY["zh-CN"][key] || key;
 };
 
-const getToken = () => localStorage.getItem(TOKEN_KEY) || "";
-const setToken = (token) => {
+const getCsrfToken = () => localStorage.getItem(CSRF_TOKEN_KEY) || "";
+const setCsrfToken = (token) => {
   if (!token) {
-    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(CSRF_TOKEN_KEY);
     return;
   }
-  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(CSRF_TOKEN_KEY, token);
 };
 
+const clearAuthState = () => {
+  setCsrfToken("");
+  authStore.authenticated = false;
+  authStore.userId = null;
+  workspaceStore.ready = false;
+  workspaceStore.roles = [];
+  workspaceStore.selectedRole = "";
+  workspaceStore.systemPrompt = "";
+};
+
+let routerRef = null;
+
 const apiRequest = async (url, options = {}) => {
-  const token = getToken();
+  const csrfToken = getCsrfToken();
   const method = options.method || "GET";
   const headers = new Headers(options.headers || {});
 
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase()) && csrfToken) {
+    headers.set("X-CSRF-Token", csrfToken);
   }
 
   let body = options.body;
@@ -185,7 +278,11 @@ const apiRequest = async (url, options = {}) => {
 
   const data = await response.json().catch(() => ({}));
 
-  if (response.status === 401 && authStore.isLoggedIn) {
+  if (typeof data?.csrfToken === "string") {
+    setCsrfToken(data.csrfToken);
+  }
+
+  if (response.status === 401 && authStore.authenticated) {
     clearAuthState();
     if (routerRef) {
       const redirect = routerRef.currentRoute.value.fullPath || "/app";
@@ -211,9 +308,21 @@ const refreshSession = async () => {
 };
 
 const ROLE_NAME_MAP = {
-  investor: "投资者",
-  enterprise_manager: "企业管理者",
-  regulator: "监管机构",
+  "zh-CN": {
+    investor: "投资者",
+    enterprise_manager: "企业管理者",
+    regulator: "监管机构",
+  },
+  "en-US": {
+    investor: "Investor",
+    enterprise_manager: "Enterprise Manager",
+    regulator: "Regulator",
+  },
+};
+
+const getRoleDisplayName = (key) => {
+  const lang = uiStore.preferences.language || "zh-CN";
+  return ROLE_NAME_MAP[lang]?.[key] || ROLE_NAME_MAP["zh-CN"][key] || key;
 };
 
 const safeJson = (raw, fallback) => {
@@ -268,7 +377,7 @@ const setWorkspaceRole = async (roleKey) => {
     body: { role: roleKey },
   });
   if (!result.ok) {
-    return { ok: false, error: result.data.error || "角色切换失败" };
+    return { ok: false, error: result.data.error || COPY[uiStore.preferences.language].roleSwitchFailed || COPY["zh-CN"].roleSwitchFailed };
   }
 
   const data = result.data?.data || {};
@@ -281,7 +390,7 @@ const setWorkspaceRole = async (roleKey) => {
 const createSession = () => {
   const id = `s_${Date.now()}`;
   const title = workspaceStore.selectedRole
-    ? `${ROLE_NAME_MAP[workspaceStore.selectedRole] || workspaceStore.selectedRole} 对话`
+    ? `${getRoleDisplayName(workspaceStore.selectedRole)} 对话`
     : "新对话";
 
   const record = {
@@ -351,16 +460,17 @@ const compressImage = (file, maxSize = 640, quality = 0.82) =>
         }
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
+        const mime = "image/jpeg";
+        const ext = "jpeg";
         canvas.toBlob(
           (blob) => {
             if (!blob) {
               reject(new Error("图片压缩失败"));
               return;
             }
-            const ext = file.type.includes("png") ? "png" : "jpeg";
-            resolve(new File([blob], `avatar.${ext}`, { type: blob.type }));
+            resolve(new File([blob], `avatar.${ext}`, { type: mime }));
           },
-          "image/jpeg",
+          mime,
           quality,
         );
       };
@@ -376,8 +486,8 @@ const LoginView = {
     <div class="container auth-box">
       <h2>{{ i18n('login') }}</h2>
       <form @submit.prevent="onSubmit">
-        <label>邮箱<input v-model="form.email" type="email" /></label>
-        <label>密码<input v-model="form.password" type="password" /></label>
+        <label>{{ i18n('emailLabel') }}<input v-model="form.email" type="email" /></label>
+        <label>{{ i18n('passwordLabel') }}<input v-model="form.password" type="password" /></label>
         <button type="submit">{{ i18n('login') }}</button>
       </form>
       <p class="error" v-if="error">{{ error }}</p>
@@ -400,10 +510,10 @@ const LoginView = {
         body: form,
       });
       if (!result.ok) {
-        error.value = result.data.error || "登录失败";
+        error.value = result.data.error || i18n("loginFailed");
         return;
       }
-      setToken(result.data.token || "");
+      setCsrfToken(result.data.csrfToken || "");
       await refreshSession();
       await loadWorkspaceContext();
       router.push("/app");
@@ -418,15 +528,15 @@ const RegisterView = {
     <div class="container auth-box">
       <h2>{{ i18n('register') }}</h2>
       <form @submit.prevent="sendCode">
-        <label>邮箱<input v-model="form.email" type="email" /></label>
-        <label>密码<input v-model="form.password" type="password" /></label>
-        <label>确认密码<input v-model="form.confirm_password" type="password" /></label>
-        <button type="submit" :disabled="cooldown > 0">发送验证码</button>
-        <span class="note" v-if="cooldown > 0">{{ cooldown }}s 后可重发</span>
+        <label>{{ i18n('emailLabel') }}<input v-model="form.email" type="email" /></label>
+        <label>{{ i18n('passwordLabel') }}<input v-model="form.password" type="password" /></label>
+        <label>{{ i18n('confirmPasswordLabel') }}<input v-model="form.confirm_password" type="password" /></label>
+        <button type="submit" :disabled="cooldown > 0">{{ i18n('sendCode') }}</button>
+        <span class="note" v-if="cooldown > 0">{{ cooldown }}s {{ i18n('resendCountdown') }}</span>
       </form>
       <form @submit.prevent="verifyCode">
-        <label>验证码<input v-model="form.code" type="text" maxlength="6" /></label>
-        <button type="submit">完成注册</button>
+        <label>{{ i18n('codeLabel') }}<input v-model="form.code" type="text" maxlength="6" /></label>
+        <button type="submit">{{ i18n('completeRegister') }}</button>
       </form>
       <p class="error" v-if="error">{{ error }}</p>
       <p class="note"><router-link to="/login">{{ i18n('login') }}</router-link></p>
@@ -449,7 +559,7 @@ const RegisterView = {
         },
       });
       if (!result.ok) {
-        error.value = result.data.error || "发送失败";
+        error.value = result.data.error || i18n("sendFailed");
         if (result.data.retryAfterSeconds) start(result.data.retryAfterSeconds);
         return;
       }
@@ -463,10 +573,10 @@ const RegisterView = {
         body: { email: form.email, code: form.code },
       });
       if (!result.ok) {
-        error.value = result.data.error || "注册失败";
+        error.value = result.data.error || i18n("registerFailed");
         return;
       }
-      alert("注册成功，请登录");
+      alert(i18n("registerSuccess"));
     };
 
     return { form, error, cooldown, sendCode, verifyCode, i18n };
@@ -478,15 +588,15 @@ const ForgotPasswordView = {
     <div class="container auth-box">
       <h2>{{ i18n('forgotPassword') }}</h2>
       <form @submit.prevent="sendCode">
-        <label>邮箱<input v-model="form.email" type="email" /></label>
-        <button type="submit" :disabled="cooldown > 0">发送验证码</button>
-        <span class="note" v-if="cooldown > 0">{{ cooldown }}s 后可重发</span>
+        <label>{{ i18n('emailLabel') }}<input v-model="form.email" type="email" /></label>
+        <button type="submit" :disabled="cooldown > 0">{{ i18n('sendCode') }}</button>
+        <span class="note" v-if="cooldown > 0">{{ cooldown }}s {{ i18n('resendCountdown') }}</span>
       </form>
       <form @submit.prevent="resetPassword">
-        <label>验证码<input v-model="form.code" type="text" maxlength="6" /></label>
-        <label>新密码<input v-model="form.new_password" type="password" /></label>
-        <label>确认密码<input v-model="form.confirm_password" type="password" /></label>
-        <button type="submit">重置密码</button>
+        <label>{{ i18n('codeLabel') }}<input v-model="form.code" type="text" maxlength="6" /></label>
+        <label>{{ i18n('newPasswordLabel') }}<input v-model="form.new_password" type="password" /></label>
+        <label>{{ i18n('confirmPasswordLabel') }}<input v-model="form.confirm_password" type="password" /></label>
+        <button type="submit">{{ i18n('resetPasswordButton') }}</button>
       </form>
       <p class="error" v-if="error">{{ error }}</p>
       <p class="note"><router-link to="/login">{{ i18n('login') }}</router-link></p>
@@ -505,7 +615,7 @@ const ForgotPasswordView = {
         body: { email: form.email },
       });
       if (!result.ok) {
-        error.value = result.data.error || "发送失败";
+        error.value = result.data.error || i18n("sendFailed");
         if (result.data.retryAfterSeconds) start(result.data.retryAfterSeconds);
         return;
       }
@@ -524,10 +634,10 @@ const ForgotPasswordView = {
         },
       });
       if (!result.ok) {
-        error.value = result.data.error || "重置失败";
+        error.value = result.data.error || i18n("resetFailed");
         return;
       }
-      alert("密码已重置，请登录");
+      alert(i18n("resetSuccess"));
     };
 
     return { form, error, cooldown, sendCode, resetPassword, i18n };
@@ -701,7 +811,7 @@ const ChatView = {
       sending.value = false;
 
       if (!result.ok) {
-        error.value = result.data.error || "发送失败";
+        error.value = result.data.error || i18n("sendFailed");
         return;
       }
 
@@ -746,10 +856,10 @@ const ProfileView = {
         <div class="avatar-block">
           <img :src="avatarPreview || fallbackAvatar" alt="avatar" class="avatar" />
           <label class="file-label">
-            上传头像
+            {{ i18n('uploadAvatar') }}
             <input type="file" accept="image/*" @change="onAvatarChange" />
           </label>
-          <p class="note">前端会先压缩图片再上传。</p>
+          <p class="note">{{ i18n('avatarCompressHint') }}</p>
         </div>
 
         <div class="preset-grid" v-if="defaultAvatars.length">
@@ -766,37 +876,37 @@ const ProfileView = {
 
         <form @submit.prevent="saveProfile">
           <label>
-            昵称
+            {{ i18n('nicknameLabel') }}
             <input v-model="form.nickname" type="text" />
           </label>
           <p class="note" :class="{ error: form.nickname && !nicknameValid }">
-            支持中英文、数字、下划线、空格、连字符，2-32 个字符
+            {{ i18n('nicknameHint') }}
           </p>
 
           <label>
-            注册邮箱
+            {{ i18n('registerEmailLabel') }}
             <input :value="form.email" type="email" disabled />
           </label>
           <p class="note" :class="{ error: form.email && !emailValid }">
-            {{ emailValid ? '邮箱格式合法' : '邮箱格式不合法' }}
+            {{ emailValid ? i18n('emailFormatOk') : i18n('emailFormatBad') }}
           </p>
 
           <hr />
           <h3>{{ i18n('accountSecurity') }}</h3>
           <label>
-            旧密码
+            {{ i18n('oldPasswordLabel') }}
             <input v-model="form.old_password" type="password" autocomplete="current-password" />
           </label>
           <label>
-            新密码
+            {{ i18n('newPasswordLabel') }}
             <input v-model="form.new_password" type="password" autocomplete="new-password" />
           </label>
           <label>
-            确认新密码
+            {{ i18n('confirmNewPasswordLabel') }}
             <input v-model="form.confirm_password" type="password" autocomplete="new-password" />
           </label>
-          <p class="note">密码强度：{{ passwordStrength }}</p>
-          <button type="submit" :disabled="submitting">保存账户</button>
+          <p class="note">{{ i18n('passwordStrengthLabel') }}：{{ passwordStrength }}</p>
+          <button type="submit" :disabled="submitting">{{ i18n('saveAccountButton') }}</button>
         </form>
 
         <p class="error" v-if="error">{{ error }}</p>
@@ -834,9 +944,9 @@ const ProfileView = {
           <label>
             {{ i18n('profileRole') }}
             <select v-model="prefRole">
-              <option value="investor">投资者</option>
-              <option value="enterprise_manager">企业管理者</option>
-              <option value="regulator">监管机构</option>
+              <option value="investor">{{ getRoleDisplayName('investor') }}</option>
+              <option value="enterprise_manager">{{ getRoleDisplayName('enterprise_manager') }}</option>
+              <option value="regulator">{{ getRoleDisplayName('regulator') }}</option>
             </select>
           </label>
           <p class="note">{{ i18n('profileRoleHint') }}</p>
@@ -886,7 +996,7 @@ const ProfileView = {
       loading.value = false;
 
       if (!profileRes.ok) {
-        error.value = profileRes.status === 401 ? "请先登录" : profileRes.data.error || "加载失败";
+        error.value = profileRes.status === 401 ? i18n("needLoginFirst") : profileRes.data.error || i18n("loadFailed");
         return;
       }
 
@@ -919,7 +1029,7 @@ const ProfileView = {
         avatarPreset.value = "";
         avatarPreview.value = URL.createObjectURL(compressed);
       } catch (e) {
-        error.value = e.message || "头像处理失败";
+        error.value = e.message || i18n("avatarProcessFailed");
       }
     };
 
@@ -934,26 +1044,26 @@ const ProfileView = {
       success.value = "";
 
       if (!nicknameValid.value) {
-        error.value = "昵称格式不合法";
+        error.value = i18n("nicknameInvalidError");
         return;
       }
       if (!emailValid.value) {
-        error.value = "邮箱格式异常";
+        error.value = i18n("emailFormatInvalid");
         return;
       }
 
       const hasPasswordInput = form.old_password || form.new_password || form.confirm_password;
       if (hasPasswordInput) {
         if (!form.old_password || !form.new_password) {
-          error.value = "修改密码时必须填写旧密码和新密码";
+          error.value = i18n("passwordOldNewRequired");
           return;
         }
         if (form.new_password !== form.confirm_password) {
-          error.value = "两次新密码不一致";
+          error.value = i18n("passwordNotMatch");
           return;
         }
         if (form.new_password.length < 8) {
-          error.value = "新密码至少 8 位";
+          error.value = i18n("passwordTooShortClient");
           return;
         }
       }
@@ -973,7 +1083,7 @@ const ProfileView = {
       submitting.value = false;
 
       if (!result.ok) {
-        error.value = result.data.error || "保存失败";
+        error.value = result.data.error || i18n("profileSaveFailed");
         return;
       }
 
@@ -982,7 +1092,7 @@ const ProfileView = {
       form.old_password = "";
       form.new_password = "";
       form.confirm_password = "";
-      success.value = "保存成功";
+      success.value = i18n("profileSaveSuccess");
     };
 
     const savePreferences = async () => {
@@ -1010,11 +1120,11 @@ const ProfileView = {
       ]);
 
       if (!prefRes.ok) {
-        error.value = prefRes.data.error || "偏好保存失败";
+        error.value = prefRes.data.error || i18n("preferencesSaveFailed");
         return;
       }
       if (!roleRes.ok) {
-        error.value = roleRes.data.error || "角色保存失败";
+        error.value = roleRes.data.error || i18n("roleSaveFailed");
         return;
       }
 
@@ -1051,6 +1161,7 @@ const ProfileView = {
       saveProfile,
       savePreferences,
       i18n,
+      getRoleDisplayName,
     };
   },
 };
@@ -1069,6 +1180,8 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes,
 });
+
+routerRef = router;
 
 const PUBLIC_ROUTES = new Set(["/login", "/register", "/forgot-password"]);
 
@@ -1135,12 +1248,7 @@ const App = {
 
     const logout = async () => {
       await apiRequest("/auth/logout", { method: "POST" });
-      setToken("");
-      authStore.authenticated = false;
-      authStore.userId = null;
-      workspaceStore.ready = false;
-      workspaceStore.selectedRole = "";
-      workspaceStore.systemPrompt = "";
+      clearAuthState();
       router.push("/login");
     };
 
@@ -1156,6 +1264,7 @@ const App = {
       quickSwitchRole,
       goProfile,
       logout,
+      getRoleDisplayName,
     };
   },
   template: `
@@ -1202,7 +1311,7 @@ const App = {
                 @click="setActiveSession(s.id)"
               >
                 <strong>{{ s.title }}</strong>
-                <span>{{ s.role ? (s.role === 'investor' ? '投资者' : s.role === 'enterprise_manager' ? '企业管理者' : '监管机构') : '-' }}</span>
+                <span>{{ s.role ? getRoleDisplayName(s.role) : '-' }}</span>
               </button>
             </div>
           </section>
@@ -1219,17 +1328,6 @@ const App = {
       </div>
     </div>
   `,
-  setup() {
-    const router = VueRouter.useRouter();
-
-    const logout = async () => {
-      await apiFetch("/auth/logout", {});
-      clearAuthState();
-      router.push("/login");
-    };
-
-    return { authStore, logout };
-  },
 };
 
 createApp(App).use(router).mount("#app");

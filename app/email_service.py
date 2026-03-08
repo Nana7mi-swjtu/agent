@@ -49,8 +49,7 @@ class SmtpEmailSender(EmailSender):
         msg["To"] = to_email
         msg.set_content(body)
 
-        with smtplib.SMTP(self._host, self._port) as server:
-            server.starttls()
+        with smtplib.SMTP_SSL(self._host, self._port) as server:
             if self._username:
                 server.login(self._username, self._password)
             server.send_message(msg)
