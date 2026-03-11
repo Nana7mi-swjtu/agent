@@ -4,6 +4,13 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from app.models import User
 
 
+def _auth_headers(client, user_id: int) -> dict[str, str]:
+    with client.session_transaction() as sess:
+        sess["user_id"] = user_id
+        sess["csrf_token"] = "test-csrf-token"
+    return {"X-CSRF-Token": "test-csrf-token"}
+
+
 def test_registration_flow(client, app, db_session):
     response = client.post(
         "/auth/register/send-code",
@@ -111,8 +118,7 @@ def test_get_and_update_profile(client, db_session):
     db_session.add(user)
     db_session.commit()
 
-    with client.session_transaction() as sess:
-        sess["user_id"] = user.id
+    headers = _auth_headers(client, user.id)
 
     response = client.get("/api/user/profile")
     assert response.status_code == 200
@@ -127,6 +133,7 @@ def test_get_and_update_profile(client, db_session):
             "old_password": "password123",
             "new_password": "newPass123!",
         },
+        headers=headers,
     )
     assert response.status_code == 200
 
@@ -141,8 +148,7 @@ def test_update_profile_rejects_wrong_old_password(client, db_session):
     db_session.add(user)
     db_session.commit()
 
-    with client.session_transaction() as sess:
-        sess["user_id"] = user.id
+    headers = _auth_headers(client, user.id)
 
     response = client.put(
         "/api/user/profile",
@@ -151,6 +157,7 @@ def test_update_profile_rejects_wrong_old_password(client, db_session):
             "old_password": "bad-old",
             "new_password": "newPass123!",
         },
+        headers=headers,
     )
     assert response.status_code == 400
 
@@ -160,12 +167,12 @@ def test_patch_preferences_partial_update(client, db_session):
     db_session.add(user)
     db_session.commit()
 
-    with client.session_transaction() as sess:
-        sess["user_id"] = user.id
+    headers = _auth_headers(client, user.id)
 
     response = client.patch(
         "/api/user/preferences",
         json={"theme": "dark", "notifications": {"emailPush": True}},
+        headers=headers,
     )
     assert response.status_code == 200
     payload = response.get_json()
@@ -179,10 +186,9 @@ def test_patch_preferences_rejects_invalid_value(client, db_session):
     db_session.add(user)
     db_session.commit()
 
-    with client.session_transaction() as sess:
-        sess["user_id"] = user.id
+    headers = _auth_headers(client, user.id)
 
-    response = client.patch("/api/user/preferences", json={"theme": "neon"})
+    response = client.patch("/api/user/preferences", json={"theme": "neon"}, headers=headers)
     assert response.status_code == 400
 
 
@@ -191,15 +197,14 @@ def test_workspace_role_selection_and_context(client, db_session):
     db_session.add(user)
     db_session.commit()
 
-    with client.session_transaction() as sess:
-        sess["user_id"] = user.id
+    headers = _auth_headers(client, user.id)
 
     response = client.get("/api/workspace/context")
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["data"]["selectedRole"] is None
 
-    response = client.patch("/api/workspace/context", json={"role": "investor"})
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["data"]["selectedRole"] == "investor"
@@ -211,16 +216,15 @@ def test_workspace_chat_requires_role(client, db_session):
     db_session.add(user)
     db_session.commit()
 
-    with client.session_transaction() as sess:
-        sess["user_id"] = user.id
+    headers = _auth_headers(client, user.id)
 
-    response = client.post("/api/workspace/chat", json={"message": "请分析风险"})
+    response = client.post("/api/workspace/chat", json={"message": "请分析风险"}, headers=headers)
     assert response.status_code == 400
 
-    response = client.patch("/api/workspace/context", json={"role": "regulator"})
+    response = client.patch("/api/workspace/context", json={"role": "regulator"}, headers=headers)
     assert response.status_code == 200
 
-    response = client.post("/api/workspace/chat", json={"message": "请分析风险"})
+    response = client.post("/api/workspace/chat", json={"message": "请分析风险"}, headers=headers)
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["data"]["role"] == "regulator"
@@ -228,3 +232,97 @@ def test_workspace_chat_requires_role(client, db_session):
 def test_me_requires_login(client):
     response = client.get("/auth/me")
     assert response.status_code == 401
+
+
+def test_register_send_code_invalid_email(client):
+    response = client.post(
+        "/auth/register/send-code",
+        json={
+            "email": "invalid-email",
+            "password": "password123",
+            "confirm_password": "password123",
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_register_send_code_rejects_password_mismatch(client):
+    response = client.post(
+        "/auth/register/send-code",
+        json={
+            "email": "mismatch@example.com",
+            "password": "password123",
+            "confirm_password": "password321",
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_register_verify_code_rejects_invalid_format(client):
+    response = client.post(
+        "/auth/register/verify-code",
+        json={"email": "newuser@example.com", "code": "12ab56"},
+    )
+    assert response.status_code == 400
+
+
+def test_forgot_password_verify_code_rejects_short_password(client):
+    response = client.post(
+        "/auth/forgot-password/verify-code",
+        json={
+            "email": "reset@example.com",
+            "code": "123456",
+            "new_password": "123",
+            "confirm_password": "123",
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_update_profile_requires_csrf_when_logged_in(client, db_session):
+    user = User(email="csrf@example.com", nickname="CSRF", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+
+    with client.session_transaction() as sess:
+        sess["user_id"] = user.id
+
+    response = client.put("/api/user/profile", data={"nickname": "NewName"})
+    assert response.status_code == 403
+
+
+def test_patch_preferences_rejects_invalid_notification_type(client, db_session):
+    user = User(email="prefs3@example.com", nickname="Prefs3", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch(
+        "/api/user/preferences",
+        json={"notifications": {"agentRun": "yes"}},
+        headers=headers,
+    )
+    assert response.status_code == 400
+
+
+def test_workspace_context_rejects_invalid_role(client, db_session):
+    user = User(email="role2@example.com", nickname="Role2", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "unknown"}, headers=headers)
+    assert response.status_code == 400
+
+
+def test_workspace_chat_requires_non_empty_message(client, db_session):
+    user = User(email="chat2@example.com", nickname="Chat2", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    response = client.post("/api/workspace/chat", json={"message": "   "}, headers=headers)
+    assert response.status_code == 400
