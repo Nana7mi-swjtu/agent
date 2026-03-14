@@ -15,6 +15,7 @@ from .workspace.routes import workspace_bp
 
 def create_app(config_overrides: dict | None = None) -> Flask:
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    docs_dir = Path(__file__).resolve().parent.parent / "docs"
     app = Flask(__name__, static_folder=str(frontend_dir), static_url_path="")
     app.config.from_object(Config)
     if config_overrides:
@@ -46,6 +47,11 @@ def create_app(config_overrides: dict | None = None) -> Flask:
         upload_dir = Path(app.root_path).parent / app.config["AVATAR_UPLOAD_DIR"]
         upload_dir.mkdir(parents=True, exist_ok=True)
         return send_from_directory(upload_dir, filename)
+
+    @app.get("/docs/<path:filename>")
+    def docs_assets(filename: str):
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        return send_from_directory(docs_dir, filename)
 
     csrf_exempt_paths = {
         "/auth/login",

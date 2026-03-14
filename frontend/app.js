@@ -1,9 +1,35 @@
-const { createApp, ref, reactive, computed, onMounted, watch } = Vue;
+﻿const { createApp, ref, reactive, computed, onMounted, watch } = Vue;
 const { createRouter, createWebHashHistory } = VueRouter;
 
 const CSRF_TOKEN_KEY = "csrf_token";
 const PREFERENCES_KEY = "user_preferences";
 const SESSIONS_KEY = "workspace_chat_sessions";
+const AUTH_BG_GIF_KEY = "auth_bg_gif_url";
+const DEFAULT_AUTH_BG_GIF_URL = "/docs/蓝色科粒子光效舞台.gif";
+
+const getAuthBgGifUrl = () => {
+  const globalValue = window.AUTH_BG_GIF_URL;
+  if (typeof globalValue === "string" && globalValue.trim()) {
+    return globalValue.trim();
+  }
+  const localValue = localStorage.getItem(AUTH_BG_GIF_KEY) || "";
+  return localValue.trim() || DEFAULT_AUTH_BG_GIF_URL;
+};
+
+const getAuthHeroStyle = () => {
+  const url = getAuthBgGifUrl();
+  return url ? { backgroundImage: `url('${url}')` } : {};
+};
+
+const hasAuthBgGif = () => Boolean(getAuthBgGifUrl());
+const setAuthBgGifUrl = (url) => {
+  const value = String(url || "").trim();
+  if (!value) {
+    localStorage.removeItem(AUTH_BG_GIF_KEY);
+    return;
+  }
+  localStorage.setItem(AUTH_BG_GIF_KEY, value);
+};
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const NICKNAME_RE = /^[\w\u4e00-\u9fff\-\s]{2,32}$/;
@@ -81,6 +107,12 @@ const COPY = {
     login: "登录",
     register: "注册",
     forgotPassword: "忘记密码",
+    authWelcomeBack: "欢迎回来",
+    needAccount: "需要账号？",
+    createAccount: "创建账号",
+    joinAgentStudio: "加入 Agent Studio",
+    alreadyHaveAccount: "已有账号？",
+    resetByEmail: "通过邮箱验证码重置密码",
     logout: "退出登录",
     profile: "个人设置",
     workspace: "智能体工作台",
@@ -110,6 +142,9 @@ const COPY = {
     accountSecurity: "账号安全",
     profileRole: "默认工作角色",
     profileRoleHint: "在这里切换后，主页和工作台都会同步此模式。",
+    authBgGifUrlLabel: "登录页背景动图 URL",
+    authBgGifUrlHint: "支持 GIF/WebP/MP4 直链，留空则使用默认背景。",
+    clearAuthBg: "清除背景",
     emailLabel: "邮箱",
     passwordLabel: "密码",
     confirmPasswordLabel: "确认密码",
@@ -154,6 +189,12 @@ const COPY = {
     login: "Login",
     register: "Register",
     forgotPassword: "Forgot Password",
+    authWelcomeBack: "Welcome back",
+    needAccount: "Need an account?",
+    createAccount: "Create one",
+    joinAgentStudio: "Join Agent Studio",
+    alreadyHaveAccount: "Already have an account?",
+    resetByEmail: "Reset your password with an email code",
     logout: "Log out",
     profile: "Profile",
     workspace: "Workspace",
@@ -184,6 +225,9 @@ const COPY = {
     accountSecurity: "Account Security",
     profileRole: "Default Workspace Role",
     profileRoleHint: "Changes here are synchronized to home and workspace.",
+    authBgGifUrlLabel: "Login Background GIF URL",
+    authBgGifUrlHint: "Supports direct GIF/WebP/MP4 links. Leave empty for default.",
+    clearAuthBg: "Clear Background",
     emailLabel: "Email",
     passwordLabel: "Password",
     confirmPasswordLabel: "Confirm Password",
@@ -325,6 +369,18 @@ const getRoleDisplayName = (key) => {
   return ROLE_NAME_MAP[lang]?.[key] || ROLE_NAME_MAP["zh-CN"][key] || key;
 };
 
+const formatMessageTime = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(uiStore.preferences.language || "zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+};
+
 const safeJson = (raw, fallback) => {
   try {
     return JSON.parse(raw);
@@ -437,9 +493,9 @@ const getPasswordStrength = (password) => {
   if (/[a-z]/.test(password)) score += 1;
   if (/\d/.test(password)) score += 1;
   if (/[^A-Za-z0-9]/.test(password)) score += 1;
-  if (score <= 2) return "弱";
-  if (score <= 4) return "中";
-  return "强";
+  if (score <= 2) return uiStore.preferences.language === "en-US" ? "Weak" : "弱";
+  if (score <= 4) return uiStore.preferences.language === "en-US" ? "Medium" : "中";
+  return uiStore.preferences.language === "en-US" ? "Strong" : "强";
 };
 
 const compressImage = (file, maxSize = 640, quality = 0.82) =>
@@ -483,18 +539,29 @@ const compressImage = (file, maxSize = 640, quality = 0.82) =>
 
 const LoginView = {
   template: `
-    <div class="container auth-box">
-      <h2>{{ i18n('login') }}</h2>
-      <form @submit.prevent="onSubmit">
-        <label>{{ i18n('emailLabel') }}<input v-model="form.email" type="email" /></label>
-        <label>{{ i18n('passwordLabel') }}<input v-model="form.password" type="password" /></label>
-        <button type="submit">{{ i18n('login') }}</button>
-      </form>
-      <p class="error" v-if="error">{{ error }}</p>
-      <p class="note">
-        <router-link to="/register">{{ i18n('register') }}</router-link>
-        | <router-link to="/forgot-password">{{ i18n('forgotPassword') }}</router-link>
-      </p>
+    <div class="auth-stage" :class="{ 'has-gif': hasGif }" :style="stageStyle">
+      <div class="auth-overlay" v-if="hasGif"></div>
+      <div class="auth-box">
+        <h1>Agent Studio</h1>
+        <p class="auth-sub">{{ i18n('authWelcomeBack') }}</p>
+        <form @submit.prevent="onSubmit">
+          <div class="field">
+            <label>{{ i18n('emailLabel') }}</label>
+            <input v-model="form.email" type="email" autocomplete="email" />
+          </div>
+          <div class="field">
+            <label>{{ i18n('passwordLabel') }}</label>
+            <input v-model="form.password" type="password" autocomplete="current-password" />
+          </div>
+          <div class="err-text" v-if="error">{{ error }}</div>
+          <button type="submit" class="btn-primary">{{ i18n('login') }}</button>
+        </form>
+        <p class="auth-links" style="margin-top:16px">
+          {{ i18n('needAccount') }}<router-link to="/register">{{ i18n('createAccount') }}</router-link>
+          &nbsp;路&nbsp;
+          <router-link to="/forgot-password">{{ i18n('forgotPassword') }}</router-link>
+        </p>
+      </div>
     </div>
   `,
   setup() {
@@ -502,6 +569,11 @@ const LoginView = {
     const error = ref("");
     const router = VueRouter.useRouter();
     const i18n = (key) => t(key);
+    const hasGif = computed(() => hasAuthBgGif());
+    const stageStyle = computed(() => {
+      const url = getAuthBgGifUrl();
+      return url ? { '--auth-gif': `url('${url}')` } : {};
+    });
 
     const onSubmit = async () => {
       error.value = "";
@@ -519,27 +591,44 @@ const LoginView = {
       router.push("/app");
     };
 
-    return { form, error, onSubmit, i18n };
+    return { form, error, onSubmit, i18n, hasGif, stageStyle };
   },
 };
 
 const RegisterView = {
   template: `
-    <div class="container auth-box">
-      <h2>{{ i18n('register') }}</h2>
-      <form @submit.prevent="sendCode">
-        <label>{{ i18n('emailLabel') }}<input v-model="form.email" type="email" /></label>
-        <label>{{ i18n('passwordLabel') }}<input v-model="form.password" type="password" /></label>
-        <label>{{ i18n('confirmPasswordLabel') }}<input v-model="form.confirm_password" type="password" /></label>
-        <button type="submit" :disabled="cooldown > 0">{{ i18n('sendCode') }}</button>
-        <span class="note" v-if="cooldown > 0">{{ cooldown }}s {{ i18n('resendCountdown') }}</span>
-      </form>
-      <form @submit.prevent="verifyCode">
-        <label>{{ i18n('codeLabel') }}<input v-model="form.code" type="text" maxlength="6" /></label>
-        <button type="submit">{{ i18n('completeRegister') }}</button>
-      </form>
-      <p class="error" v-if="error">{{ error }}</p>
-      <p class="note"><router-link to="/login">{{ i18n('login') }}</router-link></p>
+    <div class="auth-stage" :class="{ 'has-gif': hasGif }" :style="stageStyle">
+      <div class="auth-overlay" v-if="hasGif"></div>
+      <div class="auth-box">
+        <h1>{{ i18n('register') }}</h1>
+        <p class="auth-sub">{{ i18n('joinAgentStudio') }}</p>
+        <form @submit.prevent="sendCode">
+          <div class="field">
+            <label>{{ i18n('emailLabel') }}</label>
+            <input v-model="form.email" type="email" autocomplete="email" />
+          </div>
+          <div class="field">
+            <label>{{ i18n('passwordLabel') }}</label>
+            <input v-model="form.password" type="password" autocomplete="new-password" />
+          </div>
+          <div class="field">
+            <label>{{ i18n('confirmPasswordLabel') }}</label>
+            <input v-model="form.confirm_password" type="password" autocomplete="new-password" />
+          </div>
+          <button type="submit" class="btn-primary" :disabled="cooldown > 0">
+            {{ i18n('sendCode') }}<span v-if="cooldown > 0"> ({{ cooldown }}s)</span>
+          </button>
+        </form>
+        <form @submit.prevent="verifyCode" style="margin-top:16px">
+          <div class="field">
+            <label>{{ i18n('codeLabel') }}</label>
+            <input v-model="form.code" type="text" maxlength="6" placeholder="6位验证码" />
+          </div>
+          <button type="submit" class="btn-primary">{{ i18n('completeRegister') }}</button>
+        </form>
+        <div class="err-text" v-if="error">{{ error }}</div>
+        <p class="auth-links" style="margin-top:16px">{{ i18n('alreadyHaveAccount') }}<router-link to="/login">{{ i18n('login') }}</router-link></p>
+      </div>
     </div>
   `,
   setup() {
@@ -547,6 +636,11 @@ const RegisterView = {
     const error = ref("");
     const { cooldown, start } = useCooldown();
     const i18n = (key) => t(key);
+    const hasGif = computed(() => hasAuthBgGif());
+    const stageStyle = computed(() => {
+      const url = getAuthBgGifUrl();
+      return url ? { '--auth-gif': `url('${url}')` } : {};
+    });
 
     const sendCode = async () => {
       error.value = "";
@@ -579,27 +673,44 @@ const RegisterView = {
       alert(i18n("registerSuccess"));
     };
 
-    return { form, error, cooldown, sendCode, verifyCode, i18n };
+    return { form, error, cooldown, sendCode, verifyCode, i18n, hasGif, stageStyle };
   },
 };
 
 const ForgotPasswordView = {
   template: `
-    <div class="container auth-box">
-      <h2>{{ i18n('forgotPassword') }}</h2>
-      <form @submit.prevent="sendCode">
-        <label>{{ i18n('emailLabel') }}<input v-model="form.email" type="email" /></label>
-        <button type="submit" :disabled="cooldown > 0">{{ i18n('sendCode') }}</button>
-        <span class="note" v-if="cooldown > 0">{{ cooldown }}s {{ i18n('resendCountdown') }}</span>
-      </form>
-      <form @submit.prevent="resetPassword">
-        <label>{{ i18n('codeLabel') }}<input v-model="form.code" type="text" maxlength="6" /></label>
-        <label>{{ i18n('newPasswordLabel') }}<input v-model="form.new_password" type="password" /></label>
-        <label>{{ i18n('confirmPasswordLabel') }}<input v-model="form.confirm_password" type="password" /></label>
-        <button type="submit">{{ i18n('resetPasswordButton') }}</button>
-      </form>
-      <p class="error" v-if="error">{{ error }}</p>
-      <p class="note"><router-link to="/login">{{ i18n('login') }}</router-link></p>
+    <div class="auth-stage" :class="{ 'has-gif': hasGif }" :style="stageStyle">
+      <div class="auth-overlay" v-if="hasGif"></div>
+      <div class="auth-box">
+        <h1>{{ i18n('forgotPassword') }}</h1>
+        <p class="auth-sub">{{ i18n('resetByEmail') }}</p>
+        <form @submit.prevent="sendCode">
+          <div class="field">
+            <label>{{ i18n('emailLabel') }}</label>
+            <input v-model="form.email" type="email" autocomplete="email" />
+          </div>
+          <button type="submit" class="btn-primary" :disabled="cooldown > 0">
+            {{ i18n('sendCode') }}<span v-if="cooldown > 0"> ({{ cooldown }}s)</span>
+          </button>
+        </form>
+        <form @submit.prevent="resetPassword" style="margin-top:16px">
+          <div class="field">
+            <label>{{ i18n('codeLabel') }}</label>
+            <input v-model="form.code" type="text" maxlength="6" placeholder="6位验证码" />
+          </div>
+          <div class="field">
+            <label>{{ i18n('newPasswordLabel') }}</label>
+            <input v-model="form.new_password" type="password" autocomplete="new-password" />
+          </div>
+          <div class="field">
+            <label>{{ i18n('confirmPasswordLabel') }}</label>
+            <input v-model="form.confirm_password" type="password" autocomplete="new-password" />
+          </div>
+          <button type="submit" class="btn-primary">{{ i18n('resetPasswordButton') }}</button>
+        </form>
+        <div class="err-text" v-if="error">{{ error }}</div>
+        <p class="auth-links" style="margin-top:16px"><router-link to="/login">{{ i18n('login') }}</router-link></p>
+      </div>
     </div>
   `,
   setup() {
@@ -607,6 +718,11 @@ const ForgotPasswordView = {
     const error = ref("");
     const { cooldown, start } = useCooldown();
     const i18n = (key) => t(key);
+    const hasGif = computed(() => hasAuthBgGif());
+    const stageStyle = computed(() => {
+      const url = getAuthBgGifUrl();
+      return url ? { '--auth-gif': `url('${url}')` } : {};
+    });
 
     const sendCode = async () => {
       error.value = "";
@@ -640,17 +756,19 @@ const ForgotPasswordView = {
       alert(i18n("resetSuccess"));
     };
 
-    return { form, error, cooldown, sendCode, resetPassword, i18n };
+    return { form, error, cooldown, sendCode, resetPassword, i18n, hasGif, stageStyle };
   },
 };
 
 const HomeView = {
   template: `
-    <div class="container">
-      <h2>{{ i18n('roleSelection') }}</h2>
-      <p class="note">{{ i18n('roleSelectionDesc') }}</p>
+    <div class="content-panel">
+      <div class="content-header">
+        <h1>{{ i18n('roleSelection') }}</h1>
+        <p>{{ i18n('roleSelectionDesc') }}</p>
+      </div>
 
-      <div v-if="!workspaceReady" class="note">{{ i18n('loading') }}</div>
+      <div v-if="!workspaceReady" class="muted-text">{{ i18n('loading') }}</div>
       <template v-else>
         <div class="role-grid">
           <button
@@ -666,15 +784,14 @@ const HomeView = {
           </button>
         </div>
 
-        <p class="note" v-if="selectedRole">
-          {{ i18n('selectedRole') }}：{{ selectedRoleName }}
-        </p>
-        <p class="note" v-if="systemPrompt">
-          <strong>{{ i18n('promptLabel') }}:</strong> {{ systemPrompt }}
-        </p>
-        <p class="error" v-if="error">{{ error }}</p>
+        <div class="prompt-box" v-if="systemPrompt">
+          <strong>{{ i18n('promptLabel') }}</strong>
+          <p style="margin:8px 0 0;font-size:13px;white-space:pre-wrap;word-break:break-word;">{{ systemPrompt }}</p>
+        </div>
 
-        <button type="button" :disabled="!selectedRole" @click="toChat">
+        <div class="msg-err" v-if="error">{{ error }}</div>
+
+        <button type="button" class="start-btn" style="margin-top:20px" :disabled="!selectedRole" @click="toChat">
           {{ i18n('startChat') }}
         </button>
       </template>
@@ -732,33 +849,58 @@ const HomeView = {
 
 const ChatView = {
   template: `
-    <div class="container">
-      <h2>{{ i18n('workspace') }}</h2>
-      <p class="note">{{ i18n('selectedRole') }}：{{ selectedRoleName || '-' }}</p>
-      <p class="note"><strong>{{ i18n('promptLabel') }}:</strong> {{ systemPrompt || '-' }}</p>
-
-      <div class="chat-panel">
-        <div v-if="!activeSession || !activeSession.messages.length" class="note">
-          {{ i18n('inputPlaceholder') }}
-        </div>
-        <div
-          v-for="(msg, idx) in activeSession?.messages || []"
-          :key="idx"
-          class="chat-line"
-          :class="msg.from"
-        >
-          <strong>{{ msg.from === 'user' ? 'You' : 'Agent' }}:</strong> {{ msg.text }}
-        </div>
+    <div class="dc-chat-layout">
+      <div class="dc-toolbar">
+        <span class="ch-hash">#</span>
+        <span class="ch-name">{{ channelName }}</span>
+        <span class="toolbar-divider"></span>
+        <span class="ch-topic">{{ systemPrompt || '-' }}</span>
+        <span class="badge-pill">{{ selectedRoleName || '-' }}</span>
       </div>
 
-      <form @submit.prevent="sendMessage">
-        <label>
-          {{ i18n('inputPlaceholder') }}
-          <input v-model="input" type="text" />
-        </label>
-        <button type="submit" :disabled="sending">{{ i18n('send') }}</button>
-      </form>
-      <p class="error" v-if="error">{{ error }}</p>
+      <div class="dc-feed" ref="feedEl">
+        <div v-if="!activeSession || !activeSession.messages.length" class="feed-welcome">
+          <h2># {{ channelName }}</h2>
+          <p>{{ i18n('inputPlaceholder') }}</p>
+        </div>
+
+        <article
+          v-for="(msg, idx) in activeSession?.messages || []"
+          :key="idx"
+          class="msg-row"
+          :class="{ 'is-first': idx === 0 || activeSession.messages[idx - 1].from !== msg.from }"
+        >
+          <template v-if="idx === 0 || activeSession.messages[idx - 1].from !== msg.from">
+            <div class="msg-avatar" :class="{ 'is-agent': msg.from === 'agent' }">{{ msg.from === 'user' ? 'U' : 'AI' }}</div>
+            <div class="msg-body">
+              <div class="msg-meta">
+                <span class="msg-author">{{ msg.from === 'user' ? 'You' : 'Agent Studio' }}</span>
+                <span class="msg-timestamp">{{ displayTime(msg.time) }}</span>
+              </div>
+              <div class="msg-content">{{ msg.text }}</div>
+            </div>
+          </template>
+          <template v-else>
+            <div class="msg-avatar is-empty"></div>
+            <div class="msg-body">
+              <div class="msg-content">{{ msg.text }}</div>
+            </div>
+          </template>
+        </article>
+      </div>
+
+      <div class="dc-composer">
+        <div class="dc-composer-inner">
+          <input
+            v-model="input"
+            type="text"
+            :placeholder="i18n('inputPlaceholder')"
+            @keydown.enter.exact.prevent="sendMessage"
+          />
+          <button class="dc-composer-send" :disabled="sending" @click="sendMessage">➤</button>
+        </div>
+        <div class="msg-err" v-if="error">{{ error }}</div>
+      </div>
     </div>
   `,
   setup() {
@@ -772,6 +914,13 @@ const ChatView = {
       workspaceStore.roles.find((x) => x.key === workspaceStore.selectedRole)?.name || "",
     );
     const systemPrompt = computed(() => workspaceStore.systemPrompt);
+    const channelName = computed(() => {
+      const title = activeSession.value?.title?.trim();
+      if (title) {
+        return title.toLowerCase().replace(/\s+/g, "-");
+      }
+      return selectedRoleName.value || "analysis-room";
+    });
 
     const i18n = (key) => t(key);
 
@@ -796,7 +945,7 @@ const ChatView = {
 
       const current = ensureSession();
       current.role = workspaceStore.selectedRole;
-      current.messages.push({ from: "user", text });
+      current.messages.push({ from: "user", text, time: new Date().toISOString() });
       current.updatedAt = new Date().toISOString();
       if (current.messages.length === 1) {
         current.title = text.slice(0, 20) || current.title;
@@ -816,10 +965,12 @@ const ChatView = {
       }
 
       const reply = result.data?.data?.reply || "";
-      current.messages.push({ from: "agent", text: reply });
+      current.messages.push({ from: "agent", text: reply, time: new Date().toISOString() });
       current.updatedAt = new Date().toISOString();
       workspaceStore.systemPrompt = result.data?.data?.systemPrompt || workspaceStore.systemPrompt;
     };
+
+    const displayTime = (value) => formatMessageTime(value);
 
     onMounted(async () => {
       if (!workspaceStore.ready) {
@@ -840,7 +991,10 @@ const ChatView = {
       activeSession,
       selectedRoleName,
       systemPrompt,
+      channelName,
+      displayTime,
       sendMessage,
+      feedEl: ref(null),
       i18n,
     };
   },
@@ -848,110 +1002,109 @@ const ChatView = {
 
 const ProfileView = {
   template: `
-    <div class="container">
-      <h2>{{ i18n('profile') }}</h2>
+    <div class="content-panel">
+      <div class="content-header">
+        <h1>{{ i18n('profile') }}</h1>
+        <p>Account, avatar and role preferences.</p>
+      </div>
 
-      <div v-if="loading">{{ i18n('loading') }}</div>
-      <div v-else>
-        <div class="avatar-block">
-          <img :src="avatarPreview || fallbackAvatar" alt="avatar" class="avatar" />
-          <label class="file-label">
-            {{ i18n('uploadAvatar') }}
-            <input type="file" accept="image/*" @change="onAvatarChange" />
-          </label>
-          <p class="note">{{ i18n('avatarCompressHint') }}</p>
+      <div v-if="loading" class="muted-text">{{ i18n('loading') }}</div>
+      <div v-else class="profile-section">
+
+        <div class="avatar-row">
+          <img :src="avatarPreview || fallbackAvatar" alt="avatar" class="avatar-img" />
+          <div>
+            <label class="avatar-upload-btn">
+              {{ i18n('uploadAvatar') }}
+              <input type="file" accept="image/*" style="display:none" @change="onAvatarChange" />
+            </label>
+            <p class="hint-text">{{ i18n('avatarCompressHint') }}</p>
+          </div>
         </div>
 
         <div class="preset-grid" v-if="defaultAvatars.length">
-          <button
-            v-for="url in defaultAvatars"
-            :key="url"
-            type="button"
-            class="avatar-item"
-            @click="pickPreset(url)"
-          >
-            <img :src="url" alt="preset avatar" />
-          </button>
+          <div v-for="url in defaultAvatars" :key="url" class="preset-item" @click="pickPreset(url)">
+            <img :src="url" alt="preset" />
+          </div>
         </div>
 
         <form @submit.prevent="saveProfile">
-          <label>
-            {{ i18n('nicknameLabel') }}
+          <div class="form-row">
+            <label>{{ i18n('nicknameLabel') }}</label>
             <input v-model="form.nickname" type="text" />
-          </label>
-          <p class="note" :class="{ error: form.nickname && !nicknameValid }">
-            {{ i18n('nicknameHint') }}
-          </p>
-
-          <label>
-            {{ i18n('registerEmailLabel') }}
+            <p class="hint-text" :style="form.nickname && !nicknameValid ? 'color:#f8716d' : ''">{{ i18n('nicknameHint') }}</p>
+          </div>
+          <div class="form-row">
+            <label>{{ i18n('registerEmailLabel') }}</label>
             <input :value="form.email" type="email" disabled />
-          </label>
-          <p class="note" :class="{ error: form.email && !emailValid }">
-            {{ emailValid ? i18n('emailFormatOk') : i18n('emailFormatBad') }}
-          </p>
+          </div>
 
-          <hr />
-          <h3>{{ i18n('accountSecurity') }}</h3>
-          <label>
-            {{ i18n('oldPasswordLabel') }}
+          <hr style="margin:20px 0" />
+          <h3 style="margin:0 0 12px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);font-weight:700">{{ i18n('accountSecurity') }}</h3>
+          <div class="form-row">
+            <label>{{ i18n('oldPasswordLabel') }}</label>
             <input v-model="form.old_password" type="password" autocomplete="current-password" />
-          </label>
-          <label>
-            {{ i18n('newPasswordLabel') }}
+          </div>
+          <div class="form-row">
+            <label>{{ i18n('newPasswordLabel') }}</label>
             <input v-model="form.new_password" type="password" autocomplete="new-password" />
-          </label>
-          <label>
-            {{ i18n('confirmNewPasswordLabel') }}
+          </div>
+          <div class="form-row">
+            <label>{{ i18n('confirmNewPasswordLabel') }}</label>
             <input v-model="form.confirm_password" type="password" autocomplete="new-password" />
-          </label>
-          <p class="note">{{ i18n('passwordStrengthLabel') }}：{{ passwordStrength }}</p>
-          <button type="submit" :disabled="submitting">{{ i18n('saveAccountButton') }}</button>
+          </div>
+          <p class="hint-text">{{ i18n('passwordStrengthLabel') }}：{{ passwordStrength }}</p>
+          <div class="msg-err" v-if="error">{{ error }}</div>
+          <div class="msg-ok" v-if="success">{{ success }}</div>
+          <button type="submit" class="save-btn" :disabled="submitting">{{ i18n('saveAccountButton') }}</button>
         </form>
 
-        <p class="error" v-if="error">{{ error }}</p>
-        <p class="note" v-if="success">{{ success }}</p>
-
-        <hr />
-        <h3>{{ i18n('preferences') }}</h3>
+        <hr style="margin:28px 0 20px" />
+        <h3 style="margin:0 0 12px;font-size:15px;font-weight:600">{{ i18n('preferences') }}</h3>
         <form @submit.prevent="savePreferences">
-          <label>
-            {{ i18n('theme') }}
+          <div class="form-row">
+            <label>{{ i18n('theme') }}</label>
             <select v-model="prefForm.theme">
               <option value="light">{{ i18n('light') }}</option>
               <option value="dark">{{ i18n('dark') }}</option>
             </select>
-          </label>
-
-          <label>
-            {{ i18n('language') }}
+          </div>
+          <div class="form-row">
+            <label>{{ i18n('language') }}</label>
             <select v-model="prefForm.language">
               <option value="zh-CN">{{ i18n('chinese') }}</option>
               <option value="en-US">{{ i18n('english') }}</option>
             </select>
-          </label>
-
-          <label class="switch-line">
+          </div>
+          <div class="form-row">
+            <label>{{ i18n('authBgGifUrlLabel') }}</label>
+            <input v-model="authBgGifUrl" type="url" placeholder="https://example.com/bg.gif" />
+            <p class="hint-text">{{ i18n('authBgGifUrlHint') }}</p>
+            <button
+              type="button"
+              class="avatar-upload-btn"
+              @click="clearAuthBg"
+              style="margin-top:8px"
+            >{{ i18n('clearAuthBg') }}</button>
+          </div>
+          <div class="switch-row">
             <input v-model="prefForm.notifications.agentRun" type="checkbox" />
             <span>{{ i18n('notifyAgent') }}</span>
-          </label>
-
-          <label class="switch-line">
+          </div>
+          <div class="switch-row">
             <input v-model="prefForm.notifications.emailPush" type="checkbox" />
             <span>{{ i18n('notifyEmail') }}</span>
-          </label>
-
-          <label>
-            {{ i18n('profileRole') }}
+          </div>
+          <div class="form-row">
+            <label>{{ i18n('profileRole') }}</label>
             <select v-model="prefRole">
               <option value="investor">{{ getRoleDisplayName('investor') }}</option>
               <option value="enterprise_manager">{{ getRoleDisplayName('enterprise_manager') }}</option>
               <option value="regulator">{{ getRoleDisplayName('regulator') }}</option>
             </select>
-          </label>
-          <p class="note">{{ i18n('profileRoleHint') }}</p>
-
-          <button type="submit">{{ i18n('savePreferences') }}</button>
+            <p class="hint-text">{{ i18n('profileRoleHint') }}</p>
+          </div>
+          <button type="submit" class="save-btn">{{ i18n('savePreferences') }}</button>
         </form>
       </div>
     </div>
@@ -966,6 +1119,7 @@ const ProfileView = {
     const avatarPreset = ref("");
     const avatarPreview = ref("");
     const prefRole = ref("investor");
+    const authBgGifUrl = ref(getAuthBgGifUrl());
 
     const fallbackAvatar =
       "https://api.dicebear.com/9.x/fun-emoji/svg?seed=default-profile";
@@ -1012,6 +1166,7 @@ const ProfileView = {
         prefForm.notifications.agentRun = uiStore.preferences.notifications.agentRun;
         prefForm.notifications.emailPush = uiStore.preferences.notifications.emailPush;
       }
+      authBgGifUrl.value = getAuthBgGifUrl();
 
       if (workspaceRes.ok) {
         prefRole.value = workspaceRes.data?.data?.selectedRole || "investor";
@@ -1099,6 +1254,7 @@ const ProfileView = {
       error.value = "";
       success.value = "";
 
+      setAuthBgGifUrl(authBgGifUrl.value);
       mergePreferences(prefForm);
 
       const [prefRes, roleRes] = await Promise.all([
@@ -1140,6 +1296,11 @@ const ProfileView = {
       success.value = i18n("savePreferencesSuccess");
     };
 
+    const clearAuthBg = () => {
+      authBgGifUrl.value = "";
+      setAuthBgGifUrl("");
+    };
+
     onMounted(loadProfile);
 
     return {
@@ -1150,6 +1311,7 @@ const ProfileView = {
       form,
       prefForm,
       prefRole,
+      authBgGifUrl,
       nicknameValid,
       emailValid,
       passwordStrength,
@@ -1160,6 +1322,7 @@ const ProfileView = {
       pickPreset,
       saveProfile,
       savePreferences,
+      clearAuthBg,
       i18n,
       getRoleDisplayName,
     };
@@ -1219,6 +1382,7 @@ const App = {
     const sessions = computed(() => workspaceStore.sessions);
     const roles = computed(() => workspaceStore.roles);
     const selectedRole = computed(() => workspaceStore.selectedRole);
+    const workspaceGifUrl = computed(() => getAuthBgGifUrl());
 
     const sidebarVisible = computed(() => authStore.authenticated);
 
@@ -1244,6 +1408,7 @@ const App = {
       }
     };
 
+    const goHome = () => router.push("/app");
     const goProfile = () => router.push("/profile");
 
     const logout = async () => {
@@ -1258,76 +1423,96 @@ const App = {
       sessions,
       roles,
       selectedRole,
+      workspaceGifUrl,
       activeSessionId,
       setActiveSession,
       newChat,
       quickSwitchRole,
+      goHome,
       goProfile,
       logout,
       getRoleDisplayName,
     };
   },
   template: `
-    <div>
-      <div v-if="!sidebarVisible">
-        <router-view></router-view>
-      </div>
+    <div v-if="!sidebarVisible">
+      <router-view></router-view>
+    </div>
 
-      <div v-else class="ai-layout">
-        <aside class="sidebar">
-          <div class="sidebar-header">
-            <div class="brand">
-              <span class="brand-dot"></span>
-              <span>Agent Studio</span>
-            </div>
-            <button type="button" class="ghost-btn" @click="newChat">{{ i18n('newChat') }}</button>
+    <div v-else class="dc-chrome">
+      <!-- leftmost server icon strip -->
+      <nav class="dc-server-bar">
+        <div class="server-icon icon-home" :class="{active: $route.path==='/app'}" @click="goHome" title="主页">⚡</div>
+        <div class="server-sep"></div>
+        <div
+          v-for="role in roles"
+          :key="role.key"
+          class="server-icon"
+          :class="{active: selectedRole===role.key && $route.path==='/chat'}"
+          @click="quickSwitchRole(role.key)"
+          :title="role.name"
+        >{{ role.name.slice(0,1).toUpperCase() }}</div>
+      </nav>
+
+      <!-- channel sidebar -->
+      <div class="dc-sidebar">
+        <div class="sidebar-guild-header">Agent Studio</div>
+        <div class="sidebar-scroller">
+          <div class="channel-section-header"><span class="ch-caret">▾</span>{{ i18n('switchRole') }}</div>
+          <div
+            v-for="role in roles"
+            :key="role.key"
+            class="channel-row"
+            :class="{active: selectedRole===role.key && $route.path==='/chat'}"
+            @click="quickSwitchRole(role.key)"
+          >
+            <span class="channel-hash">#</span>
+            <span class="channel-row-name">{{ role.name }}</span>
           </div>
 
-          <section class="side-block">
-            <h4>{{ i18n('switchRole') }}</h4>
-            <div class="role-switch-list">
-              <button
-                type="button"
-                v-for="role in roles"
-                :key="role.key"
-                class="role-pill"
-                :class="{ active: selectedRole === role.key }"
-                @click="quickSwitchRole(role.key)"
-              >
-                {{ role.name }}
-              </button>
-            </div>
-          </section>
+          <div class="channel-section-header" style="margin-top:16px"><span class="ch-caret">▾</span>{{ i18n('chatHistory') }}</div>
+          <div
+            v-for="s in sessions"
+            :key="s.id"
+            class="channel-row"
+            :class="{active: activeSessionId===s.id}"
+            @click="setActiveSession(s.id)"
+          >
+            <span class="channel-hash" style="font-size:13px">🕐</span>
+            <span class="channel-row-name">{{ s.title }}</span>
+          </div>
 
-          <section class="side-block">
-            <h4>{{ i18n('chatHistory') }}</h4>
-            <div class="history-list">
-              <button
-                type="button"
-                class="history-item"
-                :class="{ active: activeSessionId === s.id }"
-                v-for="s in sessions"
-                :key="s.id"
-                @click="setActiveSession(s.id)"
-              >
-                <strong>{{ s.title }}</strong>
-                <span>{{ s.role ? getRoleDisplayName(s.role) : '-' }}</span>
-              </button>
-            </div>
-          </section>
+          <div class="channel-row" @click="newChat" style="color:var(--accent);margin-top:8px">
+            <span class="channel-hash">＋</span>
+            <span class="channel-row-name">{{ i18n('newChat') }}</span>
+          </div>
 
-          <section class="side-actions">
-            <button type="button" class="ghost-btn" @click="goProfile">{{ i18n('profile') }}</button>
-            <button type="button" class="ghost-btn" @click="logout">{{ i18n('logout') }}</button>
-          </section>
-        </aside>
+          <div class="sidebar-gif-card" v-if="workspaceGifUrl">
+            <img :src="workspaceGifUrl" alt="workspace animation" class="sidebar-gif-preview" />
+            <div class="sidebar-gif-label">动态展示</div>
+          </div>
+        </div>
 
-        <main class="workspace-main">
-          <router-view></router-view>
-        </main>
+        <!-- user panel bottom -->
+        <div class="sidebar-user-panel">
+          <div class="user-avatar" @click="goProfile">
+            A<div class="status-dot"></div>
+          </div>
+          <div class="user-name-block">
+            <strong>User</strong>
+            <small>在线</small>
+          </div>
+          <button class="panel-icon-btn" @click="goProfile" title="设置">⚙</button>
+          <button class="panel-icon-btn" @click="logout" title="退出">⏻</button>
+        </div>
+      </div>
+
+      <!-- main content area -->
+      <div class="dc-main">
+        <router-view></router-view>
       </div>
     </div>
-  `,
+  `
 };
 
 createApp(App).use(router).mount("#app");
