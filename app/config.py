@@ -45,5 +45,6 @@ class Config:
     SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
     SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
     SMTP_FROM = os.getenv("SMTP_FROM", "no-reply@example.com")
+    SMTP_SECURITY = os.getenv("SMTP_SECURITY", "starttls").lower()  # ssl | starttls | none
 
     AUTO_CREATE_DB = os.getenv("AUTO_CREATE_DB", "true").lower() == "true"

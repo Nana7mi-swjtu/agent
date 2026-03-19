@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 
@@ -15,6 +16,7 @@ from .services import issue_code, verify_code
 
 
 auth_bp = Blueprint("auth", __name__)
+logger = logging.getLogger(__name__)
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -90,7 +92,11 @@ def register_send_code():
         if error == "cooldown":
             return _json_error("resend cooldown active", 429, retryAfterSeconds=retry_after)
 
-        get_email_sender().send_code(email, code, "register")
+        try:
+            get_email_sender().send_code(email, code, "register")
+        except Exception:
+            logger.exception("Failed to send register code email")
+            return _json_error("failed to send email, check SMTP settings", 500)
 
     return {"ok": True, "cooldownSeconds": current_app.config["CODE_RESEND_COOLDOWN_SECONDS"]}
 
@@ -202,7 +208,11 @@ def forgot_password_send_code():
         if error == "cooldown":
             return _json_error("resend cooldown active", 429, retryAfterSeconds=retry_after)
 
-        get_email_sender().send_code(email, code, "reset")
+        try:
+            get_email_sender().send_code(email, code, "reset")
+        except Exception:
+            logger.exception("Failed to send reset code email")
+            return _json_error("failed to send email, check SMTP settings", 500)
 
     return {"ok": True, "message": "if the email exists, a code was sent", "cooldownSeconds": current_app.config["CODE_RESEND_COOLDOWN_SECONDS"]}
 
