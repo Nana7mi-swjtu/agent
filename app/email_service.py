@@ -33,12 +33,21 @@ class InMemoryEmailSender(EmailSender):
 
 
 class SmtpEmailSender(EmailSender):
-    def __init__(self, host: str, port: int, username: str, password: str, from_addr: str) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+        from_addr: str,
+        security: str = "starttls",
+    ) -> None:
         self._host = host
         self._port = port
         self._username = username
         self._password = password
         self._from = from_addr
+        self._security = security
 
     def send_code(self, to_email: str, code: str, purpose: str) -> None:
         subject = "验证码"
@@ -49,7 +58,14 @@ class SmtpEmailSender(EmailSender):
         msg["To"] = to_email
         msg.set_content(body)
 
-        with smtplib.SMTP_SSL(self._host, self._port) as server:
+        if self._security == "ssl":
+            server_ctx = smtplib.SMTP_SSL(self._host, self._port)
+        else:
+            server_ctx = smtplib.SMTP(self._host, self._port)
+
+        with server_ctx as server:
+            if self._security == "starttls":
+                server.starttls()
             if self._username:
                 server.login(self._username, self._password)
             server.send_message(msg)
@@ -66,9 +82,12 @@ def get_email_sender() -> EmailSender:
         username = current_app.config.get("SMTP_USERNAME", "")
         password = current_app.config.get("SMTP_PASSWORD", "")
         from_addr = current_app.config.get("SMTP_FROM") or username
+        security = str(current_app.config.get("SMTP_SECURITY", "starttls")).lower()
 
         if not host or not username or not password:
             raise RuntimeError("SMTP configuration missing. Set SMTP_HOST/SMTP_USERNAME/SMTP_PASSWORD.")
+        if security not in {"ssl", "starttls", "none"}:
+            raise RuntimeError("SMTP_SECURITY must be one of: ssl, starttls, none.")
 
-        return SmtpEmailSender(host, port, username, password, from_addr)
+        return SmtpEmailSender(host, port, username, password, from_addr, security=security)
     return ConsoleEmailSender()
