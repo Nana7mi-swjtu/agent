@@ -5,6 +5,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_env(name: str, default: str) -> tuple[str, ...]:
+    raw = os.getenv(name, default)
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    return tuple(values)
+
 
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")
@@ -22,6 +34,22 @@ class Config:
     SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
 
     CSRF_HEADER_NAME = os.getenv("CSRF_HEADER_NAME", "X-CSRF-Token")
+    CORS_ENABLED = _bool_env("CORS_ENABLED", True)
+    CORS_ALLOW_CREDENTIALS = _bool_env("CORS_ALLOW_CREDENTIALS", True)
+    CORS_ALLOWED_ORIGINS = _csv_env(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:4273,http://127.0.0.1:4273",
+    )
+    CORS_ALLOWED_METHODS = _csv_env(
+        "CORS_ALLOWED_METHODS",
+        "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    )
+    CORS_ALLOWED_HEADERS = _csv_env(
+        "CORS_ALLOWED_HEADERS",
+        "Content-Type,X-CSRF-Token,Authorization",
+    )
+    CORS_EXPOSE_HEADERS = _csv_env("CORS_EXPOSE_HEADERS", "")
+    CORS_MAX_AGE_SECONDS = int(os.getenv("CORS_MAX_AGE_SECONDS", "600"))
 
     CODE_TTL_SECONDS = int(os.getenv("CODE_TTL_SECONDS", "600"))
     CODE_RESEND_COOLDOWN_SECONDS = int(os.getenv("CODE_RESEND_COOLDOWN_SECONDS", "60"))
