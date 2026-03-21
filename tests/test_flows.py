@@ -234,6 +234,35 @@ def test_me_requires_login(client):
     assert response.status_code == 401
 
 
+def test_cors_preflight_allows_csrf_header(client):
+    response = client.options(
+        "/api/user/preferences",
+        headers={
+            "Origin": "http://localhost:4273",
+            "Access-Control-Request-Method": "PATCH",
+            "Access-Control-Request-Headers": "X-CSRF-Token,Content-Type",
+        },
+    )
+    assert response.status_code == 200
+    allow_origin = response.headers.get("Access-Control-Allow-Origin")
+    assert allow_origin == "http://localhost:4273"
+    allow_headers = response.headers.get("Access-Control-Allow-Headers", "")
+    assert "X-CSRF-Token" in allow_headers
+
+
+def test_cors_preflight_rejects_unlisted_origin(client):
+    response = client.options(
+        "/api/user/preferences",
+        headers={
+            "Origin": "http://evil.example",
+            "Access-Control-Request-Method": "PATCH",
+            "Access-Control-Request-Headers": "X-CSRF-Token,Content-Type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers.get("Access-Control-Allow-Origin") is None
+
+
 def test_register_send_code_invalid_email(client):
     response = client.post(
         "/auth/register/send-code",
