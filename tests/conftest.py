@@ -24,6 +24,9 @@ def app(tmp_path):
         "SESSION_TYPE": "filesystem",
         "SESSION_FILE_DIR": str(session_dir),
         "SECRET_KEY": "test-secret",
+        "CORS_ENABLED": True,
+        "CORS_ALLOWED_ORIGINS": ("http://localhost:4273",),
+        "CORS_ALLOW_CREDENTIALS": True,
     }
     app = create_app(config)
     return app
