@@ -26,6 +26,11 @@ def _float_env(name: str, default: float) -> float:
     return float(raw)
 
 
+def _default_dev_origins_from_port(port: str) -> str:
+    clean_port = port.strip() or "5173"
+    return f"http://127.0.0.1:{clean_port},http://localhost:{clean_port}"
+
+
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")
     DATABASE_URL = os.getenv("DATABASE_URL", "mysql+pymysql://root:123456@127.0.0.1:3306/app")
@@ -44,9 +49,10 @@ class Config:
     CSRF_HEADER_NAME = os.getenv("CSRF_HEADER_NAME", "X-CSRF-Token")
     CORS_ENABLED = _bool_env("CORS_ENABLED", True)
     CORS_ALLOW_CREDENTIALS = _bool_env("CORS_ALLOW_CREDENTIALS", True)
+    FRONTEND_DEV_PORT = os.getenv("FRONTEND_DEV_PORT", "5173")
     CORS_ALLOWED_ORIGINS = _csv_env(
         "CORS_ALLOWED_ORIGINS",
-        "http://localhost:4273,http://127.0.0.1:4273",
+        _default_dev_origins_from_port(FRONTEND_DEV_PORT),
     )
     CORS_ALLOWED_METHODS = _csv_env(
         "CORS_ALLOWED_METHODS",
