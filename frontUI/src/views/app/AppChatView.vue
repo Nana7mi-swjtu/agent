@@ -21,6 +21,13 @@ const {
   activeSession,
   channelName,
   displayTime,
+  ragUploading,
+  uploadPercent,
+  ragStageText,
+  ragError,
+  ragDocuments,
+  loadDocuments,
+  uploadDocument,
   send,
 } = useChatSession();
 
@@ -34,8 +41,18 @@ const sendMessage = async () => {
 onMounted(() => {
   if (!ready.value || !selectedRole.value) {
     router.push("/app");
+    return;
   }
+  loadDocuments();
 });
+
+const onChooseDocument = async (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  await uploadDocument(file);
+  event.target.value = "";
+};
+
 </script>
 
 <template>
@@ -46,6 +63,29 @@ onMounted(() => {
       <span class="toolbar-divider"></span>
       <span class="ch-topic">{{ systemPrompt || "-" }}</span>
       <span class="badge-pill">{{ selectedRoleName || "-" }}</span>
+      <button class="toolbar-upload-btn" :disabled="ragUploading">
+        {{ uiStore.t("ragUploadFile") }}
+        <input type="file" @change="onChooseDocument" />
+      </button>
+    </div>
+
+    <div class="rag-status-row">
+      <span class="rag-status-text">{{ ragStageText || uiStore.t("ragUploadIdle") }}</span>
+      <div class="rag-progress-bar">
+        <div class="rag-progress-fill" :style="{ width: `${uploadPercent}%` }"></div>
+      </div>
+      <button class="panel-icon-btn rag-refresh-btn" :title="uiStore.t('loading')" @click="loadDocuments">↻</button>
+    </div>
+    <div v-if="ragError" class="msg-err rag-inline-err">{{ ragError }}</div>
+    <div class="rag-docs-panel">
+      <div class="rag-docs-title">{{ uiStore.t("ragUploadedFiles") }}</div>
+      <ul class="rag-docs-list">
+        <li v-for="doc in ragDocuments" :key="doc.id" class="rag-doc-item">
+          <span class="rag-doc-name">{{ doc.sourceName || doc.fileName }}</span>
+          <span class="rag-doc-status">{{ doc.status }}</span>
+        </li>
+        <li v-if="!ragDocuments.length" class="rag-doc-empty">{{ uiStore.t("ragNoFiles") }}</li>
+      </ul>
     </div>
 
     <div class="dc-feed">

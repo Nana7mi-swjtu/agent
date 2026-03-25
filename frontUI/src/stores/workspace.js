@@ -6,11 +6,13 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   const roles = ref([]);
   const selectedRole = ref("");
   const systemPrompt = ref("");
+  const workspaceId = ref("default");
 
   const applyContext = (data = {}) => {
     roles.value = Array.isArray(data.roles) ? data.roles : [];
     selectedRole.value = data.selectedRole || "";
     systemPrompt.value = data.systemPrompt || "";
+    workspaceId.value = String(data.workspaceId || "default");
     ready.value = true;
   };
 
@@ -27,6 +29,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     roles.value = [];
     selectedRole.value = "";
     systemPrompt.value = "";
+    workspaceId.value = "default";
   };
 
   return {
@@ -34,6 +37,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     roles,
     selectedRole,
     systemPrompt,
+    workspaceId,
     applyContext,
     setContextReady,
     setActiveSession,

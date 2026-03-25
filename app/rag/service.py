@@ -102,7 +102,10 @@ def upload_document(*, user_id: int, workspace_id: str, file_storage):
         }
 
     if bool(current_app.config.get("RAG_AUTO_INDEX_ON_UPLOAD", True)):
-        enqueue_index_job(user_id=user_id, workspace_id=workspace, document_id=payload["id"])
+        job_payload = enqueue_index_job(user_id=user_id, workspace_id=workspace, document_id=payload["id"])
+        payload["jobId"] = job_payload["jobId"]
+        payload["jobStatus"] = job_payload["status"]
+        payload["status"] = "indexing"
     return payload
 
 
