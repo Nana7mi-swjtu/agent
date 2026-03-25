@@ -20,6 +20,7 @@ def app(tmp_path):
     config = {
         "DATABASE_URL": test_db_url,
         "AUTO_CREATE_DB": True,
+        "TESTING": True,
         "EMAIL_BACKEND": "memory",
         "SESSION_TYPE": "filesystem",
         "SESSION_FILE_DIR": str(session_dir),
@@ -42,6 +43,10 @@ def db_session(app):
     with app.app_context():
         session = get_session()
         try:
+            session.execute(text("DELETE FROM rag_query_logs"))
+            session.execute(text("DELETE FROM rag_index_jobs"))
+            session.execute(text("DELETE FROM rag_chunks"))
+            session.execute(text("DELETE FROM rag_documents"))
             session.execute(text("DELETE FROM email_codes"))
             session.execute(text("DELETE FROM users"))
             session.commit()

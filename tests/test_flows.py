@@ -234,7 +234,10 @@ def test_workspace_chat_requires_role(client, db_session, monkeypatch):
     response = client.patch("/api/workspace/context", json={"role": "regulator"}, headers=headers)
     assert response.status_code == 200
 
-    monkeypatch.setattr("app.workspace.routes.generate_reply", lambda **kwargs: "agent generated response")
+    monkeypatch.setattr(
+        "app.workspace.routes.generate_reply_payload",
+        lambda **kwargs: {"reply": "agent generated response", "citations": [], "noEvidence": False},
+    )
     response = client.post("/api/workspace/chat", json={"message": "请分析风险"}, headers=headers)
     assert response.status_code == 200
     payload = response.get_json()
@@ -275,6 +278,7 @@ def test_workspace_chat_with_configured_agent_provider(client, app, db_session, 
     assert payload["data"]["role"] == "investor"
     assert "systemPrompt" in payload["data"]
     assert payload["data"]["reply"] == "agent provider reply"
+    assert "citations" in payload["data"]
 
 
 def test_workspace_chat_allows_non_openai_provider_config(client, app, db_session, monkeypatch):
@@ -322,7 +326,7 @@ def test_workspace_chat_returns_502_when_agent_fails(client, db_session, monkeyp
     def _raise_agent_error(**kwargs):
         raise AgentServiceError("runtime failed")
 
-    monkeypatch.setattr("app.workspace.routes.generate_reply", _raise_agent_error)
+    monkeypatch.setattr("app.workspace.routes.generate_reply_payload", _raise_agent_error)
     response = client.post("/api/workspace/chat", json={"message": "hello"}, headers=headers)
     assert response.status_code == 502
     payload = response.get_json()
