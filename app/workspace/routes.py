@@ -5,7 +5,7 @@ import logging
 from flask import Blueprint, request, session
 from sqlalchemy import select
 
-from ..agent.services import AgentServiceError, generate_reply
+from ..agent.services import AgentServiceError, generate_reply_payload
 from ..db import session_scope
 from ..models import User
 
@@ -61,6 +61,14 @@ def _extract_workspace(data: dict | None) -> dict:
     return {}
 
 
+def _workspace_id(data: dict | None) -> str:
+    workspace = _extract_workspace(data)
+    workspace_id = workspace.get("id")
+    if isinstance(workspace_id, str) and workspace_id.strip():
+        return workspace_id.strip()
+    return "default"
+
+
 def _selected_role(data: dict | None) -> str | None:
     role = _extract_workspace(data).get("role")
     if isinstance(role, str) and role in ROLE_PRESETS:
@@ -73,6 +81,8 @@ def _upsert_role_preferences(user: User, role: str) -> dict:
     preferences = dict(current_preferences)
     workspace_raw = preferences.get("workspace")
     workspace = dict(workspace_raw) if isinstance(workspace_raw, dict) else {}
+    if not isinstance(workspace.get("id"), str) or not str(workspace.get("id")).strip():
+        workspace["id"] = f"user-{user.id}"
     workspace["role"] = role
     preferences["workspace"] = workspace
     user.preferences = preferences
@@ -81,7 +91,10 @@ def _upsert_role_preferences(user: User, role: str) -> dict:
 
 def _workspace_payload(preferences: dict | None) -> dict:
     selected = _selected_role(preferences)
+    workspace = _extract_workspace(preferences)
+    workspace_id = workspace.get("id") if isinstance(workspace.get("id"), str) else "default"
     return {
+        "workspaceId": workspace_id,
         "selectedRole": selected,
         "roles": [
             {
@@ -158,10 +171,12 @@ def workspace_chat():
 
         preset = ROLE_PRESETS[role]
         try:
-            reply = generate_reply(
+            result = generate_reply_payload(
                 role=role,
                 system_prompt=preset["systemPrompt"],
                 user_message=message,
+                user_id=user_id,
+                workspace_id=_workspace_id(user.preferences),
             )
         except AgentServiceError:
             logger.exception("Agent runtime failed for workspace chat")
@@ -172,6 +187,8 @@ def workspace_chat():
             "data": {
                 "role": role,
                 "systemPrompt": preset["systemPrompt"],
-                "reply": reply,
+                "reply": result["reply"],
+                "citations": result["citations"],
+                "noEvidence": result["noEvidence"],
             },
         }
