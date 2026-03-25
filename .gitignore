@@ -37,3 +37,7 @@ openspec
 .github
 # Project specific
 需求文档.md
+
+# Operation of Build
+uploads/chromadb
+uploads/rag
