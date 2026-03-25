@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def _bool_env(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -16,6 +17,13 @@ def _csv_env(name: str, default: str) -> tuple[str, ...]:
     raw = os.getenv(name, default)
     values = [item.strip() for item in raw.split(",") if item.strip()]
     return tuple(values)
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return float(raw)
 
 
 class Config:
@@ -80,5 +88,23 @@ class Config:
     AI_API_KEY = os.getenv("AI_API_KEY", "")
     AI_BASE_URL = os.getenv("AI_BASE_URL", "")
     AI_TIMEOUT_SECONDS = int(os.getenv("AI_TIMEOUT_SECONDS", "30"))
+
+    RAG_ENABLED = _bool_env("RAG_ENABLED", False)
+    RAG_VECTOR_PROVIDER = os.getenv("RAG_VECTOR_PROVIDER", "chromadb").strip().lower()
+    RAG_EMBEDDER_PROVIDER = os.getenv("RAG_EMBEDDER_PROVIDER", "deterministic").strip().lower()
+    RAG_RERANKER_PROVIDER = os.getenv("RAG_RERANKER_PROVIDER", "").strip().lower()
+    RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "deterministic-v1")
+    RAG_EMBEDDING_VERSION = os.getenv("RAG_EMBEDDING_VERSION", "1")
+    RAG_EMBEDDING_DIMENSION = int(os.getenv("RAG_EMBEDDING_DIMENSION", "128"))
+    RAG_RETRIEVAL_TOP_K = int(os.getenv("RAG_RETRIEVAL_TOP_K", "5"))
+    RAG_RETRIEVAL_SCORE_THRESHOLD = _float_env("RAG_RETRIEVAL_SCORE_THRESHOLD", 0.0)
+    RAG_ALLOWED_FILE_TYPES = _csv_env("RAG_ALLOWED_FILE_TYPES", "pdf,docx,md,txt,html,csv")
+    RAG_UPLOAD_DIR = os.getenv("RAG_UPLOAD_DIR", "uploads/rag")
+    RAG_AUTO_INDEX_ON_UPLOAD = _bool_env("RAG_AUTO_INDEX_ON_UPLOAD", True)
+    RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1200"))
+    RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "150"))
+    RAG_INDEX_MAX_WORKERS = int(os.getenv("RAG_INDEX_MAX_WORKERS", "2"))
+    RAG_CHROMADB_PERSIST_DIR = os.getenv("RAG_CHROMADB_PERSIST_DIR", "uploads/chromadb")
+    RAG_CHROMADB_COLLECTION_PREFIX = os.getenv("RAG_CHROMADB_COLLECTION_PREFIX", "rag")
 
     AUTO_CREATE_DB = os.getenv("AUTO_CREATE_DB", "true").lower() == "true"
