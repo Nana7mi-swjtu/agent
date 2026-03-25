@@ -4,6 +4,8 @@ import { computed, ref, watch } from "vue";
 import { CHAT_SESSIONS_KEY } from "@/constants/storage";
 import { safeJsonParse } from "@/utils/json";
 
+const buildConversationId = () => `c_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
 const normalizeMessage = (raw) => ({
   from: raw?.from === "agent" ? "agent" : "user",
   text: String(raw?.text || ""),
@@ -12,6 +14,8 @@ const normalizeMessage = (raw) => ({
 
 const normalizeSession = (raw) => ({
   id: String(raw?.id || `s_${Date.now()}`),
+  conversationId: String(raw?.conversationId || raw?.id || buildConversationId()),
+  workspaceId: String(raw?.workspaceId || "default"),
   role: typeof raw?.role === "string" ? raw.role : "",
   title: String(raw?.title || "新对话"),
   messages: Array.isArray(raw?.messages) ? raw.messages.map(normalizeMessage) : [],
@@ -38,11 +42,13 @@ export const useChatStore = defineStore("chat", () => {
     activeSessionId.value = sessionId;
   };
 
-  const createSession = (role, roleNameResolver) => {
+  const createSession = (role, roleNameResolver, workspaceId = "default") => {
     const id = `s_${Date.now()}`;
     const roleTitle = role ? roleNameResolver(role) : "新对话";
     const record = normalizeSession({
       id,
+      conversationId: buildConversationId(),
+      workspaceId: String(workspaceId || "default"),
       role,
       title: role ? `${roleTitle} 对话` : "新对话",
       messages: [],
@@ -53,15 +59,41 @@ export const useChatStore = defineStore("chat", () => {
     return record;
   };
 
-  const ensureSession = (role, roleNameResolver) => {
+  const ensureSession = (role, roleNameResolver, workspaceId = "default") => {
     if (activeSession.value) return activeSession.value;
-    return createSession(role, roleNameResolver);
+    return createSession(role, roleNameResolver, workspaceId);
   };
 
   const appendMessage = (message) => {
     if (!activeSession.value) return;
     activeSession.value.messages.push(normalizeMessage(message));
     activeSession.value.updatedAt = new Date().toISOString();
+  };
+
+  const setSessionScope = ({ workspaceId, role }) => {
+    if (!activeSession.value) return;
+    if (workspaceId) {
+      activeSession.value.workspaceId = String(workspaceId);
+    }
+    if (typeof role === "string") {
+      activeSession.value.role = role;
+    }
+    if (!activeSession.value.conversationId) {
+      activeSession.value.conversationId = buildConversationId();
+    }
+    activeSession.value.updatedAt = new Date().toISOString();
+  };
+
+  const deleteSession = (sessionId) => {
+    const normalizedId = String(sessionId || "");
+    const index = sessions.value.findIndex((session) => session.id === normalizedId);
+    if (index < 0) return false;
+    sessions.value.splice(index, 1);
+
+    if (activeSessionId.value === normalizedId) {
+      activeSessionId.value = sessions.value[0]?.id || "";
+    }
+    return true;
   };
 
   const setSending = (value) => {
@@ -103,6 +135,8 @@ export const useChatStore = defineStore("chat", () => {
     createSession,
     ensureSession,
     appendMessage,
+    setSessionScope,
+    deleteSession,
     setSending,
     setError,
     clearState,

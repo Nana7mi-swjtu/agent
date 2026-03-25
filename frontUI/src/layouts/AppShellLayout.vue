@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { storeToRefs } from "pinia";
 
@@ -17,9 +17,16 @@ const uiStore = useUiStore();
 const workspaceStore = useWorkspaceStore();
 
 const { sessions, activeSessionId } = storeToRefs(chatStore);
-const { roles, selectedRole } = storeToRefs(workspaceStore);
+const { roles, selectedRole, workspaceId } = storeToRefs(workspaceStore);
 
 const workspaceGifUrl = computed(() => uiStore.authBgGifUrl);
+const displayName = computed(() => authStore.user?.nickname || authStore.user?.email || "User");
+const userAvatarUrl = computed(() => authStore.user?.avatarUrl || "");
+const userFallbackLetter = computed(() => {
+  const source = displayName.value.trim();
+  return source ? source.charAt(0).toUpperCase() : "U";
+});
+const activeSessionCount = computed(() => sessions.value.length);
 
 const setActiveSession = (id) => {
   chatStore.setActiveSession(id);
@@ -29,7 +36,7 @@ const setActiveSession = (id) => {
 };
 
 const newChat = () => {
-  chatStore.createSession(selectedRole.value, uiStore.getRoleDisplayName);
+  chatStore.createSession(selectedRole.value, uiStore.getRoleDisplayName, workspaceId.value);
   router.push("/chat");
 };
 
@@ -37,9 +44,14 @@ const quickSwitchRole = async (roleKey) => {
   const result = await patchWorkspaceContext(roleKey);
   if (!result.ok) return;
   workspaceStore.applyContext(result.data?.data || {});
-  if (router.currentRoute.value.path !== "/app") {
-    router.push("/app");
+  chatStore.createSession(roleKey, uiStore.getRoleDisplayName, workspaceId.value);
+  if (router.currentRoute.value.path !== "/chat") {
+    router.push("/chat");
   }
+};
+
+const removeSession = (sessionId) => {
+  chatStore.deleteSession(sessionId);
 };
 
 const goHome = () => router.push("/app");
@@ -48,6 +60,10 @@ const onLogout = async () => {
   await authStore.logout();
   router.push("/login");
 };
+
+onMounted(async () => {
+  await authStore.refreshUserProfile();
+});
 </script>
 
 <template>
@@ -92,6 +108,13 @@ const onLogout = async () => {
         >
           <span class="channel-hash" style="font-size: 13px">🕐</span>
           <span class="channel-row-name">{{ s.title }}</span>
+          <button
+            class="session-delete-btn"
+            :title="uiStore.t('deleteChat')"
+            @click.stop="removeSession(s.id)"
+          >
+            ×
+          </button>
         </div>
 
         <div class="channel-row" style="color: var(--accent); margin-top: 8px" @click="newChat">
@@ -107,11 +130,13 @@ const onLogout = async () => {
 
       <div class="sidebar-user-panel">
         <div class="user-avatar" @click="goProfile">
-          A<div class="status-dot"></div>
+          <img v-if="userAvatarUrl" :src="userAvatarUrl" alt="avatar" />
+          <span v-else>{{ userFallbackLetter }}</span>
+          <div class="status-dot"></div>
         </div>
         <div class="user-name-block">
-          <strong>{{ authStore.user?.email || "User" }}</strong>
-          <small>在线</small>
+          <strong>{{ displayName }}</strong>
+          <small>{{ workspaceId }} · {{ activeSessionCount }} {{ uiStore.t("chatHistory") }}</small>
         </div>
         <button class="panel-icon-btn" title="设置" @click="goProfile">⚙</button>
         <button class="panel-icon-btn" title="退出" @click="onLogout">⏻</button>

@@ -8,8 +8,12 @@ export const patchWorkspaceContext = (role) =>
     body: { role },
   });
 
-export const postWorkspaceChat = (message) =>
+export const postWorkspaceChat = (message, workspaceId, conversationId) =>
   apiRequest("/api/workspace/chat", {
     method: "POST",
-    body: { message },
+    body: {
+      message,
+      workspaceId: workspaceId || "default",
+      conversationId: conversationId || "",
+    },
   });
