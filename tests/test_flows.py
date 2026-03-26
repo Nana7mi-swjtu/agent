@@ -1,6 +1,9 @@
+import pytest
 from sqlalchemy import select
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from app.agent import services as agent_services
+from app.agent.services import AgentServiceError
 from app.models import User
 
 
@@ -9,6 +12,13 @@ def _auth_headers(client, user_id: int) -> dict[str, str]:
         sess["user_id"] = user_id
         sess["csrf_token"] = "test-csrf-token"
     return {"X-CSRF-Token": "test-csrf-token"}
+
+
+@pytest.fixture(autouse=True)
+def _reset_agent_runtime():
+    agent_services.reset_runtime_for_tests()
+    yield
+    agent_services.reset_runtime_for_tests()
 
 
 def test_registration_flow(client, app, db_session):
@@ -211,7 +221,7 @@ def test_workspace_role_selection_and_context(client, db_session):
     assert "投资者决策助手" in payload["data"]["systemPrompt"]
 
 
-def test_workspace_chat_requires_role(client, db_session):
+def test_workspace_chat_requires_role(client, db_session, monkeypatch):
     user = User(email="chat@example.com", nickname="Chat", password_hash=generate_password_hash("password123"))
     db_session.add(user)
     db_session.commit()
@@ -224,11 +234,129 @@ def test_workspace_chat_requires_role(client, db_session):
     response = client.patch("/api/workspace/context", json={"role": "regulator"}, headers=headers)
     assert response.status_code == 200
 
+    monkeypatch.setattr("app.workspace.routes.generate_reply", lambda **kwargs: "agent generated response")
     response = client.post("/api/workspace/chat", json={"message": "请分析风险"}, headers=headers)
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["data"]["role"] == "regulator"
-    assert "已收到你的问题" in payload["data"]["reply"]
+    assert payload["data"]["reply"] == "agent generated response"
+
+
+def test_workspace_chat_with_configured_agent_provider(client, app, db_session, monkeypatch):
+    class _FakeChatOpenAI:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def invoke(self, messages):
+            class _Response:
+                content = "agent provider reply"
+
+            return _Response()
+
+    user = User(email="chat-provider@example.com", nickname="ChatProvider", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    app.config["AI_PROVIDER"] = "openai"
+    app.config["AI_MODEL"] = "test-model"
+    app.config["AI_API_KEY"] = "test-key"
+    app.config["AI_TIMEOUT_SECONDS"] = 10
+    app.config["AI_BASE_URL"] = ""
+    monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    response = client.post("/api/workspace/chat", json={"message": "hello"}, headers=headers)
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["data"]["role"] == "investor"
+    assert "systemPrompt" in payload["data"]
+    assert payload["data"]["reply"] == "agent provider reply"
+
+
+def test_workspace_chat_allows_non_openai_provider_config(client, app, db_session, monkeypatch):
+    class _FakeChatOpenAI:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def invoke(self, messages):
+            class _Response:
+                content = "agent provider agnostic reply"
+
+            return _Response()
+
+    user = User(email="chat-provider-agnostic@example.com", nickname="ChatProviderAgnostic", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    app.config["AI_PROVIDER"] = "qwen-compatible"
+    app.config["AI_MODEL"] = "test-model"
+    app.config["AI_API_KEY"] = "test-key"
+    app.config["AI_TIMEOUT_SECONDS"] = 10
+    app.config["AI_BASE_URL"] = ""
+    monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    response = client.post("/api/workspace/chat", json={"message": "hello"}, headers=headers)
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["data"]["reply"] == "agent provider agnostic reply"
+
+
+def test_workspace_chat_returns_502_when_agent_fails(client, db_session, monkeypatch):
+    user = User(email="chat3@example.com", nickname="Chat3", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    def _raise_agent_error(**kwargs):
+        raise AgentServiceError("runtime failed")
+
+    monkeypatch.setattr("app.workspace.routes.generate_reply", _raise_agent_error)
+    response = client.post("/api/workspace/chat", json={"message": "hello"}, headers=headers)
+    assert response.status_code == 502
+    payload = response.get_json()
+    assert payload["ok"] is False
+    assert payload["error"] == "agent service unavailable"
+
+
+def test_workspace_chat_returns_502_when_agent_config_missing(client, app, db_session):
+    user = User(email="chat4@example.com", nickname="Chat4", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+    app.config["AI_PROVIDER"] = "openai"
+    app.config["AI_MODEL"] = ""
+    app.config["AI_API_KEY"] = ""
+    app.config["AI_TIMEOUT_SECONDS"] = 10
+    app.config["AI_BASE_URL"] = ""
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    response = client.post("/api/workspace/chat", json={"message": "hello"}, headers=headers)
+    assert response.status_code == 502
+    payload = response.get_json()
+    assert payload["ok"] is False
+    assert payload["error"] == "agent service unavailable"
+
+
+def test_non_chat_endpoint_still_available_without_agent_config(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.get_json()["ok"] is True
+
+
 def test_me_requires_login(client):
     response = client.get("/auth/me")
     assert response.status_code == 401
@@ -355,3 +483,23 @@ def test_workspace_chat_requires_non_empty_message(client, db_session):
 
     response = client.post("/api/workspace/chat", json={"message": "   "}, headers=headers)
     assert response.status_code == 400
+
+
+def test_workspace_role_selection_persists_in_db(client, db_session):
+    user = User(email="role-persist@example.com", nickname="RolePersist", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "enterprise_manager"}, headers=headers)
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["data"]["selectedRole"] == "enterprise_manager"
+
+    db_session.expire_all()
+    refreshed = db_session.execute(select(User).where(User.id == user.id)).scalar_one()
+    assert isinstance(refreshed.preferences, dict)
+    workspace = refreshed.preferences.get("workspace")
+    assert isinstance(workspace, dict)
+    assert workspace.get("role") == "enterprise_manager"

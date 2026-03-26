@@ -75,4 +75,10 @@ class Config:
     SMTP_FROM = os.getenv("SMTP_FROM", "no-reply@example.com")
     SMTP_SECURITY = os.getenv("SMTP_SECURITY", "starttls").lower()  # ssl | starttls | none
 
+    AI_PROVIDER = os.getenv("AI_PROVIDER", "")
+    AI_MODEL = os.getenv("AI_MODEL", "")
+    AI_API_KEY = os.getenv("AI_API_KEY", "")
+    AI_BASE_URL = os.getenv("AI_BASE_URL", "")
+    AI_TIMEOUT_SECONDS = int(os.getenv("AI_TIMEOUT_SECONDS", "30"))
+
     AUTO_CREATE_DB = os.getenv("AUTO_CREATE_DB", "true").lower() == "true"

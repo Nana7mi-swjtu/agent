@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import logging
+
 from flask import Blueprint, request, session
 from sqlalchemy import select
 
+from ..agent.services import AgentServiceError, generate_reply
 from ..db import session_scope
 from ..models import User
 
 
 workspace_bp = Blueprint("workspace", __name__)
+logger = logging.getLogger(__name__)
 
 ROLE_PRESETS = {
     "investor": {
@@ -65,8 +69,10 @@ def _selected_role(data: dict | None) -> str | None:
 
 
 def _upsert_role_preferences(user: User, role: str) -> dict:
-    preferences = user.preferences if isinstance(user.preferences, dict) else {}
-    workspace = preferences.get("workspace") if isinstance(preferences.get("workspace"), dict) else {}
+    current_preferences = user.preferences if isinstance(user.preferences, dict) else {}
+    preferences = dict(current_preferences)
+    workspace_raw = preferences.get("workspace")
+    workspace = dict(workspace_raw) if isinstance(workspace_raw, dict) else {}
     workspace["role"] = role
     preferences["workspace"] = workspace
     user.preferences = preferences
@@ -151,11 +157,15 @@ def workspace_chat():
             return _json_error("please select a role first", 400)
 
         preset = ROLE_PRESETS[role]
-        # Placeholder response path until external LLM integration is added.
-        reply = (
-            f"[{preset['name']}模式] 已收到你的问题：{message}。"
-            "建议先明确目标、约束和可量化指标，我可以继续帮你拆成分步执行清单。"
-        )
+        try:
+            reply = generate_reply(
+                role=role,
+                system_prompt=preset["systemPrompt"],
+                user_message=message,
+            )
+        except AgentServiceError:
+            logger.exception("Agent runtime failed for workspace chat")
+            return _json_error("agent service unavailable", 502)
 
         return {
             "ok": True,
