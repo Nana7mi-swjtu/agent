@@ -35,7 +35,7 @@ def retrieve_node(state: AgentState):
     tools = get_agent_tools()
     rag_tool = next((item for item in tools if item["name"] == "rag_search"), None)
     if rag_tool is None:
-        return {"rag_chunks": []}
+        return {"rag_chunks": [], "rag_debug": {}}
 
     response = rag_tool["invoke"](
         query=state["user_message"],
@@ -43,16 +43,40 @@ def retrieve_node(state: AgentState):
         filters={},
         user_id=state["user_id"],
         workspace_id=state["workspace_id"],
+        include_debug=bool(state.get("rag_debug_enabled", False)),
     )
     if not response.get("ok", True):
-        return {"rag_chunks": []}
-    return {"rag_chunks": response.get("chunks", [])}
+        return {"rag_chunks": [], "rag_debug": {}}
+    payload = {"rag_chunks": response.get("chunks", [])}
+    if bool(state.get("rag_debug_enabled", False)):
+        payload["rag_debug"] = response.get("debug", {}) if isinstance(response.get("debug"), dict) else {}
+    return payload
 
 
 def rerank_node(state: AgentState):
     chunks = list(state.get("rag_chunks", []))
     chunks.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
-    return {"rag_chunks": chunks[:5]}
+    trimmed = chunks[:5]
+    payload = {"rag_chunks": trimmed}
+    if bool(state.get("rag_debug_enabled", False)):
+        rag_debug = state.get("rag_debug", {})
+        if not isinstance(rag_debug, dict):
+            rag_debug = {}
+        rerank = rag_debug.get("rerank", {})
+        if not isinstance(rerank, dict):
+            rerank = {}
+        if "afterRuntimeSort" not in rerank:
+            rerank["afterRuntimeSort"] = [
+                {
+                    "chunkId": str(item.get("chunk_id", "")),
+                    "score": round(float(item.get("score", 0.0)), 6),
+                    "source": str(item.get("source", "")),
+                }
+                for item in trimmed
+            ]
+        rag_debug["rerank"] = rerank
+        payload["rag_debug"] = rag_debug
+    return payload
 
 
 def answer_with_citations_node(state: AgentState):
@@ -80,7 +104,15 @@ def answer_with_citations_node(state: AgentState):
         hits=hits,
         knowledge_required=(state.get("rag_decision") == "retrieve"),
     )
-    return {"reply": payload.reply, "rag_citations": payload.citations, "rag_no_evidence": payload.no_evidence}
+    result = {"reply": payload.reply, "rag_citations": payload.citations, "rag_no_evidence": payload.no_evidence}
+    if bool(state.get("rag_debug_enabled", False)):
+        rag_debug = state.get("rag_debug", {})
+        if not isinstance(rag_debug, dict):
+            rag_debug = {}
+        rag_debug["citations"] = payload.citations
+        rag_debug["noEvidence"] = bool(payload.no_evidence)
+        result["rag_debug"] = rag_debug
+    return result
 
 
 def chat_agent_node(state: AgentState):

@@ -12,8 +12,10 @@ class AgentState(TypedDict):
     user_id: int
     workspace_id: str
     rag_enabled: bool
+    rag_debug_enabled: bool
     rag_decision: str
     rag_chunks: list[dict]
     rag_citations: list[dict]
     rag_no_evidence: bool
+    rag_debug: dict[str, Any]
     reply: str

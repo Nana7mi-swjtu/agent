@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from flask import Blueprint, request, session
+from flask import Blueprint, current_app, request, session
 from sqlalchemy import select
 
 from ..agent.services import AgentServiceError, generate_reply_payload
@@ -96,6 +96,7 @@ def _workspace_payload(preferences: dict | None) -> dict:
     return {
         "workspaceId": workspace_id,
         "selectedRole": selected,
+        "ragDebugVisualizationEnabled": bool(current_app.config.get("RAG_DEBUG_VISUALIZATION_ENABLED", False)),
         "roles": [
             {
                 "key": key,
@@ -170,6 +171,10 @@ def workspace_chat():
             return _json_error("please select a role first", 400)
 
         preset = ROLE_PRESETS[role]
+        debug_enabled = bool(
+            current_app.config.get("RAG_DEBUG_VISUALIZATION_ENABLED", False)
+            and current_app.config.get("RAG_ENABLED", False)
+        )
         try:
             result = generate_reply_payload(
                 role=role,
@@ -177,6 +182,7 @@ def workspace_chat():
                 user_message=message,
                 user_id=user_id,
                 workspace_id=_workspace_id(user.preferences),
+                rag_debug_enabled=debug_enabled,
             )
         except AgentServiceError:
             logger.exception("Agent runtime failed for workspace chat")
@@ -190,5 +196,6 @@ def workspace_chat():
                 "reply": result["reply"],
                 "citations": result["citations"],
                 "noEvidence": result["noEvidence"],
+                **({"debug": result.get("debug", {})} if debug_enabled else {}),
             },
         }
