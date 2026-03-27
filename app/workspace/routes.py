@@ -160,6 +160,11 @@ def workspace_chat():
     message = str(message).strip()
     if not message:
         return _json_error("message is required", 400)
+    request_workspace_id = ""
+    if isinstance(payload, dict):
+        raw_workspace_id = payload.get("workspaceId")
+        if isinstance(raw_workspace_id, str):
+            request_workspace_id = raw_workspace_id.strip()
 
     with session_scope() as db:
         user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
@@ -181,7 +186,7 @@ def workspace_chat():
                 system_prompt=preset["systemPrompt"],
                 user_message=message,
                 user_id=user_id,
-                workspace_id=_workspace_id(user.preferences),
+                workspace_id=request_workspace_id or _workspace_id(user.preferences),
                 rag_debug_enabled=debug_enabled,
             )
         except AgentServiceError:
