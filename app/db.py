@@ -30,6 +30,7 @@ def init_db(app) -> None:
 
         ModelsBase.metadata.create_all(engine)
         _ensure_profile_columns(engine)
+        _ensure_rag_columns(engine)
 
 
 def _ensure_profile_columns(engine) -> None:
@@ -57,6 +58,79 @@ def _ensure_profile_columns(engine) -> None:
 
     with engine.begin() as conn:
         conn.execute(text(f"ALTER TABLE users {', '.join(alter_sql)}"))
+
+
+def _ensure_rag_columns(engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    with engine.begin() as conn:
+        if "rag_documents" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("rag_documents")}
+            alter_sql: list[str] = []
+            if "chunk_strategy" not in columns:
+                alter_sql.append("ADD COLUMN chunk_strategy VARCHAR(32) NULL AFTER embedding_dimension")
+            if "chunk_provider" not in columns:
+                alter_sql.append("ADD COLUMN chunk_provider VARCHAR(64) NULL AFTER chunk_strategy")
+            if "chunk_model" not in columns:
+                alter_sql.append("ADD COLUMN chunk_model VARCHAR(128) NULL AFTER chunk_provider")
+            if "chunk_version" not in columns:
+                alter_sql.append("ADD COLUMN chunk_version VARCHAR(32) NULL AFTER chunk_model")
+            if "chunk_fallback_used" not in columns:
+                alter_sql.append("ADD COLUMN chunk_fallback_used INT NOT NULL DEFAULT 0 AFTER chunk_version")
+            if "chunk_fallback_reason" not in columns:
+                alter_sql.append("ADD COLUMN chunk_fallback_reason VARCHAR(1024) NULL AFTER chunk_fallback_used")
+            if alter_sql:
+                conn.execute(text(f"ALTER TABLE rag_documents {', '.join(alter_sql)}"))
+
+        if "rag_chunks" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("rag_chunks")}
+            alter_sql = []
+            if "topic" not in columns:
+                alter_sql.append("ADD COLUMN topic VARCHAR(255) NULL AFTER section")
+            if "summary" not in columns:
+                alter_sql.append("ADD COLUMN summary LONGTEXT NULL AFTER topic")
+            if "token_count" not in columns:
+                alter_sql.append("ADD COLUMN token_count INT NULL AFTER summary")
+            if "start_offset" not in columns:
+                alter_sql.append("ADD COLUMN start_offset INT NULL AFTER token_count")
+            if "end_offset" not in columns:
+                alter_sql.append("ADD COLUMN end_offset INT NULL AFTER start_offset")
+            if "strategy_version" not in columns:
+                alter_sql.append("ADD COLUMN strategy_version VARCHAR(32) NULL AFTER end_offset")
+            if alter_sql:
+                conn.execute(text(f"ALTER TABLE rag_chunks {', '.join(alter_sql)}"))
+
+        if "rag_index_jobs" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("rag_index_jobs")}
+            alter_sql = []
+            if "requested_chunk_strategy" not in columns:
+                alter_sql.append("ADD COLUMN requested_chunk_strategy VARCHAR(32) NULL AFTER chunks_count")
+            if "applied_chunk_strategy" not in columns:
+                alter_sql.append("ADD COLUMN applied_chunk_strategy VARCHAR(32) NULL AFTER requested_chunk_strategy")
+            if "chunk_provider" not in columns:
+                alter_sql.append("ADD COLUMN chunk_provider VARCHAR(64) NULL AFTER applied_chunk_strategy")
+            if "chunk_model" not in columns:
+                alter_sql.append("ADD COLUMN chunk_model VARCHAR(128) NULL AFTER chunk_provider")
+            if "chunk_version" not in columns:
+                alter_sql.append("ADD COLUMN chunk_version VARCHAR(32) NULL AFTER chunk_model")
+            if "chunk_fallback_used" not in columns:
+                alter_sql.append("ADD COLUMN chunk_fallback_used INT NOT NULL DEFAULT 0 AFTER chunk_version")
+            if "chunk_fallback_reason" not in columns:
+                alter_sql.append("ADD COLUMN chunk_fallback_reason VARCHAR(1024) NULL AFTER chunk_fallback_used")
+            if alter_sql:
+                conn.execute(text(f"ALTER TABLE rag_index_jobs {', '.join(alter_sql)}"))
+
+        if "rag_query_logs" in table_names:
+            columns = {col["name"] for col in inspector.get_columns("rag_query_logs")}
+            alter_sql = []
+            if "chunk_strategy" not in columns:
+                alter_sql.append("ADD COLUMN chunk_strategy VARCHAR(32) NULL AFTER embedding_dimension")
+            if "chunk_provider" not in columns:
+                alter_sql.append("ADD COLUMN chunk_provider VARCHAR(64) NULL AFTER chunk_strategy")
+            if "chunk_model" not in columns:
+                alter_sql.append("ADD COLUMN chunk_model VARCHAR(128) NULL AFTER chunk_provider")
+            if alter_sql:
+                conn.execute(text(f"ALTER TABLE rag_query_logs {', '.join(alter_sql)}"))
 
 
 def get_session():

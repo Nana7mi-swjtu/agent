@@ -21,6 +21,7 @@ def create_document(
     file_extension: str,
     mime_type: str,
     storage_path: str,
+    chunk_strategy: str | None = None,
 ) -> RagDocument:
     doc = RagDocument(
         user_id=user_id,
@@ -31,6 +32,7 @@ def create_document(
         mime_type=mime_type,
         storage_path=storage_path,
         status="uploaded",
+        chunk_strategy=chunk_strategy,
     )
     db.add(doc)
     db.flush()
@@ -65,7 +67,12 @@ def set_document_status(
         document.deleted_at = datetime.utcnow()
 
 
-def create_index_job(*, db, document: RagDocument) -> RagIndexJob:
+def create_index_job(
+    *,
+    db,
+    document: RagDocument,
+    requested_chunk_strategy: str | None = None,
+) -> RagIndexJob:
     if document.status == "deleted":
         raise RAGValidationError("cannot index deleted document")
     job = RagIndexJob(
@@ -73,6 +80,7 @@ def create_index_job(*, db, document: RagDocument) -> RagIndexJob:
         user_id=document.user_id,
         workspace_id=document.workspace_id,
         status="pending",
+        requested_chunk_strategy=requested_chunk_strategy,
     )
     db.add(job)
     db.flush()
@@ -95,6 +103,12 @@ def set_index_job_status(
     error_stage: str | None = None,
     error_message: str | None = None,
     chunks_count: int | None = None,
+    applied_chunk_strategy: str | None = None,
+    chunk_provider: str | None = None,
+    chunk_model: str | None = None,
+    chunk_version: str | None = None,
+    chunk_fallback_used: bool | None = None,
+    chunk_fallback_reason: str | None = None,
 ) -> None:
     if status not in ALLOWED_INDEX_JOB_STATUSES:
         raise RAGValidationError("invalid index job status")
@@ -112,6 +126,18 @@ def set_index_job_status(
     job.error_message = error_message
     if chunks_count is not None:
         job.chunks_count = max(0, chunks_count)
+    if applied_chunk_strategy is not None:
+        job.applied_chunk_strategy = applied_chunk_strategy
+    if chunk_provider is not None:
+        job.chunk_provider = chunk_provider
+    if chunk_model is not None:
+        job.chunk_model = chunk_model
+    if chunk_version is not None:
+        job.chunk_version = chunk_version
+    if chunk_fallback_used is not None:
+        job.chunk_fallback_used = 1 if chunk_fallback_used else 0
+    if chunk_fallback_reason is not None:
+        job.chunk_fallback_reason = chunk_fallback_reason
 
 
 def replace_document_chunks(*, db, document: RagDocument, chunks: list[RagChunk]) -> None:
@@ -141,6 +167,14 @@ def create_chunk_entities(
                 source=str(metadata.get("source", document.source_name)),
                 page=int(metadata["page"]) if isinstance(metadata.get("page"), int) else None,
                 section=str(metadata["section"]) if isinstance(metadata.get("section"), str) else None,
+                topic=str(metadata["topic"]) if isinstance(metadata.get("topic"), str) else None,
+                summary=str(metadata["summary"]) if isinstance(metadata.get("summary"), str) else None,
+                token_count=int(metadata["token_count"]) if isinstance(metadata.get("token_count"), int) else None,
+                start_offset=int(metadata["offset_start"]) if isinstance(metadata.get("offset_start"), int) else None,
+                end_offset=int(metadata["offset_end"]) if isinstance(metadata.get("offset_end"), int) else None,
+                strategy_version=(
+                    str(metadata["chunk_version"]) if isinstance(metadata.get("chunk_version"), str) else None
+                ),
                 metadata_json=metadata,
                 embedding_model=embedding_model,
                 embedding_version=embedding_version,
@@ -166,6 +200,9 @@ def create_query_log(
     embedding_model: str,
     embedding_version: str,
     embedding_dimension: int,
+    chunk_strategy: str | None = None,
+    chunk_provider: str | None = None,
+    chunk_model: str | None = None,
     failure_reason: str | None = None,
 ) -> None:
     db.add(
@@ -183,6 +220,9 @@ def create_query_log(
             embedding_model=embedding_model,
             embedding_version=embedding_version,
             embedding_dimension=embedding_dimension,
+            chunk_strategy=chunk_strategy,
+            chunk_provider=chunk_provider,
+            chunk_model=chunk_model,
             failure_reason=failure_reason,
         )
     )
