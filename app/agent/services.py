@@ -78,7 +78,15 @@ def reset_runtime_for_tests() -> None:
         _runtime = None
 
 
-def generate_reply(*, role: str, system_prompt: str, user_message: str) -> str:
+def generate_reply_payload(
+    *,
+    role: str,
+    system_prompt: str,
+    user_message: str,
+    user_id: int = 0,
+    workspace_id: str = "default",
+    rag_debug_enabled: bool = False,
+) -> dict[str, Any]:
     try:
         runtime = _get_runtime()
         state = {
@@ -87,10 +95,26 @@ def generate_reply(*, role: str, system_prompt: str, user_message: str) -> str:
             "role": role,
             "system_prompt": system_prompt,
             "user_message": user_message,
+            "user_id": user_id,
+            "workspace_id": workspace_id,
+            "rag_enabled": bool(current_app.config.get("RAG_ENABLED", False)),
+            "rag_debug_enabled": bool(rag_debug_enabled),
+            "rag_decision": "skip",
+            "rag_chunks": [],
+            "rag_citations": [],
+            "rag_no_evidence": False,
+            "rag_debug": {},
             "reply": "",
         }
         output = runtime["graph"].invoke(state)
         reply = str(output.get("reply", "")).strip()
+        citations = output.get("rag_citations", [])
+        if not isinstance(citations, list):
+            citations = []
+        no_evidence = bool(output.get("rag_no_evidence", False))
+        debug_payload = output.get("rag_debug", {})
+        if not isinstance(debug_payload, dict):
+            debug_payload = {}
     except AgentServiceError:
         raise
     except Exception as exc:
@@ -99,4 +123,9 @@ def generate_reply(*, role: str, system_prompt: str, user_message: str) -> str:
 
     if not reply:
         raise AgentServiceError("empty agent reply")
-    return reply
+    return {"reply": reply, "citations": citations, "noEvidence": no_evidence, "debug": debug_payload}
+
+
+def generate_reply(*, role: str, system_prompt: str, user_message: str) -> str:
+    payload = generate_reply_payload(role=role, system_prompt=system_prompt, user_message=user_message)
+    return payload["reply"]

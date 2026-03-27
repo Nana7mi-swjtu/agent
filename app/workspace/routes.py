@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 
-from flask import Blueprint, request, session
+from flask import Blueprint, current_app, request, session
 from sqlalchemy import select
 
-from ..agent.services import AgentServiceError, generate_reply
+from ..agent.services import AgentServiceError, generate_reply_payload
 from ..db import session_scope
 from ..models import User
 
@@ -61,6 +61,14 @@ def _extract_workspace(data: dict | None) -> dict:
     return {}
 
 
+def _workspace_id(data: dict | None) -> str:
+    workspace = _extract_workspace(data)
+    workspace_id = workspace.get("id")
+    if isinstance(workspace_id, str) and workspace_id.strip():
+        return workspace_id.strip()
+    return "default"
+
+
 def _selected_role(data: dict | None) -> str | None:
     role = _extract_workspace(data).get("role")
     if isinstance(role, str) and role in ROLE_PRESETS:
@@ -73,6 +81,8 @@ def _upsert_role_preferences(user: User, role: str) -> dict:
     preferences = dict(current_preferences)
     workspace_raw = preferences.get("workspace")
     workspace = dict(workspace_raw) if isinstance(workspace_raw, dict) else {}
+    if not isinstance(workspace.get("id"), str) or not str(workspace.get("id")).strip():
+        workspace["id"] = f"user-{user.id}"
     workspace["role"] = role
     preferences["workspace"] = workspace
     user.preferences = preferences
@@ -81,8 +91,12 @@ def _upsert_role_preferences(user: User, role: str) -> dict:
 
 def _workspace_payload(preferences: dict | None) -> dict:
     selected = _selected_role(preferences)
+    workspace = _extract_workspace(preferences)
+    workspace_id = workspace.get("id") if isinstance(workspace.get("id"), str) else "default"
     return {
+        "workspaceId": workspace_id,
         "selectedRole": selected,
+        "ragDebugVisualizationEnabled": bool(current_app.config.get("RAG_DEBUG_VISUALIZATION_ENABLED", False)),
         "roles": [
             {
                 "key": key,
@@ -146,6 +160,11 @@ def workspace_chat():
     message = str(message).strip()
     if not message:
         return _json_error("message is required", 400)
+    request_workspace_id = ""
+    if isinstance(payload, dict):
+        raw_workspace_id = payload.get("workspaceId")
+        if isinstance(raw_workspace_id, str):
+            request_workspace_id = raw_workspace_id.strip()
 
     with session_scope() as db:
         user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
@@ -157,11 +176,18 @@ def workspace_chat():
             return _json_error("please select a role first", 400)
 
         preset = ROLE_PRESETS[role]
+        debug_enabled = bool(
+            current_app.config.get("RAG_DEBUG_VISUALIZATION_ENABLED", False)
+            and current_app.config.get("RAG_ENABLED", False)
+        )
         try:
-            reply = generate_reply(
+            result = generate_reply_payload(
                 role=role,
                 system_prompt=preset["systemPrompt"],
                 user_message=message,
+                user_id=user_id,
+                workspace_id=request_workspace_id or _workspace_id(user.preferences),
+                rag_debug_enabled=debug_enabled,
             )
         except AgentServiceError:
             logger.exception("Agent runtime failed for workspace chat")
@@ -172,6 +198,9 @@ def workspace_chat():
             "data": {
                 "role": role,
                 "systemPrompt": preset["systemPrompt"],
-                "reply": reply,
+                "reply": result["reply"],
+                "citations": result["citations"],
+                "noEvidence": result["noEvidence"],
+                **({"debug": result.get("debug", {})} if debug_enabled else {}),
             },
         }

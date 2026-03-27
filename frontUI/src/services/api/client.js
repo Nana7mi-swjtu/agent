@@ -13,9 +13,16 @@ const resolveBaseUrl = () => {
 };
 
 const API_BASE_URL = resolveBaseUrl();
+export const buildApiUrl = (path) => `${API_BASE_URL}${path}`;
 
 export const setUnauthorizedHandler = (handler) => {
   unauthorizedHandler = handler;
+};
+
+export const notifyUnauthorized = (status) => {
+  if (status === 401 && unauthorizedHandler) {
+    unauthorizedHandler();
+  }
 };
 
 export const apiRequest = async (path, options = {}) => {
@@ -33,7 +40,7 @@ export const apiRequest = async (path, options = {}) => {
     body = JSON.stringify(body);
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(buildApiUrl(path), {
     method,
     headers,
     body,
@@ -45,9 +52,7 @@ export const apiRequest = async (path, options = {}) => {
     setCsrfToken(data.csrfToken);
   }
 
-  if (response.status === 401 && unauthorizedHandler) {
-    unauthorizedHandler();
-  }
+  notifyUnauthorized(response.status);
 
   return {
     ok: response.ok,

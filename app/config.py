@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def _bool_env(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -16,6 +17,18 @@ def _csv_env(name: str, default: str) -> tuple[str, ...]:
     raw = os.getenv(name, default)
     values = [item.strip() for item in raw.split(",") if item.strip()]
     return tuple(values)
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return float(raw)
+
+
+def _default_dev_origins_from_port(port: str) -> str:
+    clean_port = port.strip() or "5173"
+    return f"http://127.0.0.1:{clean_port},http://localhost:{clean_port}"
 
 
 class Config:
@@ -36,9 +49,10 @@ class Config:
     CSRF_HEADER_NAME = os.getenv("CSRF_HEADER_NAME", "X-CSRF-Token")
     CORS_ENABLED = _bool_env("CORS_ENABLED", True)
     CORS_ALLOW_CREDENTIALS = _bool_env("CORS_ALLOW_CREDENTIALS", True)
+    FRONTEND_DEV_PORT = os.getenv("FRONTEND_DEV_PORT", "5173")
     CORS_ALLOWED_ORIGINS = _csv_env(
         "CORS_ALLOWED_ORIGINS",
-        "http://localhost:4273,http://127.0.0.1:4273",
+        _default_dev_origins_from_port(FRONTEND_DEV_PORT),
     )
     CORS_ALLOWED_METHODS = _csv_env(
         "CORS_ALLOWED_METHODS",
@@ -80,5 +94,47 @@ class Config:
     AI_API_KEY = os.getenv("AI_API_KEY", "")
     AI_BASE_URL = os.getenv("AI_BASE_URL", "")
     AI_TIMEOUT_SECONDS = int(os.getenv("AI_TIMEOUT_SECONDS", "30"))
+
+    RAG_ENABLED = _bool_env("RAG_ENABLED", False)
+    RAG_DEBUG_VISUALIZATION_ENABLED = _bool_env("RAG_DEBUG_VISUALIZATION_ENABLED", False)
+    RAG_VECTOR_PROVIDER = os.getenv("RAG_VECTOR_PROVIDER", "chromadb").strip().lower()
+    RAG_EMBEDDER_PROVIDER = os.getenv("RAG_EMBEDDER_PROVIDER", "").strip().lower()
+    RAG_RERANKER_PROVIDER = os.getenv("RAG_RERANKER_PROVIDER", "").strip().lower()
+    RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "")
+    RAG_EMBEDDING_VERSION = os.getenv("RAG_EMBEDDING_VERSION", "1")
+    RAG_EMBEDDING_DIMENSION = int(os.getenv("RAG_EMBEDDING_DIMENSION", "128"))
+    RAG_EMBEDDING_API_KEY = os.getenv("RAG_EMBEDDING_API_KEY", "").strip()
+    RAG_EMBEDDING_BASE_URL = os.getenv("RAG_EMBEDDING_BASE_URL", "").strip()
+    RAG_EMBEDDING_TIMEOUT_SECONDS = int(os.getenv("RAG_EMBEDDING_TIMEOUT_SECONDS", "20"))
+    RAG_RERANKER_MODEL = os.getenv("RAG_RERANKER_MODEL", "").strip()
+    RAG_RERANKER_API_KEY = os.getenv("RAG_RERANKER_API_KEY", "").strip()
+    RAG_RERANKER_BASE_URL = os.getenv("RAG_RERANKER_BASE_URL", "").strip()
+    RAG_RERANKER_TIMEOUT_SECONDS = int(os.getenv("RAG_RERANKER_TIMEOUT_SECONDS", "20"))
+    RAG_RETRIEVAL_TOP_K = int(os.getenv("RAG_RETRIEVAL_TOP_K", "5"))
+    RAG_RETRIEVAL_SCORE_THRESHOLD = _float_env("RAG_RETRIEVAL_SCORE_THRESHOLD", 0.0)
+    RAG_ALLOWED_FILE_TYPES = _csv_env("RAG_ALLOWED_FILE_TYPES", "pdf,docx,md,txt,html,csv")
+    RAG_UPLOAD_DIR = os.getenv("RAG_UPLOAD_DIR", "uploads/rag")
+    RAG_AUTO_INDEX_ON_UPLOAD = _bool_env("RAG_AUTO_INDEX_ON_UPLOAD", True)
+    RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1200"))
+    RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "150"))
+    RAG_CHUNK_STRATEGY_DEFAULT = os.getenv("RAG_CHUNK_STRATEGY_DEFAULT", "paragraph").strip().lower()
+    RAG_CHUNK_STRATEGY_ALLOWED = _csv_env(
+        "RAG_CHUNK_STRATEGY_ALLOWED",
+        "paragraph,semantic_llm",
+    )
+    RAG_CHUNK_FALLBACK_STRATEGY = os.getenv("RAG_CHUNK_FALLBACK_STRATEGY", "paragraph").strip().lower()
+    RAG_CHUNK_VERSION = os.getenv("RAG_CHUNK_VERSION", "v1").strip()
+    RAG_CHUNK_SEMANTIC_TARGET_TOKENS = int(os.getenv("RAG_CHUNK_SEMANTIC_TARGET_TOKENS", "450"))
+    RAG_CHUNK_SEMANTIC_MAX_TOKENS = int(os.getenv("RAG_CHUNK_SEMANTIC_MAX_TOKENS", "700"))
+    RAG_CHUNK_SEMANTIC_OVERLAP_TOKENS = int(os.getenv("RAG_CHUNK_SEMANTIC_OVERLAP_TOKENS", "50"))
+    RAG_CHUNK_SEMANTIC_MIN_TOKENS = int(os.getenv("RAG_CHUNK_SEMANTIC_MIN_TOKENS", "120"))
+    RAG_CHUNK_AI_PROVIDER = os.getenv("RAG_CHUNK_AI_PROVIDER", "noop").strip().lower()
+    RAG_CHUNK_AI_MODEL = os.getenv("RAG_CHUNK_AI_MODEL", "semantic-chunker-v1").strip()
+    RAG_CHUNK_AI_API_KEY = os.getenv("RAG_CHUNK_AI_API_KEY", "").strip()
+    RAG_CHUNK_AI_BASE_URL = os.getenv("RAG_CHUNK_AI_BASE_URL", "").strip()
+    RAG_CHUNK_AI_TIMEOUT_SECONDS = int(os.getenv("RAG_CHUNK_AI_TIMEOUT_SECONDS", "20"))
+    RAG_INDEX_MAX_WORKERS = int(os.getenv("RAG_INDEX_MAX_WORKERS", "2"))
+    RAG_CHROMADB_PERSIST_DIR = os.getenv("RAG_CHROMADB_PERSIST_DIR", "uploads/chromadb")
+    RAG_CHROMADB_COLLECTION_PREFIX = os.getenv("RAG_CHROMADB_COLLECTION_PREFIX", "rag")
 
     AUTO_CREATE_DB = os.getenv("AUTO_CREATE_DB", "true").lower() == "true"

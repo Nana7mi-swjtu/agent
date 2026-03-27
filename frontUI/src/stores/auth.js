@@ -5,6 +5,7 @@ import { clearCsrfToken, setCsrfToken } from "@/services/api/csrf";
 import { apiRequest } from "@/services/api/client";
 import { useChatStore } from "@/stores/chat";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { getUserProfile } from "@/services/user";
 
 export const useAuthStore = defineStore("auth", () => {
   const ready = ref(false);
@@ -52,6 +53,22 @@ export const useAuthStore = defineStore("auth", () => {
     return result;
   };
 
+  const refreshUserProfile = async () => {
+    if (!authenticated.value) {
+      return { ok: false, status: 401, data: { error: "authentication required" } };
+    }
+    const result = await getUserProfile();
+    if (!result.ok) return result;
+    const profile = result.data?.data || {};
+    user.value = {
+      ...(user.value || {}),
+      nickname: profile.nickname || "",
+      avatarUrl: profile.avatarUrl || "",
+      email: profile.email || user.value?.email || "",
+    };
+    return result;
+  };
+
   const logout = async () => {
     await apiRequest("/auth/logout", { method: "POST" });
     clearSession();
@@ -76,6 +93,7 @@ export const useAuthStore = defineStore("auth", () => {
     bootstrapSession,
     login,
     logout,
+    refreshUserProfile,
     clearSession,
   };
 });

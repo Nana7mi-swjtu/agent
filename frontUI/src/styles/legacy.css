@@ -308,6 +308,25 @@
         text-overflow: ellipsis;
         font-weight: 500;
       }
+      .session-delete-btn {
+        width: 18px;
+        height: 18px;
+        border: none;
+        border-radius: 50%;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        line-height: 1;
+        font-size: 15px;
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .session-delete-btn:hover {
+        background: var(--bg-hover);
+        color: var(--text);
+      }
       .sidebar-gif-card {
         margin: 12px 8px 4px;
         border: 1px solid var(--line);
@@ -447,6 +466,41 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      .toolbar-upload-btn {
+        position: relative;
+        border: 1px solid var(--line);
+        background: var(--bg-overlay);
+        color: var(--text);
+        font-size: 12px;
+        border-radius: 6px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      .toolbar-upload-btn input {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        cursor: pointer;
+      }
+      .toolbar-upload-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .rag-strategy-select {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+      .rag-strategy-select select {
+        border: 1px solid var(--line);
+        background: var(--bg-input);
+        color: var(--text);
+        border-radius: 6px;
+        padding: 4px 6px;
+        font-size: 12px;
+      }
       .toolbar-divider {
         width: 1px;
         height: 24px;
@@ -462,6 +516,151 @@
         font-weight: 700;
         background: var(--accent);
         color: #fff;
+      }
+      .rag-status-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 16px 0;
+      }
+      .rag-status-text {
+        min-width: 120px;
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+      .rag-progress-bar {
+        flex: 1;
+        height: 8px;
+        background: var(--bg-input);
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .rag-progress-fill {
+        height: 100%;
+        width: 0;
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        transition: width 0.2s ease;
+      }
+      .rag-refresh-btn {
+        width: 24px;
+        height: 24px;
+        font-size: 13px;
+      }
+      .rag-inline-err {
+        margin: 8px 16px 0;
+      }
+      .rag-applied-row {
+        margin: 6px 16px 0;
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+      .rag-docs-panel {
+        margin: 10px 16px 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: var(--bg-overlay);
+      }
+      .rag-docs-title {
+        font-size: 12px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: .04em;
+        margin-bottom: 8px;
+      }
+      .rag-docs-list {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 6px;
+      }
+      .rag-doc-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .rag-doc-name {
+        font-size: 13px;
+        color: var(--text);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .rag-doc-status {
+        font-size: 11px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+      }
+      .rag-doc-empty {
+        font-size: 13px;
+        color: var(--text-muted);
+      }
+      .rag-debug-panel {
+        margin: 10px 16px 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: var(--bg-overlay);
+      }
+      .rag-debug-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .rag-debug-metrics {
+        margin: 8px 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+      .rag-debug-section {
+        margin-top: 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 8px;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .rag-debug-section > summary {
+        cursor: pointer;
+        font-size: 12px;
+        color: var(--text);
+      }
+      .rag-debug-grid {
+        margin-top: 8px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 10px;
+      }
+      .rag-debug-list {
+        list-style: none;
+        margin: 8px 0 0;
+        padding: 0;
+        display: grid;
+        gap: 6px;
+      }
+      .rag-debug-item {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 12px;
+      }
+      .rag-debug-preview {
+        margin-top: 4px;
+        color: var(--text-muted);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .rag-debug-mini {
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+      .rag-message-debug {
+        margin-top: 8px;
       }
 
       /* ── Message feed ── */

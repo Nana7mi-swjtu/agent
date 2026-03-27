@@ -2,7 +2,133 @@ from __future__ import annotations
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from ..tools import get_agent_tools
+from ...rag.errors import RAGContractError
+from ...rag.service import build_cited_response
 from .state import AgentState
+
+
+_KNOWLEDGE_HINTS = (
+    "根据",
+    "文档",
+    "资料",
+    "source",
+    "citation",
+    "引用",
+    "证明",
+    "依据",
+    "manual",
+    "policy",
+    "spec",
+)
+
+
+def _extract_segment_context(chunk: dict) -> tuple[str, str] | None:
+    semantic_segment = chunk.get("semantic_segment")
+    if isinstance(semantic_segment, dict):
+        seg_id = str(semantic_segment.get("id", "")).strip()
+        seg_text = str(semantic_segment.get("text", "")).strip()
+        if seg_id and seg_text:
+            return seg_id, seg_text
+    metadata = chunk.get("metadata")
+    if isinstance(metadata, dict):
+        seg_id = str(metadata.get("semantic_segment_id", "")).strip()
+        seg_text = str(metadata.get("semantic_segment_text", "")).strip()
+        if seg_id and seg_text:
+            return seg_id, seg_text
+    return None
+
+
+def decide_rag_node(state: AgentState):
+    message = state["user_message"].lower()
+    if not state.get("rag_enabled", False):
+        return {"rag_decision": "skip"}
+    decision = "retrieve" if any(token in message for token in _KNOWLEDGE_HINTS) else "skip"
+    return {"rag_decision": decision}
+
+
+def retrieve_node(state: AgentState):
+    tools = get_agent_tools()
+    rag_tool = next((item for item in tools if item["name"] == "rag_search"), None)
+    if rag_tool is None:
+        return {"rag_chunks": [], "rag_debug": {}}
+
+    response = rag_tool["invoke"](
+        query=state["user_message"],
+        top_k=5,
+        filters={},
+        user_id=state["user_id"],
+        workspace_id=state["workspace_id"],
+        include_debug=bool(state.get("rag_debug_enabled", False)),
+    )
+    if not response.get("ok", True):
+        return {"rag_chunks": [], "rag_debug": {}}
+    payload = {"rag_chunks": response.get("chunks", [])}
+    if bool(state.get("rag_debug_enabled", False)):
+        payload["rag_debug"] = response.get("debug", {}) if isinstance(response.get("debug"), dict) else {}
+    return payload
+
+
+def rerank_node(state: AgentState):
+    chunks = list(state.get("rag_chunks", []))
+    chunks.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
+    trimmed = chunks[:5]
+    payload = {"rag_chunks": trimmed}
+    if bool(state.get("rag_debug_enabled", False)):
+        rag_debug = state.get("rag_debug", {})
+        if not isinstance(rag_debug, dict):
+            rag_debug = {}
+        rerank = rag_debug.get("rerank", {})
+        if not isinstance(rerank, dict):
+            rerank = {}
+        if "afterRuntimeSort" not in rerank:
+            rerank["afterRuntimeSort"] = [
+                {
+                    "chunkId": str(item.get("chunk_id", "")),
+                    "score": round(float(item.get("score", 0.0)), 6),
+                    "source": str(item.get("source", "")),
+                }
+                for item in trimmed
+            ]
+        rag_debug["rerank"] = rerank
+        payload["rag_debug"] = rag_debug
+    return payload
+
+
+def answer_with_citations_node(state: AgentState):
+    hits = []
+    from ...rag.schemas import RetrievalHit
+
+    for raw in state.get("rag_chunks", []):
+        source = str(raw.get("source", "")).strip()
+        chunk_id = str(raw.get("chunk_id", "")).strip()
+        if not source or not chunk_id:
+            raise RAGContractError("retrieval hit missing required citation fields")
+        hits.append(
+            RetrievalHit(
+                chunk_id=chunk_id,
+                score=float(raw.get("score", 0.0)),
+                source=source,
+                page=raw.get("page") if isinstance(raw.get("page"), int) else None,
+                section=raw.get("section") if isinstance(raw.get("section"), str) else None,
+                content=str(raw.get("content", "")),
+                metadata=raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {},
+            )
+        )
+    payload = build_cited_response(
+        base_reply=state.get("reply", ""),
+        hits=hits,
+        knowledge_required=(state.get("rag_decision") == "retrieve"),
+    )
+    result = {"reply": payload.reply, "rag_citations": payload.citations, "rag_no_evidence": payload.no_evidence}
+    if bool(state.get("rag_debug_enabled", False)):
+        rag_debug = state.get("rag_debug", {})
+        if not isinstance(rag_debug, dict):
+            rag_debug = {}
+        rag_debug["citations"] = payload.citations
+        rag_debug["noEvidence"] = bool(payload.no_evidence)
+        result["rag_debug"] = rag_debug
+    return result
 
 
 def chat_agent_node(state: AgentState):
@@ -11,8 +137,29 @@ def chat_agent_node(state: AgentState):
     role = state["role"]
     system_prompt = state["system_prompt"]
     user_message = state["user_message"]
+    chunks = state.get("rag_chunks", [])
 
     system_content = prompt_template.format(role=role, system_prompt=system_prompt)
+    if chunks:
+        evidence_lines = []
+        segment_contexts: list[tuple[str, str]] = []
+        seen_segment_ids: set[str] = set()
+        for idx, chunk in enumerate(chunks, start=1):
+            evidence_lines.append(
+                f"[{idx}] source={chunk.get('source')} chunk_id={chunk.get('chunk_id')} section={chunk.get('section')} page={chunk.get('page')}\n{chunk.get('content')}"
+            )
+            segment_context = _extract_segment_context(chunk)
+            if segment_context is None:
+                continue
+            segment_id, segment_text = segment_context
+            if segment_id in seen_segment_ids:
+                continue
+            seen_segment_ids.add(segment_id)
+            segment_contexts.append((segment_id, segment_text))
+        system_content = f"{system_content}\n\n检索证据如下：\n" + "\n\n".join(evidence_lines)
+        if segment_contexts:
+            context_lines = [f"[{idx}] segment_id={segment_id}\n{segment_text}" for idx, (segment_id, segment_text) in enumerate(segment_contexts, start=1)]
+            system_content = f"{system_content}\n\n命中句所在语义段上下文：\n" + "\n\n".join(context_lines)
     response = llm.invoke(
         [
             SystemMessage(content=system_content),

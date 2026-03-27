@@ -11,6 +11,7 @@ from .config import Config
 from .db import init_db
 from .db_bootstrap import ensure_database_exists
 from .auth.routes import auth_bp
+from .rag.routes import rag_bp
 from .user.routes import user_bp
 from .workspace.routes import workspace_bp
 
@@ -53,6 +54,7 @@ def create_app(config_overrides: dict | None = None) -> Flask:
     app.register_blueprint(auth_bp, url_prefix="/auth")
     app.register_blueprint(user_bp, url_prefix="/api/user")
     app.register_blueprint(workspace_bp, url_prefix="/api/workspace")
+    app.register_blueprint(rag_bp, url_prefix="/api/rag")
 
     try:
         cors_origins = _normalize_cors_origins(app.config.get("CORS_ALLOWED_ORIGINS", ()))

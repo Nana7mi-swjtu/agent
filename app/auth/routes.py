@@ -47,6 +47,8 @@ def _build_user_payload(user: User) -> dict:
         "id": user.id,
         "username": user.email,
         "email": user.email,
+        "nickname": user.nickname or "",
+        "avatarUrl": user.avatar_url or "",
     }
 
 

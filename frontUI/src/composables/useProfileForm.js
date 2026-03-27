@@ -4,6 +4,7 @@ import { storeToRefs } from "pinia";
 import { useProfileStore } from "@/stores/profile";
 import { useUiStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { useAuthStore } from "@/stores/auth";
 import { getUserProfile, patchUserPreferences, updateUserProfile } from "@/services/user";
 import { getWorkspaceContext, patchWorkspaceContext } from "@/services/workspace";
 import { compressImage } from "@/utils/image";
@@ -27,6 +28,7 @@ export const useProfileForm = () => {
   const profileStore = useProfileStore();
   const uiStore = useUiStore();
   const workspaceStore = useWorkspaceStore();
+  const authStore = useAuthStore();
   const { loading, submitting, error, success, profile } = storeToRefs(profileStore);
 
   const avatarFile = ref(null);
@@ -164,6 +166,7 @@ export const useProfileForm = () => {
     form.new_password = "";
     form.confirm_password = "";
     profileStore.setSuccess(uiStore.t("profileSaveSuccess"));
+    await authStore.refreshUserProfile();
   };
 
   const savePreferences = async () => {
