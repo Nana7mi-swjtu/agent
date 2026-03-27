@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ..schemas import ChunkPayload, RetrievalHit
+from ..schemas import ChunkPayload, RetrievalHit, SemanticSegment
 
 
 class Embedder(Protocol):
@@ -38,6 +38,14 @@ class VectorStore(Protocol):
         filters: dict[str, str | int],
     ) -> list[RetrievalHit]: ...
 
+    def get_chunk_vector(
+        self,
+        *,
+        workspace_id: str,
+        collection_name: str,
+        chunk_id: str,
+    ) -> list[float] | None: ...
+
 
 class Reranker(Protocol):
     provider_name: str
@@ -49,3 +57,17 @@ class Chunker(Protocol):
     provider_name: str
 
     def chunk(self, *, document_id: int, source_name: str, blocks: list[dict], chunk_size: int, overlap: int) -> list[ChunkPayload]: ...
+
+
+class SemanticChunkingProvider(Protocol):
+    provider_name: str
+    model_name: str
+    model_version: str
+
+    def segment(
+        self,
+        *,
+        strategy: str,
+        source_name: str,
+        blocks: list[dict],
+    ) -> list[SemanticSegment]: ...

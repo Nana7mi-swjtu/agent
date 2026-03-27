@@ -103,10 +103,12 @@ class ChromaVectorStore:
         key = self._collection_key(workspace_id, collection_name)
         if self._chroma_client is not None:
             collection = self._chroma_client.get_or_create_collection(name=key)
-            if len(filters) <= 1:
-                where = dict(filters) or None
-            else:
-                where = {"$and": [{k: v} for k, v in filters.items()]}
+            where = None
+            if filters:
+                if len(filters) == 1:
+                    where = dict(filters)
+                else:
+                    where = {"$and": [{k: v} for k, v in filters.items()]}
             result = collection.query(query_embeddings=[query_vector], n_results=top_k, where=where or None)
             ids = (result.get("ids") or [[]])[0]
             docs = (result.get("documents") or [[]])[0]
@@ -168,3 +170,37 @@ class ChromaVectorStore:
                 )
             )
         return hits
+
+    def get_chunk_vector(
+        self,
+        *,
+        workspace_id: str,
+        collection_name: str,
+        chunk_id: str,
+    ) -> list[float] | None:
+        key = self._collection_key(workspace_id, collection_name)
+        target = str(chunk_id).strip()
+        if not target:
+            return None
+        if self._chroma_client is not None:
+            collection = self._chroma_client.get_or_create_collection(name=key)
+            result = collection.get(ids=[target], include=["embeddings"])
+            raw_embeddings = result.get("embeddings")
+            embeddings = list(raw_embeddings) if raw_embeddings is not None else []
+            if len(embeddings) == 0:
+                return None
+            vector = embeddings[0]
+            if not isinstance(vector, (list, tuple)):
+                try:
+                    vector = list(vector)
+                except TypeError:
+                    return None
+            if len(vector) == 0:
+                return None
+            return [float(item) for item in vector]
+
+        collection = self._load_fallback_collection(key)
+        vector = collection["vectors"].get(target)
+        if not isinstance(vector, list):
+            return None
+        return [float(item) for item in vector]
