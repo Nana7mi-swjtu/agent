@@ -23,6 +23,22 @@ _KNOWLEDGE_HINTS = (
 )
 
 
+def _extract_segment_context(chunk: dict) -> tuple[str, str] | None:
+    semantic_segment = chunk.get("semantic_segment")
+    if isinstance(semantic_segment, dict):
+        seg_id = str(semantic_segment.get("id", "")).strip()
+        seg_text = str(semantic_segment.get("text", "")).strip()
+        if seg_id and seg_text:
+            return seg_id, seg_text
+    metadata = chunk.get("metadata")
+    if isinstance(metadata, dict):
+        seg_id = str(metadata.get("semantic_segment_id", "")).strip()
+        seg_text = str(metadata.get("semantic_segment_text", "")).strip()
+        if seg_id and seg_text:
+            return seg_id, seg_text
+    return None
+
+
 def decide_rag_node(state: AgentState):
     message = state["user_message"].lower()
     if not state.get("rag_enabled", False):
@@ -126,11 +142,24 @@ def chat_agent_node(state: AgentState):
     system_content = prompt_template.format(role=role, system_prompt=system_prompt)
     if chunks:
         evidence_lines = []
+        segment_contexts: list[tuple[str, str]] = []
+        seen_segment_ids: set[str] = set()
         for idx, chunk in enumerate(chunks, start=1):
             evidence_lines.append(
                 f"[{idx}] source={chunk.get('source')} chunk_id={chunk.get('chunk_id')} section={chunk.get('section')} page={chunk.get('page')}\n{chunk.get('content')}"
             )
+            segment_context = _extract_segment_context(chunk)
+            if segment_context is None:
+                continue
+            segment_id, segment_text = segment_context
+            if segment_id in seen_segment_ids:
+                continue
+            seen_segment_ids.add(segment_id)
+            segment_contexts.append((segment_id, segment_text))
         system_content = f"{system_content}\n\n检索证据如下：\n" + "\n\n".join(evidence_lines)
+        if segment_contexts:
+            context_lines = [f"[{idx}] segment_id={segment_id}\n{segment_text}" for idx, (segment_id, segment_text) in enumerate(segment_contexts, start=1)]
+            system_content = f"{system_content}\n\n命中句所在语义段上下文：\n" + "\n\n".join(context_lines)
     response = llm.invoke(
         [
             SystemMessage(content=system_content),

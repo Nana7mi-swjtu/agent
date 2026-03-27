@@ -5,6 +5,30 @@ from flask import current_app
 from ...rag.errors import RAGAuthorizationError, RAGValidationError
 from ...rag.service import rag_search
 
+
+def _semantic_segment_payload(metadata: dict) -> dict | None:
+    if not isinstance(metadata, dict):
+        return None
+    segment_id = metadata.get("semantic_segment_id")
+    segment_text = metadata.get("semantic_segment_text")
+    if not isinstance(segment_id, str) or not segment_id.strip():
+        return None
+    if not isinstance(segment_text, str) or not segment_text.strip():
+        return None
+    return {
+        "id": segment_id,
+        "text": segment_text,
+        "index": metadata.get("semantic_segment_index"),
+        "sentenceIndex": metadata.get("semantic_sentence_index"),
+        "sentenceCount": metadata.get("semantic_segment_sentence_count"),
+        "offsetStart": metadata.get("semantic_segment_offset_start"),
+        "offsetEnd": metadata.get("semantic_segment_offset_end"),
+        "topic": metadata.get("semantic_segment_topic"),
+        "summary": metadata.get("semantic_segment_summary"),
+        "source": metadata.get("semantic_segment_source"),
+    }
+
+
 def get_agent_tools():
     def rag_search_tool(
         *,
@@ -44,6 +68,7 @@ def get_agent_tools():
                     "section": hit.section,
                     "content": hit.content,
                     "metadata": hit.metadata,
+                    "semantic_segment": _semantic_segment_payload(hit.metadata),
                 }
                 for hit in hits
             ],
