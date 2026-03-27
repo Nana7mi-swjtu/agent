@@ -9,11 +9,17 @@ const toErrorResult = (status, error) => ({
   data: { ok: false, error: error || RAG_JSON_ERROR },
 });
 
-export const uploadRagDocument = ({ workspaceId, file, onUploadProgress }) =>
+export const uploadRagDocument = ({ workspaceId, file, chunking, onUploadProgress }) =>
   new Promise((resolve) => {
     const formData = new FormData();
     formData.append("workspaceId", String(workspaceId || "default"));
     formData.append("file", file);
+    if (chunking && typeof chunking === "object") {
+      formData.append("chunking", JSON.stringify(chunking));
+      if (typeof chunking.strategy === "string" && chunking.strategy.trim()) {
+        formData.append("chunkingStrategy", String(chunking.strategy).trim());
+      }
+    }
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", buildApiUrl("/api/rag/upload"), true);
@@ -59,11 +65,15 @@ export const listRagDocuments = (workspaceId) =>
 export const getRagIndexJob = (jobId, workspaceId) =>
   apiRequest(`/api/rag/jobs/${Number(jobId)}?workspaceId=${encodeURIComponent(String(workspaceId || "default"))}`);
 
-export const enqueueRagIndex = (documentId, workspaceId) =>
+export const enqueueRagIndex = (documentId, workspaceId, chunking) =>
   apiRequest("/api/rag/index", {
     method: "POST",
     body: {
       documentId: Number(documentId),
       workspaceId: String(workspaceId || "default"),
+      ...(chunking && typeof chunking === "object" ? { chunking } : {}),
     },
   });
+
+export const getRagDebugSnapshot = (workspaceId) =>
+  apiRequest(`/api/rag/debug?workspaceId=${encodeURIComponent(String(workspaceId || "default"))}`);

@@ -1,18 +1,30 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 
+const parseBool = (value, fallback = false) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "off"].includes(normalized)) return false;
+  }
+  return fallback;
+};
+
 export const useWorkspaceStore = defineStore("workspace", () => {
   const ready = ref(false);
   const roles = ref([]);
   const selectedRole = ref("");
   const systemPrompt = ref("");
   const workspaceId = ref("default");
+  const ragDebugEnabled = ref(parseBool(import.meta.env.VITE_RAG_DEBUG_VISUALIZATION_ENABLED, false));
 
   const applyContext = (data = {}) => {
     roles.value = Array.isArray(data.roles) ? data.roles : [];
     selectedRole.value = data.selectedRole || "";
     systemPrompt.value = data.systemPrompt || "";
     workspaceId.value = String(data.workspaceId || "default");
+    ragDebugEnabled.value = parseBool(data.ragDebugVisualizationEnabled, ragDebugEnabled.value);
     ready.value = true;
   };
 
@@ -30,6 +42,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     selectedRole.value = "";
     systemPrompt.value = "";
     workspaceId.value = "default";
+    ragDebugEnabled.value = parseBool(import.meta.env.VITE_RAG_DEBUG_VISUALIZATION_ENABLED, false);
   };
 
   return {
@@ -38,6 +51,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     selectedRole,
     systemPrompt,
     workspaceId,
+    ragDebugEnabled,
     applyContext,
     setContextReady,
     setActiveSession,

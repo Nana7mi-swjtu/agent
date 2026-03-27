@@ -10,6 +10,9 @@ const normalizeMessage = (raw) => ({
   from: raw?.from === "agent" ? "agent" : "user",
   text: String(raw?.text || ""),
   time: typeof raw?.time === "string" ? raw.time : new Date().toISOString(),
+  citations: Array.isArray(raw?.citations) ? raw.citations : [],
+  noEvidence: Boolean(raw?.noEvidence),
+  debug: raw?.debug && typeof raw.debug === "object" ? raw.debug : null,
 });
 
 const normalizeSession = (raw) => ({
