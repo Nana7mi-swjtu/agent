@@ -6,7 +6,7 @@ from ..schemas import ChunkPayload
 
 
 class DeterministicChunker:
-    provider_name = "deterministic"
+    provider_name = "paragraph"
 
     def chunk(
         self,
