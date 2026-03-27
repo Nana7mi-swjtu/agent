@@ -1,3 +1,6 @@
+import io
+import time
+
 import pytest
 from sqlalchemy import select
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -279,6 +282,88 @@ def test_workspace_chat_with_configured_agent_provider(client, app, db_session, 
     assert "systemPrompt" in payload["data"]
     assert payload["data"]["reply"] == "agent provider reply"
     assert "citations" in payload["data"]
+
+
+def test_workspace_chat_includes_semantic_segment_context(client, app, db_session, monkeypatch):
+    captured = {"system_content": ""}
+
+    class _FakeChatOpenAI:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def invoke(self, messages):
+            captured["system_content"] = str(messages[0].content)
+
+            class _Response:
+                content = "agent provider reply with context"
+
+            return _Response()
+
+    user = User(
+        email="chat-segment-context@example.com",
+        nickname="ChatSegmentContext",
+        password_hash=generate_password_hash("password123"),
+    )
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    app.config["RAG_ENABLED"] = True
+    app.config["RAG_RETRIEVAL_SCORE_THRESHOLD"] = -10.0
+    app.config["RAG_AUTO_INDEX_ON_UPLOAD"] = False
+    app.config["AI_PROVIDER"] = "openai"
+    app.config["AI_MODEL"] = "test-model"
+    app.config["AI_API_KEY"] = "test-key"
+    app.config["AI_TIMEOUT_SECONDS"] = 10
+    app.config["AI_BASE_URL"] = ""
+    monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    upload_response = client.post(
+        "/api/rag/upload",
+        data={
+            "workspaceId": "ws-agent-segment",
+            "chunking": '{"strategy":"paragraph"}',
+            "file": (
+                io.BytesIO("第一句用于检索。第二句用于提供段落上下文。".encode("utf-8")),
+                "agent-segment.txt",
+            ),
+        },
+        headers=headers,
+        content_type="multipart/form-data",
+    )
+    assert upload_response.status_code == 200
+    document_id = upload_response.get_json()["data"]["id"]
+
+    index_response = client.post(
+        "/api/rag/index",
+        json={"workspaceId": "ws-agent-segment", "documentId": document_id},
+        headers=headers,
+    )
+    assert index_response.status_code == 200
+    job_id = index_response.get_json()["data"]["jobId"]
+
+    final_status = ""
+    for _ in range(20):
+        job_response = client.get(f"/api/rag/jobs/{job_id}?workspaceId=ws-agent-segment", headers=headers)
+        assert job_response.status_code == 200
+        final_status = job_response.get_json()["data"]["status"]
+        if final_status in {"done", "failed"}:
+            break
+        time.sleep(0.1)
+    assert final_status == "done"
+
+    chat_response = client.post(
+        "/api/workspace/chat",
+        json={"message": "根据文档回答第一句是什么", "workspaceId": "ws-agent-segment"},
+        headers=headers,
+    )
+    assert chat_response.status_code == 200
+    assert "命中句所在语义段上下文：" in captured["system_content"]
+    assert "segment_id=" in captured["system_content"]
+    assert "第一句用于检索。第二句用于提供段落上下文。" in captured["system_content"]
 
 
 def test_workspace_chat_allows_non_openai_provider_config(client, app, db_session, monkeypatch):

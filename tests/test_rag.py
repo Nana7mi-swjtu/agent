@@ -99,6 +99,14 @@ def test_rag_upload_index_and_search_flow(client, app, db_session):
     chunks = search_response.get_json()["data"]["chunks"]
     assert chunks
     assert chunks[0]["source"] == "contract.txt"
+    paragraph_meta = chunks[0]["metadata"]
+    assert paragraph_meta["chunk_strategy"] == "paragraph"
+    assert paragraph_meta["semantic_segment_source"] == "paragraph"
+    assert isinstance(paragraph_meta.get("semantic_sentence_index"), int)
+    semantic_segment = chunks[0]["semanticSegment"]
+    assert isinstance(semantic_segment, dict)
+    assert semantic_segment["source"] == "paragraph"
+    assert isinstance(semantic_segment["text"], str) and semantic_segment["text"]
 
     documents_response = client.get("/api/rag/documents?workspaceId=ws-flow", headers=headers)
     assert documents_response.status_code == 200
@@ -313,11 +321,15 @@ def test_semantic_chunking_output_normalization(app, tmp_path: Path):
     assert payloads
     assert all(item.metadata.get("chunk_strategy") == "semantic_llm" for item in payloads)
     assert all(isinstance(item.metadata.get("token_count"), int) for item in payloads)
+    assert all(isinstance(item.metadata.get("semantic_segment_id"), str) for item in payloads)
+    assert all(isinstance(item.metadata.get("semantic_sentence_index"), int) for item in payloads)
+    assert all(isinstance(item.metadata.get("semantic_segment_text"), str) for item in payloads)
 
 
 def test_semantic_chunking_fallback_execution(client, app, db_session):
     app.config["RAG_ENABLED"] = True
     app.config["RAG_AUTO_INDEX_ON_UPLOAD"] = False
+    app.config["RAG_RETRIEVAL_SCORE_THRESHOLD"] = -10.0
     app.config["RAG_CHUNK_AI_PROVIDER"] = "openai-compatible"
     app.config["RAG_CHUNK_AI_BASE_URL"] = ""
     app.config["RAG_CHUNK_AI_API_KEY"] = ""
@@ -352,9 +364,25 @@ def test_semantic_chunking_fallback_execution(client, app, db_session):
     assert job_response.status_code == 200
     chunking = job_response.get_json()["data"]["chunkingApplied"]
     assert chunking["requestedStrategy"] == "semantic_llm"
-    assert chunking["strategy"] == "paragraph"
+    assert chunking["strategy"] == "semantic_llm"
     assert chunking["fallbackUsed"] is True
     assert isinstance(chunking["fallbackReason"], str) and chunking["fallbackReason"]
+
+    search_response = client.post(
+        "/api/rag/search",
+        json={"workspaceId": "ws-fallback", "query": "语义分块回退", "topK": 3, "filters": {}},
+        headers=headers,
+    )
+    assert search_response.status_code == 200
+    chunks = search_response.get_json()["data"]["chunks"]
+    assert chunks
+    metadata = chunks[0]["metadata"]
+    assert metadata["chunk_strategy"] == "semantic_llm"
+    assert metadata["semantic_segment_source"] == "paragraph"
+    semantic_segment = chunks[0]["semanticSegment"]
+    assert isinstance(semantic_segment, dict)
+    assert semantic_segment["source"] == "paragraph"
+    assert isinstance(semantic_segment["text"], str) and semantic_segment["text"]
 
 
 class _FakeHTTPResponse:
