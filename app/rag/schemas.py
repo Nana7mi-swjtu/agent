@@ -43,3 +43,40 @@ class IndexResult:
     error_message: str | None
     chunks_count: int
     finished_at: datetime
+
+
+@dataclass(slots=True)
+class ChunkingRequest:
+    strategy: str
+    version: str | None
+    target_tokens: int | None
+    max_tokens: int | None
+    overlap_tokens: int | None
+    min_tokens: int | None
+
+
+@dataclass(slots=True)
+class ChunkingApplied:
+    requested_strategy: str
+    strategy: str
+    provider: str
+    model: str
+    version: str
+    fallback_used: bool
+    fallback_reason: str | None = None
+
+
+@dataclass(slots=True)
+class ChunkingBounds:
+    target_tokens: int
+    max_tokens: int
+    overlap_tokens: int
+    min_tokens: int
+
+
+@dataclass(slots=True)
+class SemanticSegment:
+    text: str
+    metadata: dict[str, Any]
+    topic: str | None = None
+    summary: str | None = None
