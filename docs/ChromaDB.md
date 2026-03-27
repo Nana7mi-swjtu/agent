@@ -15,10 +15,18 @@
 
 - `RAG_ENABLED=true`
 - `RAG_VECTOR_PROVIDER=chromadb`
-- `RAG_EMBEDDER_PROVIDER=deterministic`
-- `RAG_EMBEDDING_MODEL=deterministic-v1`
+- `RAG_EMBEDDER_PROVIDER=openai-compatible`
+- `RAG_EMBEDDING_MODEL=Qwen-Embedding-8B`
 - `RAG_EMBEDDING_VERSION=1`
-- `RAG_EMBEDDING_DIMENSION=128`
+- `RAG_EMBEDDING_DIMENSION=1536`
+- `RAG_EMBEDDING_API_KEY=<your-qwen-api-key>`
+- `RAG_EMBEDDING_BASE_URL=<your-openai-compatible-base-url>`
+- `RAG_EMBEDDING_TIMEOUT_SECONDS=20`
+- `RAG_RERANKER_PROVIDER=openai-compatible`
+- `RAG_RERANKER_MODEL=qwen-reranker-v1`
+- `RAG_RERANKER_API_KEY=<your-qwen-api-key>`
+- `RAG_RERANKER_BASE_URL=<your-openai-compatible-base-url>`
+- `RAG_RERANKER_TIMEOUT_SECONDS=20`
 - `RAG_RETRIEVAL_TOP_K=5`
 - `RAG_RETRIEVAL_SCORE_THRESHOLD=0.0`
 - `RAG_ALLOWED_FILE_TYPES=pdf,docx,md,txt,html,csv`
