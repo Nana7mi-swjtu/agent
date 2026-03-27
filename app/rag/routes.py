@@ -24,6 +24,30 @@ def _json_error(message: str, status_code: int):
     return {"ok": False, "error": message}, status_code
 
 
+def _semantic_segment_payload(metadata: dict) -> dict | None:
+    if not isinstance(metadata, dict):
+        return None
+    segment_id = metadata.get("semantic_segment_id")
+    segment_text = metadata.get("semantic_segment_text")
+    if not isinstance(segment_id, str) or not segment_id.strip():
+        return None
+    if not isinstance(segment_text, str) or not segment_text.strip():
+        return None
+    payload = {
+        "id": segment_id,
+        "text": segment_text,
+        "index": metadata.get("semantic_segment_index"),
+        "sentenceIndex": metadata.get("semantic_sentence_index"),
+        "sentenceCount": metadata.get("semantic_segment_sentence_count"),
+        "offsetStart": metadata.get("semantic_segment_offset_start"),
+        "offsetEnd": metadata.get("semantic_segment_offset_end"),
+        "topic": metadata.get("semantic_segment_topic"),
+        "summary": metadata.get("semantic_segment_summary"),
+        "source": metadata.get("semantic_segment_source"),
+    }
+    return payload
+
+
 def _current_user_id() -> int | None:
     user_id = session.get("user_id")
     if isinstance(user_id, int):
@@ -273,6 +297,7 @@ def search():
                     "section": hit.section,
                     "content": hit.content,
                     "metadata": hit.metadata,
+                    "semanticSegment": _semantic_segment_payload(hit.metadata),
                 }
                 for hit in hits
             ]

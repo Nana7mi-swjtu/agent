@@ -11,6 +11,7 @@ from .chunking import (
     build_chunking_applied,
     enforce_semantic_bounds,
     ensure_semantic_output,
+    paragraph_blocks_to_semantic_segments,
     resolve_chunking_plan,
     semantic_segments_to_payloads,
 )
@@ -58,16 +59,22 @@ def parse_and_chunk_document(
     version = plan.request.version or str(current_app.config.get("RAG_CHUNK_VERSION", "v1"))
 
     if requested_strategy == "paragraph":
-        payloads = chunker.chunk(
+        paragraph_segments = paragraph_blocks_to_semantic_segments(
+            blocks=normalized,
+            source_name=source_name,
+            source_tag="paragraph",
+        )
+        bounded = enforce_semantic_bounds(segments=paragraph_segments, bounds=plan.bounds)
+        payloads = semantic_segments_to_payloads(
+            segments=bounded,
             document_id=document_id,
             source_name=source_name,
-            blocks=normalized,
-            chunk_size=chunk_size,
-            overlap=overlap,
+            strategy="paragraph",
+            version=version,
+            segmentation_source="paragraph",
         )
-        for payload in payloads:
-            payload.metadata["chunk_strategy"] = "paragraph"
-            payload.metadata["chunk_version"] = version
+        if not payloads:
+            raise RAGChunkingError("paragraph strategy generated no chunk payloads")
         applied = build_chunking_applied(
             requested_strategy=requested_strategy,
             strategy="paragraph",
@@ -94,6 +101,7 @@ def parse_and_chunk_document(
             source_name=source_name,
             strategy=requested_strategy,
             version=version,
+            segmentation_source="semantic_llm",
         )
         if not payloads:
             raise RAGChunkingError(f"{requested_strategy} generated no chunk payloads")
@@ -112,19 +120,25 @@ def parse_and_chunk_document(
         if fallback != "paragraph":
             raise
         fallback_reason = str(exc)
-        payloads = chunker.chunk(
+        paragraph_segments = paragraph_blocks_to_semantic_segments(
+            blocks=normalized,
+            source_name=source_name,
+            source_tag="paragraph",
+        )
+        bounded = enforce_semantic_bounds(segments=paragraph_segments, bounds=plan.bounds)
+        payloads = semantic_segments_to_payloads(
+            segments=bounded,
             document_id=document_id,
             source_name=source_name,
-            blocks=normalized,
-            chunk_size=chunk_size,
-            overlap=overlap,
+            strategy=requested_strategy,
+            version=version,
+            segmentation_source="paragraph",
         )
-        for payload in payloads:
-            payload.metadata["chunk_strategy"] = "paragraph"
-            payload.metadata["chunk_version"] = version
+        if not payloads:
+            raise RAGChunkingError("paragraph fallback generated no chunk payloads")
         applied = build_chunking_applied(
             requested_strategy=requested_strategy,
-            strategy="paragraph",
+            strategy=requested_strategy,
             provider=chunker.provider_name,
             model=chunker.provider_name,
             version=version,

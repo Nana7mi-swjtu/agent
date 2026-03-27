@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 
 from ..errors import RAGChunkingError, RAGValidationError
@@ -8,6 +9,7 @@ from ..schemas import ChunkPayload, ChunkingApplied, ChunkingBounds, ChunkingReq
 
 
 ALLOWED_CHUNK_STRATEGIES = {"paragraph", "semantic_llm"}
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？!?；;])|(?<=\.)\s+|[\r\n]+")
 
 
 @dataclass(slots=True)
@@ -166,6 +168,64 @@ def enforce_semantic_bounds(*, segments: list[SemanticSegment], bounds: Chunking
     return bounded
 
 
+def _split_segment_sentences(text: str) -> list[str]:
+    clean = str(text).strip()
+    if not clean:
+        return []
+    parts = [item.strip() for item in _SENTENCE_SPLIT_RE.split(clean) if item and item.strip()]
+    if not parts:
+        return [clean]
+    return parts
+
+
+def _sentence_spans(segment_text: str, sentences: list[str]) -> list[tuple[str, int, int]]:
+    if not sentences:
+        return []
+    spans: list[tuple[str, int, int]] = []
+    cursor = 0
+    for sentence in sentences:
+        start = segment_text.find(sentence, cursor)
+        if start < 0:
+            start = segment_text.find(sentence)
+        if start < 0:
+            start = max(0, min(cursor, len(segment_text)))
+            end = min(len(segment_text), start + len(sentence))
+            candidate = segment_text[start:end].strip()
+            if not candidate:
+                continue
+            sentence_text = candidate
+            spans.append((sentence_text, start, end))
+            cursor = end
+            continue
+        end = start + len(sentence)
+        sentence_text = segment_text[start:end].strip()
+        if sentence_text:
+            spans.append((sentence_text, start, end))
+        cursor = max(cursor, end)
+    return spans
+
+
+def paragraph_blocks_to_semantic_segments(
+    *,
+    blocks: list[dict],
+    source_name: str,
+    source_tag: str = "paragraph",
+) -> list[SemanticSegment]:
+    segments: list[SemanticSegment] = []
+    for block_index, block in enumerate(blocks):
+        text = str(block.get("text", "")).strip()
+        if not text:
+            continue
+        metadata = dict(block.get("metadata", {}))
+        metadata["source"] = source_name
+        metadata["block_index"] = block_index
+        metadata["offset_start"] = 0
+        metadata["offset_end"] = len(text)
+        metadata["semantic_segment_source"] = source_tag
+        segments.append(SemanticSegment(text=text, metadata=metadata, topic=None, summary=None))
+    return segments
+
+
 def semantic_segments_to_payloads(
     *,
     segments: list[SemanticSegment],
@@ -173,30 +233,62 @@ def semantic_segments_to_payloads(
     source_name: str,
     strategy: str,
     version: str,
+    segmentation_source: str | None = None,
 ) -> list[ChunkPayload]:
     payloads: list[ChunkPayload] = []
-    for idx, segment in enumerate(segments):
-        text = str(segment.text).strip()
-        if not text:
+    for segment_index, segment in enumerate(segments):
+        segment_text = str(segment.text).strip()
+        if not segment_text:
             continue
-        metadata = dict(segment.metadata)
-        metadata["source"] = source_name
-        metadata["document_id"] = document_id
-        metadata["chunk_strategy"] = strategy
-        metadata["chunk_version"] = version
-        if segment.topic:
-            metadata["topic"] = segment.topic
-        if segment.summary:
-            metadata["summary"] = segment.summary
-        metadata["token_count"] = estimate_tokens(text)
-        if "offset_start" not in metadata:
-            metadata["offset_start"] = 0
-        if "offset_end" not in metadata:
-            metadata["offset_end"] = len(text)
-        chunk_id = hashlib.sha1(
-            f"{document_id}:{strategy}:{version}:{idx}:{text}".encode("utf-8")
+        base_metadata = dict(segment.metadata)
+        segment_offset_start = (
+            int(base_metadata.get("offset_start")) if isinstance(base_metadata.get("offset_start"), int) else 0
+        )
+        segment_offset_end = (
+            int(base_metadata.get("offset_end"))
+            if isinstance(base_metadata.get("offset_end"), int)
+            else (segment_offset_start + len(segment_text))
+        )
+        if segment_offset_end < segment_offset_start:
+            segment_offset_end = segment_offset_start + len(segment_text)
+
+        semantic_segment_id = hashlib.sha1(
+            f"{document_id}:{strategy}:{version}:segment:{segment_index}:{segment_text}".encode("utf-8")
         ).hexdigest()
-        payloads.append(ChunkPayload(chunk_id=chunk_id, text=text, metadata=metadata))
+        sentence_items = _sentence_spans(segment_text, _split_segment_sentences(segment_text))
+        if not sentence_items:
+            sentence_items = [(segment_text, 0, len(segment_text))]
+        sentence_count = len(sentence_items)
+
+        for sentence_index, (sentence_text, local_start, local_end) in enumerate(sentence_items):
+            metadata = dict(base_metadata)
+            metadata["source"] = source_name
+            metadata["document_id"] = document_id
+            metadata["chunk_strategy"] = strategy
+            metadata["chunk_version"] = version
+            metadata["token_count"] = estimate_tokens(sentence_text)
+            metadata["offset_start"] = segment_offset_start + local_start
+            metadata["offset_end"] = segment_offset_start + local_end
+            metadata["semantic_segment_id"] = semantic_segment_id
+            metadata["semantic_segment_index"] = segment_index
+            metadata["semantic_sentence_index"] = sentence_index
+            metadata["semantic_segment_sentence_count"] = sentence_count
+            metadata["semantic_segment_text"] = segment_text
+            metadata["semantic_segment_offset_start"] = segment_offset_start
+            metadata["semantic_segment_offset_end"] = segment_offset_end
+            metadata["semantic_segment_source"] = segmentation_source or strategy
+            if segment.topic:
+                metadata["topic"] = segment.topic
+                metadata["semantic_segment_topic"] = segment.topic
+            if segment.summary:
+                metadata["summary"] = segment.summary
+                metadata["semantic_segment_summary"] = segment.summary
+            chunk_id = hashlib.sha1(
+                f"{document_id}:{strategy}:{version}:{semantic_segment_id}:{sentence_index}:{sentence_text}".encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            payloads.append(ChunkPayload(chunk_id=chunk_id, text=sentence_text, metadata=metadata))
     return payloads
 
 
