@@ -5,7 +5,16 @@ import logging
 from flask import Blueprint, request, session
 
 from .errors import RAGAuthorizationError, RAGError, RAGValidationError
-from .service import enqueue_index_job, get_job_status, list_documents, rag_search, upload_document
+from .service import (
+    build_workspace_debug_snapshot,
+    enqueue_index_job,
+    get_chunk_embedding_debug,
+    get_job_status,
+    list_documents,
+    parse_chunking_request,
+    rag_search,
+    upload_document,
+)
 
 rag_bp = Blueprint("rag", __name__)
 logger = logging.getLogger(__name__)
@@ -59,6 +68,68 @@ def get_documents():
     return {"ok": True, "data": {"documents": documents}}
 
 
+@rag_bp.get("/debug")
+def debug_snapshot():
+    disabled = _ensure_rag_enabled()
+    if disabled:
+        return disabled
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+    from flask import current_app
+
+    if not bool(current_app.config.get("RAG_DEBUG_VISUALIZATION_ENABLED", False)):
+        return _json_error("rag debug visualization is disabled", 404)
+
+    workspace_id = _workspace_id_from_request()
+    try:
+        data = build_workspace_debug_snapshot(user_id=user_id, workspace_id=workspace_id)
+    except RAGValidationError as exc:
+        return _json_error(str(exc), 400)
+    except RAGError:
+        logger.exception("RAG debug snapshot failed")
+        return _json_error("failed to build rag debug snapshot", 500)
+    return {"ok": True, "data": data}
+
+
+@rag_bp.get("/embedding")
+def read_chunk_embedding():
+    disabled = _ensure_rag_enabled()
+    if disabled:
+        return disabled
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+    from flask import current_app
+
+    if not bool(current_app.config.get("RAG_DEBUG_VISUALIZATION_ENABLED", False)):
+        return _json_error("rag debug visualization is disabled", 404)
+
+    workspace_id = _workspace_id_from_request()
+    chunk_id = str(request.args.get("chunkId", "")).strip()
+    include_full_raw = str(request.args.get("full", "false")).strip().lower()
+    include_full = include_full_raw in {"1", "true", "yes", "on"}
+    sample_size_raw = request.args.get("sampleSize", "16")
+    try:
+        sample_size = int(sample_size_raw)
+    except Exception:
+        return _json_error("sampleSize must be an integer", 400)
+    try:
+        data = get_chunk_embedding_debug(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            chunk_id=chunk_id,
+            include_full=include_full,
+            sample_size=sample_size,
+        )
+    except RAGValidationError as exc:
+        return _json_error(str(exc), 400)
+    except RAGError:
+        logger.exception("RAG embedding debug failed")
+        return _json_error("failed to read embedding", 500)
+    return {"ok": True, "data": data}
+
+
 @rag_bp.post("/upload")
 def upload():
     disabled = _ensure_rag_enabled()
@@ -69,9 +140,25 @@ def upload():
         return _json_error("authentication required", 401)
 
     workspace_id = request.form.get("workspaceId", "").strip() or "default"
+    chunking_raw = request.form.get("chunking")
+    chunking_payload = None
+    if chunking_raw:
+        import json
+
+        try:
+            chunking_payload = json.loads(chunking_raw)
+        except Exception:
+            return _json_error("chunking must be valid JSON", 400)
+    elif request.form.get("chunkingStrategy"):
+        chunking_payload = {"strategy": str(request.form.get("chunkingStrategy"))}
     file_storage = request.files.get("file")
     try:
-        data = upload_document(user_id=user_id, workspace_id=workspace_id, file_storage=file_storage)
+        data = upload_document(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            file_storage=file_storage,
+            chunking=parse_chunking_request(chunking_payload),
+        )
     except RAGValidationError as exc:
         return _json_error(str(exc), 400)
     except RAGError as exc:
@@ -95,11 +182,17 @@ def create_index():
         return _json_error("request body is required", 400)
     document_id = payload.get("documentId")
     workspace_id = str(payload.get("workspaceId", "default")).strip() or "default"
+    chunking_payload = payload.get("chunking")
     if not isinstance(document_id, int) or document_id <= 0:
         return _json_error("documentId must be a positive integer", 400)
 
     try:
-        data = enqueue_index_job(user_id=user_id, workspace_id=workspace_id, document_id=document_id)
+        data = enqueue_index_job(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            document_id=document_id,
+            chunking=parse_chunking_request(chunking_payload),
+        )
     except RAGAuthorizationError as exc:
         return _json_error(str(exc), 403)
     except RAGValidationError as exc:

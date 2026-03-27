@@ -19,3 +19,7 @@ class RAGConfigurationError(RAGError):
 
 class RAGContractError(RAGError):
     pass
+
+
+class RAGChunkingError(RAGError):
+    pass
