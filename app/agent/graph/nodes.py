@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from langchain_core.messages import HumanMessage, SystemMessage
+import json
+from typing import Any
 
-from ..tools import get_agent_tools
+from flask import current_app
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+from ..tools import AgentToolContext, get_agent_tools
 from ...rag.errors import RAGContractError
 from ...rag.service import build_cited_response
 from .state import AgentState
@@ -48,17 +52,22 @@ def decide_rag_node(state: AgentState):
 
 
 def retrieve_node(state: AgentState):
-    tools = get_agent_tools()
-    rag_tool = next((item for item in tools if item["name"] == "rag_search"), None)
+    tool_context = AgentToolContext(
+        user_id=state["user_id"],
+        workspace_id=state["workspace_id"],
+        rag_debug_enabled=bool(state.get("rag_debug_enabled", False)),
+    )
+    tools = get_agent_tools(
+        context=tool_context,
+    )
+    rag_tool = next((item for item in tools if item.name == "rag_search"), None)
     if rag_tool is None:
         return {"rag_chunks": [], "rag_debug": {}}
 
-    response = rag_tool["invoke"](
+    response = rag_tool.invoke(
         query=state["user_message"],
         top_k=5,
         filters={},
-        user_id=state["user_id"],
-        workspace_id=state["workspace_id"],
         include_debug=bool(state.get("rag_debug_enabled", False)),
     )
     if not response.get("ok", True):
@@ -160,10 +169,104 @@ def chat_agent_node(state: AgentState):
         if segment_contexts:
             context_lines = [f"[{idx}] segment_id={segment_id}\n{segment_text}" for idx, (segment_id, segment_text) in enumerate(segment_contexts, start=1)]
             system_content = f"{system_content}\n\n命中句所在语义段上下文：\n" + "\n\n".join(context_lines)
-    response = llm.invoke(
-        [
-            SystemMessage(content=system_content),
-            HumanMessage(content=user_message),
-        ]
+
+    messages: list[Any] = [
+        SystemMessage(content=system_content),
+        HumanMessage(content=user_message),
+    ]
+
+    tool_context = AgentToolContext(
+        user_id=state["user_id"],
+        workspace_id=state["workspace_id"],
+        rag_debug_enabled=bool(state.get("rag_debug_enabled", False)),
     )
-    return {"reply": str(response.content)}
+
+    if not bool(current_app.config.get("AGENT_AUTO_TOOL_SELECTION_ENABLED", True)) or not hasattr(llm, "bind_tools"):
+        response = llm.invoke(messages)
+        return {"reply": str(getattr(response, "content", ""))}
+
+    tool_specs = get_agent_tools(
+        context=tool_context,
+    )
+    openai_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": item.name,
+                "description": item.description,
+                "parameters": item.args_schema,
+            },
+        }
+        for item in tool_specs
+    ]
+    if not openai_tools:
+        response = llm.invoke(messages)
+        return {"reply": str(getattr(response, "content", ""))}
+
+    tool_by_name = {item.name: item for item in tool_specs}
+    auto_llm = llm.bind_tools(openai_tools)
+    max_rounds = max(1, int(current_app.config.get("AGENT_TOOL_CALL_MAX_ROUNDS", 4)))
+    collected_rag_chunks = list(chunks)
+    merged_rag_debug = state.get("rag_debug", {})
+    if not isinstance(merged_rag_debug, dict):
+        merged_rag_debug = {}
+
+    for _ in range(max_rounds):
+        response = auto_llm.invoke(messages)
+        messages.append(response)
+        tool_calls = getattr(response, "tool_calls", [])
+        if not isinstance(tool_calls, list) or not tool_calls:
+            result = {"reply": str(getattr(response, "content", ""))}
+            if collected_rag_chunks:
+                result["rag_chunks"] = collected_rag_chunks
+            if bool(state.get("rag_debug_enabled", False)):
+                result["rag_debug"] = merged_rag_debug
+            return result
+
+        for idx, tool_call in enumerate(tool_calls, start=1):
+            name = str(tool_call.get("name", "")).strip() if isinstance(tool_call, dict) else ""
+            tool_call_id = (
+                str(tool_call.get("id", "")).strip()
+                if isinstance(tool_call, dict)
+                else ""
+            ) or f"tool-call-{idx}"
+            args = tool_call.get("args", {}) if isinstance(tool_call, dict) else {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+            if not isinstance(args, dict):
+                args = {}
+
+            tool_spec = tool_by_name.get(name)
+            if tool_spec is None:
+                tool_result: dict[str, Any] = {"ok": False, "error": f"unknown tool: {name}"}
+            else:
+                tool_result = tool_spec.invoke(**args)
+                if not isinstance(tool_result, dict):
+                    tool_result = {"ok": True, "result": tool_result}
+
+                if tool_spec.name == "rag_search" and tool_result.get("ok", True):
+                    raw_chunks = tool_result.get("chunks", [])
+                    if isinstance(raw_chunks, list):
+                        collected_rag_chunks.extend(item for item in raw_chunks if isinstance(item, dict))
+                    if bool(state.get("rag_debug_enabled", False)):
+                        debug_payload = tool_result.get("debug", {})
+                        if isinstance(debug_payload, dict):
+                            merged_rag_debug = debug_payload
+
+            messages.append(
+                ToolMessage(
+                    content=json.dumps(tool_result, ensure_ascii=False),
+                    tool_call_id=tool_call_id,
+                )
+            )
+
+    final_response = auto_llm.invoke(messages)
+    result = {"reply": str(getattr(final_response, "content", ""))}
+    if collected_rag_chunks:
+        result["rag_chunks"] = collected_rag_chunks
+    if bool(state.get("rag_debug_enabled", False)):
+        result["rag_debug"] = merged_rag_debug
+    return result
