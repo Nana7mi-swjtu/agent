@@ -1,78 +1,31 @@
 from __future__ import annotations
 
-from flask import current_app
+from collections.abc import Iterable
 
-from ...rag.errors import RAGAuthorizationError, RAGValidationError
-from ...rag.service import rag_search
-
-
-def _semantic_segment_payload(metadata: dict) -> dict | None:
-    if not isinstance(metadata, dict):
-        return None
-    segment_id = metadata.get("semantic_segment_id")
-    segment_text = metadata.get("semantic_segment_text")
-    if not isinstance(segment_id, str) or not segment_id.strip():
-        return None
-    if not isinstance(segment_text, str) or not segment_text.strip():
-        return None
-    return {
-        "id": segment_id,
-        "text": segment_text,
-        "index": metadata.get("semantic_segment_index"),
-        "sentenceIndex": metadata.get("semantic_sentence_index"),
-        "sentenceCount": metadata.get("semantic_segment_sentence_count"),
-        "offsetStart": metadata.get("semantic_segment_offset_start"),
-        "offsetEnd": metadata.get("semantic_segment_offset_end"),
-        "topic": metadata.get("semantic_segment_topic"),
-        "summary": metadata.get("semantic_segment_summary"),
-        "source": metadata.get("semantic_segment_source"),
-    }
+from .base import AgentToolSpec, ToolFactory
+from .context import AgentToolContext
+from .mcp import create_mcp_tools
+from .rag import create_rag_search_tool
+from .websearch import create_web_search_tool
 
 
-def get_agent_tools():
-    def rag_search_tool(
-        *,
-        query: str,
-        top_k: int,
-        filters: dict,
-        user_id: int,
-        workspace_id: str,
-        include_debug: bool = False,
-    ):
-        if not bool(current_app.config.get("RAG_ENABLED", False)):
-            return {"chunks": [], "debug": {}}
-        try:
-            response = rag_search(
-                user_id=user_id,
-                workspace_id=workspace_id,
-                query=query,
-                top_k=top_k,
-                filters=filters,
-                include_debug=include_debug,
-            )
-            if include_debug:
-                hits, debug_payload = response
-            else:
-                hits = response
-                debug_payload = {}
-        except (RAGValidationError, RAGAuthorizationError) as exc:
-            return {"ok": False, "error": str(exc)}
-        return {
-            "ok": True,
-            "chunks": [
-                {
-                    "chunk_id": hit.chunk_id,
-                    "score": hit.score,
-                    "source": hit.source,
-                    "page": hit.page,
-                    "section": hit.section,
-                    "content": hit.content,
-                    "metadata": hit.metadata,
-                    "semantic_segment": _semantic_segment_payload(hit.metadata),
-                }
-                for hit in hits
-            ],
-            "debug": debug_payload if isinstance(debug_payload, dict) else {},
-        }
+def _iter_specs(factory_output: AgentToolSpec | Iterable[AgentToolSpec] | None) -> Iterable[AgentToolSpec]:
+    if factory_output is None:
+        return ()
+    if isinstance(factory_output, AgentToolSpec):
+        return (factory_output,)
+    return tuple(factory_output)
 
-    return [{"name": "rag_search", "invoke": rag_search_tool}]
+
+def get_agent_tools(*, context: AgentToolContext, factories: Iterable[ToolFactory] | None = None) -> list[AgentToolSpec]:
+    tool_factories = tuple(factories) if factories is not None else (
+        create_rag_search_tool,
+        create_web_search_tool,
+        create_mcp_tools,
+    )
+    specs: list[AgentToolSpec] = []
+    for factory in tool_factories:
+        output = factory(context)
+        for item in _iter_specs(output):
+            specs.append(item)
+    return specs
