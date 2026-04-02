@@ -225,6 +225,25 @@ def test_workspace_role_selection_and_context(client, db_session):
     assert "投资者决策助手" in payload["data"]["systemPrompt"]
 
 
+def test_workspace_context_includes_trace_visualization_flags(client, app, db_session):
+    user = User(email="trace-context@example.com", nickname="TraceContext", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+
+    headers = _auth_headers(client, user.id)
+    app.config["AGENT_TRACE_VISUALIZATION_ENABLED"] = True
+    app.config["AGENT_TRACE_DEBUG_DETAILS_ENABLED"] = True
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    context_response = client.get("/api/workspace/context")
+    assert context_response.status_code == 200
+    payload = context_response.get_json()["data"]
+    assert payload["agentTraceVisualizationEnabled"] is True
+    assert payload["agentTraceDebugDetailsEnabled"] is True
+
+
 def test_workspace_chat_requires_role(client, db_session, monkeypatch):
     user = User(email="chat@example.com", nickname="Chat", password_hash=generate_password_hash("password123"))
     db_session.add(user)
@@ -247,6 +266,58 @@ def test_workspace_chat_requires_role(client, db_session, monkeypatch):
     payload = response.get_json()
     assert payload["data"]["role"] == "regulator"
     assert payload["data"]["reply"] == "agent generated response"
+
+
+def test_workspace_chat_omits_trace_when_visualization_disabled(client, app, db_session, monkeypatch):
+    user = User(email="trace-disabled@example.com", nickname="TraceDisabled", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    app.config["AGENT_TRACE_VISUALIZATION_ENABLED"] = False
+    monkeypatch.setattr(
+        "app.workspace.routes.generate_reply_payload",
+        lambda **kwargs: {
+            "reply": "agent generated response",
+            "citations": [],
+            "noEvidence": False,
+            "trace": {"steps": [{"id": "planner"}]},
+        },
+    )
+
+    response = client.post("/api/workspace/chat", json={"message": "请分析风险"}, headers=headers)
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert "trace" not in payload
+
+
+def test_workspace_chat_includes_trace_when_visualization_enabled(client, app, db_session, monkeypatch):
+    user = User(email="trace-enabled@example.com", nickname="TraceEnabled", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    app.config["AGENT_TRACE_VISUALIZATION_ENABLED"] = True
+    monkeypatch.setattr(
+        "app.workspace.routes.generate_reply_payload",
+        lambda **kwargs: {
+            "reply": "agent generated response",
+            "citations": [],
+            "noEvidence": False,
+            "trace": {"steps": [{"id": "planner", "status": "done"}]},
+        },
+    )
+
+    response = client.post("/api/workspace/chat", json={"message": "请分析风险"}, headers=headers)
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["trace"]["steps"][0]["id"] == "planner"
 
 
 def test_workspace_chat_with_configured_agent_provider(client, app, db_session, monkeypatch):
@@ -504,6 +575,8 @@ def test_workspace_chat_search_subagent_with_websearch(client, app, db_session, 
     app.config["AI_BASE_URL"] = ""
     app.config["RAG_ENABLED"] = False
     app.config["AGENT_WEBSEARCH_ENABLED"] = True
+    app.config["AGENT_TRACE_VISUALIZATION_ENABLED"] = True
+    app.config["AGENT_TRACE_DEBUG_DETAILS_ENABLED"] = False
     app.config["TAVILY_API_KEY"] = "test-tavily-key"
     monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
     called = {"count": 0}
@@ -537,6 +610,11 @@ def test_workspace_chat_search_subagent_with_websearch(client, app, db_session, 
     payload = response.get_json()
     assert payload["ok"] is True
     assert payload["data"]["reply"] == "search-subagent reply"
+    steps = payload["data"]["trace"]["steps"]
+    assert [step["id"] for step in steps] == ["planner", "search_subagent", "compose_answer", "citations"]
+    assert all("details" not in step for step in steps)
+    search_step = steps[1]
+    assert [child["id"] for child in search_step["children"]] == ["web_lookup", "merge_results"]
     assert called["count"] == 1
 
 
@@ -563,6 +641,8 @@ def test_workspace_chat_mcp_subagent_with_mcp(client, app, db_session, monkeypat
     app.config["AI_TIMEOUT_SECONDS"] = 10
     app.config["AI_BASE_URL"] = ""
     app.config["AGENT_MCP_ENABLED"] = True
+    app.config["AGENT_TRACE_VISUALIZATION_ENABLED"] = True
+    app.config["AGENT_TRACE_DEBUG_DETAILS_ENABLED"] = True
     app.config["AGENT_MCP_SERVERS_JSON"] = '{"local":{"endpoint":"http://127.0.0.1:8080/mcp"}}'
     monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
     called = {"count": 0}
@@ -591,6 +671,11 @@ def test_workspace_chat_mcp_subagent_with_mcp(client, app, db_session, monkeypat
     payload = response.get_json()
     assert payload["ok"] is True
     assert payload["data"]["reply"] == "mcp-subagent reply"
+    steps = payload["data"]["trace"]["steps"]
+    assert [step["id"] for step in steps] == ["planner", "mcp_subagent", "compose_answer", "citations"]
+    assert "details" in steps[0]
+    assert "details" in steps[1]
+    assert steps[1]["details"]["artifactKeys"] == ["tools"]
     assert called["count"] == 1
 
 
