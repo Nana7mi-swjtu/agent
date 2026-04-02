@@ -18,7 +18,8 @@ export const useChatSession = () => {
   const uiStore = useUiStore();
   const chatStore = useChatStore();
   const workspaceStore = useWorkspaceStore();
-  const { selectedRole, systemPrompt, workspaceId, ragDebugEnabled } = storeToRefs(workspaceStore);
+  const { selectedRole, systemPrompt, workspaceId, ragDebugEnabled, agentTraceEnabled } =
+    storeToRefs(workspaceStore);
   const { sessions, activeSessionId, sending, error, activeSession } = storeToRefs(chatStore);
   const input = ref("");
   const ragUploading = ref(false);
@@ -226,6 +227,7 @@ export const useChatSession = () => {
       citations: result.data?.data?.citations || [],
       noEvidence: Boolean(result.data?.data?.noEvidence),
       debug: result.data?.data?.debug || null,
+      trace: result.data?.data?.trace || null,
     });
     workspaceStore.systemPrompt = result.data?.data?.systemPrompt || workspaceStore.systemPrompt;
 
@@ -254,6 +256,7 @@ export const useChatSession = () => {
     ragError,
     ragDocuments,
     ragDebugEnabled,
+    agentTraceEnabled,
     ragDebugSnapshot,
     chunkingStrategy,
     chunkingAppliedText,
