@@ -32,34 +32,72 @@ def _load_chat_prompt() -> str:
     )
 
 
-def _build_runtime() -> dict[str, Any]:
-    provider = str(current_app.config.get("AI_PROVIDER", "")).strip().lower()
-    model = str(current_app.config.get("AI_MODEL", "")).strip()
-    api_key = str(current_app.config.get("AI_API_KEY", "")).strip()
-    base_url = str(current_app.config.get("AI_BASE_URL", "")).strip()
-    timeout = int(current_app.config.get("AI_TIMEOUT_SECONDS", 30))
+def _agent_llm_config(agent_key: str) -> dict[str, Any]:
+    normalized = agent_key.strip().upper()
+    provider = str(
+        current_app.config.get(f"AGENT_{normalized}_AI_PROVIDER") or current_app.config.get("AI_PROVIDER", "")
+    ).strip().lower()
+    model = str(
+        current_app.config.get(f"AGENT_{normalized}_AI_MODEL") or current_app.config.get("AI_MODEL", "")
+    ).strip()
+    api_key = str(
+        current_app.config.get(f"AGENT_{normalized}_AI_API_KEY") or current_app.config.get("AI_API_KEY", "")
+    ).strip()
+    base_url = str(
+        current_app.config.get(f"AGENT_{normalized}_AI_BASE_URL") or current_app.config.get("AI_BASE_URL", "")
+    ).strip()
+    timeout = int(
+        current_app.config.get(f"AGENT_{normalized}_AI_TIMEOUT_SECONDS")
+        or current_app.config.get("AI_TIMEOUT_SECONDS", 30)
+    )
+    return {
+        "provider": provider,
+        "model": model,
+        "api_key": api_key,
+        "base_url": base_url,
+        "timeout": timeout,
+    }
 
-    if not model or not api_key:
+
+def _create_llm(agent_key: str) -> Any:
+    config = _agent_llm_config(agent_key)
+    if not config["model"] or not config["api_key"]:
         logger.error(
             "Missing AI runtime config",
-            extra={"provider": provider, "model_set": bool(model), "api_key_set": bool(api_key)},
+            extra={
+                "agent_key": agent_key,
+                "provider": config["provider"],
+                "model_set": bool(config["model"]),
+                "api_key_set": bool(config["api_key"]),
+            },
         )
         raise AgentServiceError("missing agent runtime configuration")
+    return ChatOpenAI(
+        model=config["model"],
+        api_key=SecretStr(config["api_key"]),
+        base_url=config["base_url"] or None,
+        timeout=config["timeout"],
+    )
 
+
+def _build_runtime() -> dict[str, Any]:
     try:
-        llm = ChatOpenAI(
-            model=model,
-            api_key=SecretStr(api_key),
-            base_url=base_url or None,
-            timeout=timeout,
-        )
+        main_llm = _create_llm("MAIN")
+        search_llm = _create_llm("SEARCH")
+        mcp_llm = _create_llm("MCP")
         graph = build_graph()
         prompt_template = _load_chat_prompt()
     except Exception as exc:
         logger.exception("Failed to initialize agent runtime")
         raise AgentServiceError("runtime initialization failed") from exc
-    
-    return {"llm": llm, "graph": graph, "prompt_template": prompt_template}
+
+    return {
+        "main_llm": main_llm,
+        "search_llm": search_llm,
+        "mcp_llm": mcp_llm,
+        "graph": graph,
+        "prompt_template": prompt_template,
+    }
 
 
 def _get_runtime() -> dict[str, Any]:
@@ -90,20 +128,36 @@ def generate_reply_payload(
     try:
         runtime = _get_runtime()
         state = {
-            "llm": runtime["llm"],
+            "main_llm": runtime["main_llm"],
+            "search_llm": runtime["search_llm"],
+            "mcp_llm": runtime["mcp_llm"],
             "prompt_template": runtime["prompt_template"],
             "role": role,
             "system_prompt": system_prompt,
             "user_message": user_message,
             "user_id": user_id,
             "workspace_id": workspace_id,
+            "intent": "",
+            "needs_search": False,
+            "needs_mcp": False,
+            "needs_clarification": False,
+            "clarification_question": "",
+            "missing_fields": [],
+            "search_request": {},
+            "search_result": {},
+            "mcp_request": {},
+            "mcp_result": {},
+            "search_completed": False,
+            "mcp_completed": False,
             "rag_enabled": bool(current_app.config.get("RAG_ENABLED", False)),
+            "web_enabled": bool(current_app.config.get("AGENT_WEBSEARCH_ENABLED", False)),
+            "mcp_enabled": bool(current_app.config.get("AGENT_MCP_ENABLED", False)),
             "rag_debug_enabled": bool(rag_debug_enabled),
-            "rag_decision": "skip",
             "rag_chunks": [],
             "rag_citations": [],
             "rag_no_evidence": False,
             "rag_debug": {},
+            "debug": {},
             "reply": "",
         }
         output = runtime["graph"].invoke(state)
@@ -112,7 +166,7 @@ def generate_reply_payload(
         if not isinstance(citations, list):
             citations = []
         no_evidence = bool(output.get("rag_no_evidence", False))
-        debug_payload = output.get("rag_debug", {})
+        debug_payload = output.get("debug", {})
         if not isinstance(debug_payload, dict):
             debug_payload = {}
     except AgentServiceError:

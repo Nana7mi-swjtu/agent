@@ -1,9 +1,11 @@
 import os
+from pathlib import Path
 from datetime import timedelta
 
 from dotenv import load_dotenv
 
-load_dotenv()
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_PROJECT_ROOT / ".env")
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -94,6 +96,21 @@ class Config:
     AI_API_KEY = os.getenv("AI_API_KEY", "")
     AI_BASE_URL = os.getenv("AI_BASE_URL", "")
     AI_TIMEOUT_SECONDS = int(os.getenv("AI_TIMEOUT_SECONDS", "30"))
+    AGENT_MAIN_AI_PROVIDER = os.getenv("AGENT_MAIN_AI_PROVIDER", "").strip().lower()
+    AGENT_MAIN_AI_MODEL = os.getenv("AGENT_MAIN_AI_MODEL", "").strip()
+    AGENT_MAIN_AI_API_KEY = os.getenv("AGENT_MAIN_AI_API_KEY", "").strip()
+    AGENT_MAIN_AI_BASE_URL = os.getenv("AGENT_MAIN_AI_BASE_URL", "").strip()
+    AGENT_MAIN_AI_TIMEOUT_SECONDS = int(os.getenv("AGENT_MAIN_AI_TIMEOUT_SECONDS", str(AI_TIMEOUT_SECONDS)))
+    AGENT_SEARCH_AI_PROVIDER = os.getenv("AGENT_SEARCH_AI_PROVIDER", "").strip().lower()
+    AGENT_SEARCH_AI_MODEL = os.getenv("AGENT_SEARCH_AI_MODEL", "").strip()
+    AGENT_SEARCH_AI_API_KEY = os.getenv("AGENT_SEARCH_AI_API_KEY", "").strip()
+    AGENT_SEARCH_AI_BASE_URL = os.getenv("AGENT_SEARCH_AI_BASE_URL", "").strip()
+    AGENT_SEARCH_AI_TIMEOUT_SECONDS = int(os.getenv("AGENT_SEARCH_AI_TIMEOUT_SECONDS", str(AI_TIMEOUT_SECONDS)))
+    AGENT_MCP_AI_PROVIDER = os.getenv("AGENT_MCP_AI_PROVIDER", "").strip().lower()
+    AGENT_MCP_AI_MODEL = os.getenv("AGENT_MCP_AI_MODEL", "").strip()
+    AGENT_MCP_AI_API_KEY = os.getenv("AGENT_MCP_AI_API_KEY", "").strip()
+    AGENT_MCP_AI_BASE_URL = os.getenv("AGENT_MCP_AI_BASE_URL", "").strip()
+    AGENT_MCP_AI_TIMEOUT_SECONDS = int(os.getenv("AGENT_MCP_AI_TIMEOUT_SECONDS", str(AI_TIMEOUT_SECONDS)))
     AGENT_AUTO_TOOL_SELECTION_ENABLED = _bool_env("AGENT_AUTO_TOOL_SELECTION_ENABLED", True)
     AGENT_TOOL_CALL_MAX_ROUNDS = int(os.getenv("AGENT_TOOL_CALL_MAX_ROUNDS", "4"))
     AGENT_WEBSEARCH_ENABLED = _bool_env("AGENT_WEBSEARCH_ENABLED", False)
