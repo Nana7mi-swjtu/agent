@@ -250,17 +250,25 @@ def test_rag_reranker_openai_compatible_requires_base_url(app):
 
 
 def test_rag_graph_decision_and_citation_contract():
-    from app.agent.graph.nodes import answer_with_citations_node, decide_rag_node
+    from app.agent.graph.nodes import answer_with_citations_node, plan_route_node
 
-    decision = decide_rag_node({"user_message": "请根据文档回答", "rag_enabled": True})
-    assert decision["rag_decision"] == "retrieve"
+    decision = plan_route_node(
+        {
+            "user_message": "请根据文档回答",
+            "rag_enabled": True,
+            "web_enabled": False,
+            "mcp_enabled": False,
+        }
+    )
+    assert decision["needs_search"] is True
 
     with pytest.raises(RAGContractError):
         answer_with_citations_node(
             {
                 "rag_chunks": [{"chunk_id": "abc123", "source": "", "score": 0.9}],
-                "rag_decision": "retrieve",
                 "reply": "placeholder",
+                "rag_debug_enabled": False,
+                "debug": {},
             }
         )
 

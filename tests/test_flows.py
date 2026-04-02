@@ -285,6 +285,45 @@ def test_workspace_chat_with_configured_agent_provider(client, app, db_session, 
     assert "citations" in payload["data"]
 
 
+def test_workspace_chat_supports_role_specific_agent_models(client, app, db_session, monkeypatch):
+    created_models: list[str] = []
+
+    class _FakeChatOpenAI:
+        def __init__(self, *args, **kwargs):
+            created_models.append(str(kwargs.get("model", "")))
+
+        def invoke(self, messages):
+            class _Response:
+                content = "agent provider reply"
+
+            return _Response()
+
+    user = User(email="chat-role-models@example.com", nickname="ChatRoleModels", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    app.config["AI_PROVIDER"] = "openai"
+    app.config["AI_MODEL"] = "fallback-model"
+    app.config["AI_API_KEY"] = "fallback-key"
+    app.config["AI_TIMEOUT_SECONDS"] = 10
+    app.config["AI_BASE_URL"] = ""
+    app.config["AGENT_MAIN_AI_MODEL"] = "main-model"
+    app.config["AGENT_MAIN_AI_API_KEY"] = "main-key"
+    app.config["AGENT_SEARCH_AI_MODEL"] = "search-model"
+    app.config["AGENT_SEARCH_AI_API_KEY"] = "search-key"
+    app.config["AGENT_MCP_AI_MODEL"] = "mcp-model"
+    app.config["AGENT_MCP_AI_API_KEY"] = "mcp-key"
+    monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    response = client.post("/api/workspace/chat", json={"message": "hello"}, headers=headers)
+    assert response.status_code == 200
+    assert created_models == ["main-model", "search-model", "mcp-model"]
+
+
 def test_workspace_chat_includes_semantic_segment_context(client, app, db_session, monkeypatch):
     captured = {"system_content": ""}
 
@@ -441,40 +480,17 @@ def test_workspace_chat_returns_502_when_agent_config_missing(client, app, db_se
     assert payload["error"] == "agent service unavailable"
 
 
-def test_workspace_chat_auto_tool_selection_with_websearch(client, app, db_session, monkeypatch):
+def test_workspace_chat_search_subagent_with_websearch(client, app, db_session, monkeypatch):
     class _FakeResponse:
-        def __init__(self, content: str, tool_calls=None):
+        def __init__(self, content: str):
             self.content = content
-            self.tool_calls = tool_calls if isinstance(tool_calls, list) else []
-
-    class _FakeBoundLLM:
-        def __init__(self):
-            self._calls = 0
-
-        def invoke(self, messages):
-            self._calls += 1
-            if self._calls == 1:
-                return _FakeResponse(
-                    "",
-                    tool_calls=[
-                        {
-                            "id": "call_1",
-                            "name": "web_search",
-                            "args": {"query": "latest AI regulation news", "max_results": 3},
-                        }
-                    ],
-                )
-            return _FakeResponse("tool-based reply")
 
     class _FakeChatOpenAI:
         def __init__(self, *args, **kwargs):
-            self.bound = _FakeBoundLLM()
-
-        def bind_tools(self, tools):
-            return self.bound
+            pass
 
         def invoke(self, messages):
-            return _FakeResponse("fallback")
+            return _FakeResponse("search-subagent reply")
 
     user = User(email="chat-auto-tool@example.com", nickname="ChatAutoTool", password_hash=generate_password_hash("password123"))
     db_session.add(user)
@@ -486,12 +502,14 @@ def test_workspace_chat_auto_tool_selection_with_websearch(client, app, db_sessi
     app.config["AI_API_KEY"] = "test-key"
     app.config["AI_TIMEOUT_SECONDS"] = 10
     app.config["AI_BASE_URL"] = ""
-    app.config["AGENT_AUTO_TOOL_SELECTION_ENABLED"] = True
+    app.config["RAG_ENABLED"] = False
     app.config["AGENT_WEBSEARCH_ENABLED"] = True
     app.config["TAVILY_API_KEY"] = "test-tavily-key"
     monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
+    called = {"count": 0}
 
     def _fake_urlopen(request, timeout=0):
+        called["count"] += 1
         class _DummyResponse:
             def __enter__(self):
                 return self
@@ -518,43 +536,21 @@ def test_workspace_chat_auto_tool_selection_with_websearch(client, app, db_sessi
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["ok"] is True
-    assert payload["data"]["reply"] == "tool-based reply"
+    assert payload["data"]["reply"] == "search-subagent reply"
+    assert called["count"] == 1
 
 
-def test_workspace_chat_auto_tool_selection_with_mcp(client, app, db_session, monkeypatch):
+def test_workspace_chat_mcp_subagent_with_mcp(client, app, db_session, monkeypatch):
     class _FakeResponse:
-        def __init__(self, content: str, tool_calls=None):
+        def __init__(self, content: str):
             self.content = content
-            self.tool_calls = tool_calls if isinstance(tool_calls, list) else []
-
-    class _FakeBoundLLM:
-        def __init__(self):
-            self._calls = 0
-
-        def invoke(self, messages):
-            self._calls += 1
-            if self._calls == 1:
-                return _FakeResponse(
-                    "",
-                    tool_calls=[
-                        {
-                            "id": "call_1",
-                            "name": "mcp_list_tools",
-                            "args": {"server": "local"},
-                        }
-                    ],
-                )
-            return _FakeResponse("mcp tool-based reply")
 
     class _FakeChatOpenAI:
         def __init__(self, *args, **kwargs):
-            self.bound = _FakeBoundLLM()
-
-        def bind_tools(self, tools):
-            return self.bound
+            pass
 
         def invoke(self, messages):
-            return _FakeResponse("fallback")
+            return _FakeResponse("mcp-subagent reply")
 
     user = User(email="chat-auto-mcp@example.com", nickname="ChatAutoMCP", password_hash=generate_password_hash("password123"))
     db_session.add(user)
@@ -566,12 +562,13 @@ def test_workspace_chat_auto_tool_selection_with_mcp(client, app, db_session, mo
     app.config["AI_API_KEY"] = "test-key"
     app.config["AI_TIMEOUT_SECONDS"] = 10
     app.config["AI_BASE_URL"] = ""
-    app.config["AGENT_AUTO_TOOL_SELECTION_ENABLED"] = True
     app.config["AGENT_MCP_ENABLED"] = True
     app.config["AGENT_MCP_SERVERS_JSON"] = '{"local":{"endpoint":"http://127.0.0.1:8080/mcp"}}'
     monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
+    called = {"count": 0}
 
     def _fake_mcp_urlopen(request, timeout=0):
+        called["count"] += 1
         class _DummyResponse:
             def __enter__(self):
                 return self
@@ -593,7 +590,8 @@ def test_workspace_chat_auto_tool_selection_with_mcp(client, app, db_session, mo
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["ok"] is True
-    assert payload["data"]["reply"] == "mcp tool-based reply"
+    assert payload["data"]["reply"] == "mcp-subagent reply"
+    assert called["count"] == 1
 
 
 def test_non_chat_endpoint_still_available_without_agent_config(client):
