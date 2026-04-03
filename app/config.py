@@ -123,6 +123,20 @@ class Config:
     AGENT_TRACE_VISUALIZATION_ENABLED = _bool_env("AGENT_TRACE_VISUALIZATION_ENABLED", False)
     AGENT_TRACE_DEBUG_DETAILS_ENABLED = _bool_env("AGENT_TRACE_DEBUG_DETAILS_ENABLED", False)
 
+    BANKRUPTCY_ANALYSIS_ENABLED = _bool_env("BANKRUPTCY_ANALYSIS_ENABLED", False)
+    BANKRUPTCY_MODEL_PATH = os.getenv(
+        "BANKRUPTCY_MODEL_PATH",
+        "assets/bankruptcy/model/xgb_borderline_smote.pkl",
+    )
+    BANKRUPTCY_SCALER_PATH = os.getenv(
+        "BANKRUPTCY_SCALER_PATH",
+        "assets/bankruptcy/model/scaler_borderline_smote.pkl",
+    )
+    BANKRUPTCY_THRESHOLD = _float_env("BANKRUPTCY_THRESHOLD", 0.63)
+    BANKRUPTCY_TOP_FEATURE_COUNT = int(os.getenv("BANKRUPTCY_TOP_FEATURE_COUNT", "10"))
+    BANKRUPTCY_UPLOAD_DIR = os.getenv("BANKRUPTCY_UPLOAD_DIR", "uploads/bankruptcy/csv")
+    BANKRUPTCY_PLOT_DIR = os.getenv("BANKRUPTCY_PLOT_DIR", "uploads/bankruptcy")
+
     RAG_ENABLED = _bool_env("RAG_ENABLED", False)
     RAG_DEBUG_VISUALIZATION_ENABLED = _bool_env("RAG_DEBUG_VISUALIZATION_ENABLED", False)
     RAG_VECTOR_PROVIDER = os.getenv("RAG_VECTOR_PROVIDER", "chromadb").strip().lower()
