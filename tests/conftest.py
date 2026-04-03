@@ -1,10 +1,14 @@
 import os
+from pathlib import Path
 
 import pytest
+from dotenv import load_dotenv
 from sqlalchemy import text
 
 from app import create_app
 from app.db import get_session
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 @pytest.fixture
@@ -21,6 +25,10 @@ def app(tmp_path):
     rag_upload_dir.mkdir(parents=True, exist_ok=True)
     rag_chroma_dir = tmp_path / "chromadb"
     rag_chroma_dir.mkdir(parents=True, exist_ok=True)
+    bankruptcy_upload_dir = tmp_path / "bankruptcy_csv"
+    bankruptcy_upload_dir.mkdir(parents=True, exist_ok=True)
+    bankruptcy_plot_dir = tmp_path / "bankruptcy_plots"
+    bankruptcy_plot_dir.mkdir(parents=True, exist_ok=True)
     config = {
         "DATABASE_URL": test_db_url,
         "AUTO_CREATE_DB": True,
@@ -45,6 +53,11 @@ def app(tmp_path):
         "RAG_CHUNK_STRATEGY_DEFAULT": "paragraph",
         "RAG_CHUNK_STRATEGY_ALLOWED": ("paragraph", "semantic_llm"),
         "RAG_CHUNK_FALLBACK_STRATEGY": "paragraph",
+        "BANKRUPTCY_ANALYSIS_ENABLED": True,
+        "BANKRUPTCY_MODEL_PATH": "assets/bankruptcy/model/xgb_borderline_smote.pkl",
+        "BANKRUPTCY_SCALER_PATH": "assets/bankruptcy/model/scaler_borderline_smote.pkl",
+        "BANKRUPTCY_UPLOAD_DIR": str(bankruptcy_upload_dir),
+        "BANKRUPTCY_PLOT_DIR": str(bankruptcy_plot_dir),
     }
     app = create_app(config)
     return app
@@ -64,6 +77,7 @@ def db_session(app):
             session.execute(text("DELETE FROM rag_index_jobs"))
             session.execute(text("DELETE FROM rag_chunks"))
             session.execute(text("DELETE FROM rag_documents"))
+            session.execute(text("DELETE FROM bankruptcy_analysis_records"))
             session.execute(text("DELETE FROM email_codes"))
             session.execute(text("DELETE FROM users"))
             session.commit()
