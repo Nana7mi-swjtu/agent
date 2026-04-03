@@ -24,6 +24,10 @@ const toChat = () => {
   router.push("/chat");
 };
 
+const toBankruptcyAnalysis = () => {
+  router.push("/bankruptcy-analysis");
+};
+
 const onSelectRole = async (roleKey) => {
   error.value = "";
   const result = await selectRole(roleKey);
@@ -67,6 +71,9 @@ onMounted(async () => {
 
       <button type="button" class="start-btn" style="margin-top: 20px" :disabled="!selectedRole" @click="toChat">
         {{ uiStore.t("startChat") }}
+      </button>
+      <button type="button" class="start-btn" style="margin-top: 12px" @click="toBankruptcyAnalysis">
+        {{ uiStore.t("bankruptcyAnalysis") }}
       </button>
     </template>
   </ContentSection>
