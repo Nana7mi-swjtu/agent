@@ -42,3 +42,8 @@ openspec
 uploads/chromadb
 uploads/rag
 RAGDIR
+uploads/bankruptcy
+
+# others
+assets/bankruptcy/samples
+assets/bankruptcy/reference
