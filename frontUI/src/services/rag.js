@@ -75,5 +75,19 @@ export const enqueueRagIndex = (documentId, workspaceId, chunking) =>
     },
   });
 
+export const reindexRagDocument = (documentId, workspaceId, chunking) =>
+  apiRequest(`/api/rag/documents/${Number(documentId)}/reindex`, {
+    method: "POST",
+    body: {
+      workspaceId: String(workspaceId || "default"),
+      ...(chunking && typeof chunking === "object" ? { chunking } : {}),
+    },
+  });
+
+export const deleteRagDocument = (documentId, workspaceId) =>
+  apiRequest(`/api/rag/documents/${Number(documentId)}?workspaceId=${encodeURIComponent(String(workspaceId || "default"))}`, {
+    method: "DELETE",
+  });
+
 export const getRagDebugSnapshot = (workspaceId) =>
   apiRequest(`/api/rag/debug?workspaceId=${encodeURIComponent(String(workspaceId || "default"))}`);

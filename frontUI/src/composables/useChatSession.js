@@ -3,11 +3,13 @@ import { storeToRefs } from "pinia";
 
 import { postWorkspaceChat } from "@/services/workspace";
 import {
+  deleteRagDocument,
   listRagDocuments,
   uploadRagDocument,
   getRagIndexJob,
   enqueueRagIndex,
   getRagDebugSnapshot,
+  reindexRagDocument,
 } from "@/services/rag";
 import { useChatStore } from "@/stores/chat";
 import { useUiStore } from "@/stores/ui";
@@ -31,6 +33,7 @@ export const useChatSession = () => {
   const chunkingStrategy = ref("paragraph");
   const chunkingAppliedText = ref("");
   const activeJobId = ref(null);
+  const ragActionDocumentId = ref(null);
 
   const selectedRoleName = computed(() =>
     selectedRole.value ? uiStore.getRoleDisplayName(selectedRole.value) : "",
@@ -177,6 +180,53 @@ export const useChatSession = () => {
     return { ok: true };
   };
 
+  const startDocumentIndex = async (documentId) => {
+    ragError.value = "";
+    ragActionDocumentId.value = Number(documentId);
+    ragStageText.value = uiStore.t("ragIndexPending");
+
+    const indexResult = await reindexRagDocument(documentId, workspaceId.value, {
+      strategy: chunkingStrategy.value,
+    });
+    if (!indexResult.ok) {
+      ragError.value = indexResult.data?.error || uiStore.t("sendFailed");
+      ragStageText.value = uiStore.t("ragIndexFailed");
+      await loadDocuments();
+      ragActionDocumentId.value = null;
+      return { ok: false };
+    }
+
+    const jobId = indexResult.data?.data?.jobId;
+    if (typeof jobId === "number" && jobId > 0) {
+      await pollJobUntilDone(jobId);
+    } else {
+      await loadDocuments();
+      ragStageText.value = uiStore.t("ragIndexUnknown");
+    }
+    ragActionDocumentId.value = null;
+    return { ok: true };
+  };
+
+  const removeDocument = async (documentId) => {
+    ragError.value = "";
+    ragActionDocumentId.value = Number(documentId);
+    ragStageText.value = uiStore.t("ragDeleteRunning");
+
+    const result = await deleteRagDocument(documentId, workspaceId.value);
+    if (!result.ok) {
+      ragError.value = result.data?.error || uiStore.t("sendFailed");
+      ragStageText.value = uiStore.t("ragDeleteFailed");
+      await loadDocuments();
+      ragActionDocumentId.value = null;
+      return { ok: false };
+    }
+
+    await loadDocuments();
+    ragStageText.value = uiStore.t("ragDeleteDone");
+    ragActionDocumentId.value = null;
+    return { ok: true };
+  };
+
   const onWorkspaceScopeChanged = async () => {
     stopPollingJob();
     ragUploading.value = false;
@@ -185,6 +235,7 @@ export const useChatSession = () => {
     ragError.value = "";
     chunkingAppliedText.value = "";
     ragDebugSnapshot.value = null;
+    ragActionDocumentId.value = null;
     await loadDocuments();
   };
 
@@ -260,8 +311,11 @@ export const useChatSession = () => {
     ragDebugSnapshot,
     chunkingStrategy,
     chunkingAppliedText,
+    ragActionDocumentId,
     loadDocuments,
     uploadDocument,
+    startDocumentIndex,
+    removeDocument,
     loadRagDebugSnapshot,
     send,
     setActiveSession: chatStore.setActiveSession,

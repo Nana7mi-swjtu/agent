@@ -7,6 +7,7 @@ import { useChatSession } from "@/composables/useChatSession";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUiStore } from "@/stores/ui";
 import { formatTraceDetailValue, getMessageRagDebug, getMessageTraceSteps } from "@/utils/chatMessage";
+import { canDeleteRagDocument, getRagDocumentActionType } from "@/utils/rag";
 
 const router = useRouter();
 const uiStore = useUiStore();
@@ -32,8 +33,11 @@ const {
   ragDebugSnapshot,
   chunkingStrategy,
   chunkingAppliedText,
+  ragActionDocumentId,
   loadDocuments,
   uploadDocument,
+  startDocumentIndex,
+  removeDocument,
   loadRagDebugSnapshot,
   send,
 } = useChatSession();
@@ -59,6 +63,24 @@ const onChooseDocument = async (event) => {
   await uploadDocument(file);
   event.target.value = "";
 };
+
+const documentActionLabel = (document) => {
+  const actionType = getRagDocumentActionType(document);
+  if (actionType === "start") return uiStore.t("ragDocumentStartIndexing");
+  if (actionType === "retry") return uiStore.t("ragDocumentRetry");
+  if (actionType === "reindex") return uiStore.t("ragDocumentReindex");
+  return "";
+};
+
+const onRunDocumentAction = async (document) => {
+  await startDocumentIndex(document?.id);
+};
+
+const onDeleteDocument = async (document) => {
+  await removeDocument(document?.id);
+};
+
+const isDocumentBusy = (document) => Number(ragActionDocumentId.value) === Number(document?.id);
 
 const traceTitleMap = {
   planner: "agentTraceStepPlanner",
@@ -136,12 +158,32 @@ const citationLabel = (citation) => {
       <div class="rag-docs-title">{{ uiStore.t("ragUploadedFiles") }}</div>
       <ul class="rag-docs-list">
         <li v-for="doc in ragDocuments" :key="doc.id" class="rag-doc-item">
-          <span class="rag-doc-name">{{ doc.sourceName || doc.fileName }}</span>
-          <span class="rag-doc-status">
-            {{ doc.status }}
-            <template v-if="doc.chunkingApplied?.strategy"> · {{ doc.chunkingApplied.strategy }}</template>
-            <template v-if="doc.chunkingApplied?.fallbackUsed"> ({{ uiStore.t("ragChunkFallback") }})</template>
-          </span>
+          <div class="rag-doc-main">
+            <span class="rag-doc-name">{{ doc.sourceName || doc.fileName }}</span>
+            <span class="rag-doc-status">
+              {{ doc.status }}
+              <template v-if="doc.chunkingApplied?.strategy"> · {{ doc.chunkingApplied.strategy }}</template>
+              <template v-if="doc.chunkingApplied?.fallbackUsed"> ({{ uiStore.t("ragChunkFallback") }})</template>
+            </span>
+          </div>
+          <div class="rag-doc-actions">
+            <button
+              v-if="documentActionLabel(doc)"
+              class="rag-doc-action-btn"
+              :disabled="ragUploading || isDocumentBusy(doc)"
+              @click="onRunDocumentAction(doc)"
+            >
+              {{ documentActionLabel(doc) }}
+            </button>
+            <button
+              v-if="canDeleteRagDocument(doc)"
+              class="rag-doc-action-btn is-danger"
+              :disabled="ragUploading || isDocumentBusy(doc)"
+              @click="onDeleteDocument(doc)"
+            >
+              {{ uiStore.t("ragDocumentDelete") }}
+            </button>
+          </div>
         </li>
         <li v-if="!ragDocuments.length" class="rag-doc-empty">{{ uiStore.t("ragNoFiles") }}</li>
       </ul>
