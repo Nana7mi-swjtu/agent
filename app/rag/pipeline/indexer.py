@@ -5,7 +5,7 @@ from pathlib import Path
 from flask import current_app
 
 from ..errors import RAGChunkingError, RAGValidationError
-from ..pipeline.parsers import parse_document_file
+from ..fileloaders import load_source_document
 from ..schemas import ChunkPayload, ChunkingApplied, ChunkingRequest, TextBlock
 from .chunking import (
     build_chunking_applied,
@@ -30,10 +30,9 @@ def normalize_blocks(blocks: list[TextBlock]) -> list[dict]:
     return normalized
 
 
-def parse_and_chunk_document(
+def chunk_document_blocks(
     *,
-    file_path: str,
-    extension: str,
+    blocks: list[TextBlock],
     document_id: int,
     source_name: str,
     chunker,
@@ -42,7 +41,6 @@ def parse_and_chunk_document(
     chunk_size: int,
     overlap: int,
 ) -> tuple[list[ChunkPayload], ChunkingApplied]:
-    blocks = parse_document_file(Path(file_path), extension)
     normalized = normalize_blocks(blocks)
     chunking_payload = None
     if chunking_request is not None:
@@ -146,3 +144,28 @@ def parse_and_chunk_document(
             fallback_reason=fallback_reason,
         )
         return payloads, applied
+
+
+def parse_and_chunk_document(
+    *,
+    file_path: str,
+    extension: str,
+    document_id: int,
+    source_name: str,
+    chunker,
+    semantic_provider,
+    chunking_request: ChunkingRequest | None,
+    chunk_size: int,
+    overlap: int,
+) -> tuple[list[ChunkPayload], ChunkingApplied]:
+    loaded = load_source_document(path=Path(file_path), extension=extension, source_name=source_name)
+    return chunk_document_blocks(
+        blocks=loaded.blocks,
+        document_id=document_id,
+        source_name=source_name,
+        chunker=chunker,
+        semantic_provider=semantic_provider,
+        chunking_request=chunking_request,
+        chunk_size=chunk_size,
+        overlap=overlap,
+    )

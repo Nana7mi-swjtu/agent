@@ -6,15 +6,17 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from flask import current_app
 from sqlalchemy import func
 
 from ..db import session_scope
 from ..models import RagChunk, RagDocument, RagIndexJob
+from .assets import cleanup_artifact, create_derived_asset, create_original_asset, uploads_root
 from .errors import RAGAuthorizationError, RAGContractError, RAGValidationError
-from .pipeline.indexer import parse_and_chunk_document
+from .fileloaders import load_source_document
+from .fileloaders.canonical import parse_canonical_text
+from .pipeline.indexer import chunk_document_blocks
 from .pipeline.chunking import build_chunking_applied, resolve_chunking_plan
 from .providers.registry import (
     get_chunker,
@@ -50,12 +52,6 @@ def _ensure_executor() -> concurrent.futures.ThreadPoolExecutor:
             max_workers=max(1, int(current_app.config.get("RAG_INDEX_MAX_WORKERS", 2)))
         )
     return _executor
-
-
-def _rag_upload_dir() -> Path:
-    directory = Path(current_app.root_path).parent / str(current_app.config["RAG_UPLOAD_DIR"])
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
 
 
 def _allowed_extensions() -> set[str]:
@@ -176,6 +172,12 @@ def _document_payload(document: RagDocument, *, chunk_count: int) -> dict[str, A
         "embeddingModel": document.embedding_model,
         "embeddingVersion": document.embedding_version,
         "embeddingDimension": document.embedding_dimension,
+        "loaderType": document.loader_type,
+        "loaderVersion": document.loader_version,
+        "extractionMethod": document.extraction_method,
+        "ocrUsed": bool(document.ocr_used),
+        "ocrProvider": document.ocr_provider,
+        "derivedAt": document.derived_at.isoformat() if document.derived_at else None,
         "chunkCount": int(chunk_count),
         "chunkingApplied": {
             "requestedStrategy": document.chunk_strategy or "paragraph",
@@ -225,13 +227,69 @@ def _delete_document_vectors(*, workspace_id: str, document_id: int) -> None:
 
 
 def _delete_document_file(document: RagDocument) -> None:
-    file_path = Path(str(document.storage_path or "")).expanduser()
-    if not file_path.exists():
-        return
-    try:
-        file_path.unlink()
-    except FileNotFoundError:
-        return
+    expected_root = uploads_root()
+    cleanup_artifact(document.storage_path, expected_root=expected_root)
+    cleanup_artifact(document.derived_text_path, expected_root=expected_root)
+
+
+def _read_canonical_blocks(document: RagDocument) -> list:
+    derived_path = Path(str(document.derived_text_path or "")).expanduser()
+    if not derived_path.exists():
+        raise RAGValidationError("canonical text asset is missing")
+    raw = derived_path.read_text(encoding="utf-8")
+    blocks = parse_canonical_text(raw)
+    if not blocks:
+        raise RAGValidationError("canonical text asset is empty")
+    return blocks
+
+
+def _persist_derived_document(*, user_id: int, workspace_id: str, document_id: int, loaded_document) -> list:
+    derived_path = create_derived_asset(user_id=user_id, workspace_id=workspace_id, document_id=document_id)
+    derived_path.write_text(str(loaded_document.derived_text or ""), encoding="utf-8")
+    with session_scope() as db:
+        document = get_document_for_scope(db=db, document_id=document_id, user_id=user_id, workspace_id=workspace_id)
+        document.derived_text_path = str(derived_path)
+        document.loader_type = loaded_document.loader_type
+        document.loader_version = loaded_document.loader_version
+        document.extraction_method = loaded_document.extraction_method
+        document.ocr_used = 1 if loaded_document.ocr_used else 0
+        document.ocr_provider = loaded_document.ocr_provider
+        document.derived_at = datetime.utcnow()
+    return loaded_document.blocks
+
+
+def _load_or_build_canonical_blocks(*, user_id: int, workspace_id: str, document_id: int) -> list:
+    with session_scope() as db:
+        document = get_document_for_scope(db=db, document_id=document_id, user_id=user_id, workspace_id=workspace_id)
+        source_name = document.source_name
+        file_extension = document.file_extension
+        storage_path = document.storage_path
+        has_derived = bool(str(document.derived_text_path or "").strip())
+
+    if has_derived:
+        with session_scope() as db:
+            document = get_document_for_scope(db=db, document_id=document_id, user_id=user_id, workspace_id=workspace_id)
+            try:
+                return _read_canonical_blocks(document)
+            except RAGValidationError:
+                logger.warning(
+                    "RAG canonical asset invalid; rebuilding from source",
+                    extra={"document_id": document_id, "workspace_id": workspace_id},
+                )
+
+    loaded_document = load_source_document(
+        path=Path(str(storage_path)),
+        extension=file_extension,
+        source_name=source_name,
+    )
+    if not loaded_document.blocks:
+        raise RAGValidationError("document produced no canonical text blocks")
+    return _persist_derived_document(
+        user_id=user_id,
+        workspace_id=workspace_id,
+        document_id=document_id,
+        loaded_document=loaded_document,
+    )
 
 
 def upload_document(*, user_id: int, workspace_id: str, file_storage, chunking: ChunkingRequest | None = None):
@@ -248,8 +306,7 @@ def upload_document(*, user_id: int, workspace_id: str, file_storage, chunking: 
         raise RAGValidationError(f"unsupported format; allowed formats: {allowed}")
 
     plan = _chunking_plan_from_request(chunking)
-    stored_name = f"{uuid4().hex}.{extension}"
-    target_path = _rag_upload_dir() / stored_name
+    target_path = create_original_asset(user_id=user_id, workspace_id=workspace, original_name=original_name)
     file_storage.save(target_path)
 
     source_name = original_name
@@ -399,19 +456,24 @@ def _run_index_job(
                     workspace_id=workspace_id,
                 )
                 document_id = int(document.id)
+                source_name = document.source_name
                 set_index_job_status(job=job, status="running")
                 set_document_status(document=document, status="indexing")
 
+            canonical_blocks = _load_or_build_canonical_blocks(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                document_id=document_id,
+            )
             chunker = get_chunker()
             semantic_provider = get_semantic_chunking_provider()
             embedder = get_embedder()
             vector_store = get_vector_store()
             collection_name = _collection_name_for_workspace(workspace_id)
-            chunk_payloads, chunking_applied = parse_and_chunk_document(
-                file_path=document.storage_path,
-                extension=document.file_extension,
-                document_id=document.id,
-                source_name=document.source_name,
+            chunk_payloads, chunking_applied = chunk_document_blocks(
+                blocks=canonical_blocks,
+                document_id=document_id,
+                source_name=source_name,
                 chunker=chunker,
                 semantic_provider=semantic_provider,
                 chunking_request=chunking,
@@ -421,7 +483,7 @@ def _run_index_job(
             for payload in chunk_payloads:
                 payload.metadata["user_id"] = user_id
                 payload.metadata["workspace_id"] = workspace_id
-                payload.metadata["document_id"] = document.id
+                payload.metadata["document_id"] = document_id
                 if chunking_applied is not None:
                     payload.metadata["chunk_provider"] = chunking_applied.provider
                     payload.metadata["chunk_model"] = chunking_applied.model
@@ -433,7 +495,7 @@ def _run_index_job(
             vector_store.delete_document_chunks(
                 workspace_id=workspace_id,
                 collection_name=collection_name,
-                document_id=document.id,
+                document_id=document_id,
             )
             vector_store.upsert_chunks(
                 workspace_id=workspace_id,
