@@ -16,6 +16,13 @@ import { useUiStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { formatMessageTime } from "@/utils/time";
 
+const SUPPORTED_RAG_EXTENSIONS = [".pdf", ".docx", ".md", ".txt"];
+
+const isSupportedRagFile = (file) => {
+  const name = String(file?.name || "").trim().toLowerCase();
+  return SUPPORTED_RAG_EXTENSIONS.some((extension) => name.endsWith(extension));
+};
+
 export const useChatSession = () => {
   const uiStore = useUiStore();
   const chatStore = useChatStore();
@@ -126,6 +133,11 @@ export const useChatSession = () => {
 
   const uploadDocument = async (file) => {
     ragError.value = "";
+    if (!isSupportedRagFile(file)) {
+      ragStageText.value = uiStore.t("ragUploadFailed");
+      ragError.value = uiStore.t("ragUnsupportedFormat");
+      return { ok: false };
+    }
     ragUploading.value = true;
     uploadPercent.value = 0;
     ragStageText.value = uiStore.t("ragUploadPreparing");

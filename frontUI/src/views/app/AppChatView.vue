@@ -141,9 +141,14 @@ const citationLabel = (citation) => {
       </label>
       <button class="toolbar-upload-btn" :disabled="ragUploading">
         {{ uiStore.t("ragUploadFile") }}
-        <input type="file" @change="onChooseDocument" />
+        <input
+          type="file"
+          accept=".pdf,.docx,.md,.txt,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          @change="onChooseDocument"
+        />
       </button>
     </div>
+    <div class="rag-applied-row">{{ uiStore.t("ragUploadFormatsHint") }}</div>
 
     <div class="rag-status-row">
       <span class="rag-status-text">{{ ragStageText || uiStore.t("ragUploadIdle") }}</span>
