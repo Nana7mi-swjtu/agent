@@ -10,6 +10,8 @@ from werkzeug.security import generate_password_hash
 
 from app.db import get_session
 from app.rag.errors import RAGConfigurationError, RAGContractError
+from app.rag.fileloaders import load_source_document
+from app.rag.fileloaders.canonical import parse_canonical_text
 from app.rag.pipeline.indexer import parse_and_chunk_document
 from app.rag.providers.semantic_chunking_provider import OpenAICompatibleSemanticChunkingProvider
 from app.rag.providers.registry import get_chunker, get_embedder, get_reranker, get_semantic_chunking_provider
@@ -169,6 +171,45 @@ def test_rag_upload_index_and_search_flow(client, app, db_session):
     docs = documents_response.get_json()["data"]["documents"]
     assert docs
     assert docs[0]["chunkingApplied"]["strategy"] == "paragraph"
+    assert docs[0]["loaderType"] == "txt"
+    assert docs[0]["extractionMethod"] == "plain_text"
+    assert docs[0]["ocrUsed"] is False
+    assert isinstance(docs[0]["derivedAt"], str) and docs[0]["derivedAt"]
+
+
+def test_rag_rejects_removed_html_and_csv_formats(client, app, db_session):
+    app.config["RAG_ENABLED"] = True
+
+    user = _create_user(db_session, "rag-removed-formats@example.com")
+    headers = _auth_headers(client, user.id)
+
+    html_response = client.post(
+        "/api/rag/upload",
+        data={
+            "workspaceId": "ws-formats",
+            "file": (io.BytesIO("<h1>Hello</h1>".encode("utf-8")), "page.html"),
+        },
+        headers=headers,
+        content_type="multipart/form-data",
+    )
+    assert html_response.status_code == 400
+    html_error = html_response.get_json()["error"]
+    assert "unsupported format" in html_error
+    assert "docx" in html_error and "md" in html_error and "pdf" in html_error and "txt" in html_error
+
+    csv_response = client.post(
+        "/api/rag/upload",
+        data={
+            "workspaceId": "ws-formats",
+            "file": (io.BytesIO("a,b\n1,2".encode("utf-8")), "sheet.csv"),
+        },
+        headers=headers,
+        content_type="multipart/form-data",
+    )
+    assert csv_response.status_code == 400
+    csv_error = csv_response.get_json()["error"]
+    assert "unsupported format" in csv_error
+    assert "docx" in csv_error and "md" in csv_error and "pdf" in csv_error and "txt" in csv_error
 
 
 def test_rag_delete_keeps_record_but_clears_active_assets(client, app, db_session):
@@ -198,7 +239,9 @@ def test_rag_delete_keeps_record_but_clears_active_assets(client, app, db_sessio
     stored_document = db_session.get(RagDocument, document_id)
     assert stored_document is not None
     stored_path = Path(stored_document.storage_path)
+    derived_path = Path(str(stored_document.derived_text_path or ""))
     assert stored_path.exists()
+    assert derived_path.exists()
 
     delete_response = client.delete(f"/api/rag/documents/{document_id}?workspaceId=ws-delete", headers=headers)
     assert delete_response.status_code == 200
@@ -225,6 +268,7 @@ def test_rag_delete_keeps_record_but_clears_active_assets(client, app, db_sessio
     assert _count_document_chunks(app, document_id) == 0
     assert _count_document_jobs(app, document_id) == 1
     assert stored_path.exists() is False
+    assert derived_path.exists() is False
 
 
 def test_rag_delete_rejects_indexing_documents(client, app, db_session):
@@ -275,12 +319,14 @@ def test_rag_reindex_replaces_active_artifacts_and_retry_recovers(client, app, d
     first_chunk_count = _count_document_chunks(app, document_id)
     assert first_chunk_count > 0
 
-    original_parse = parse_and_chunk_document
+    from app.rag.pipeline.indexer import chunk_document_blocks
 
-    def _broken_parse(*args, **kwargs):
+    original_chunking = chunk_document_blocks
+
+    def _broken_chunking(*args, **kwargs):
         raise RuntimeError("forced retry path")
 
-    monkeypatch.setattr("app.rag.service.parse_and_chunk_document", _broken_parse)
+    monkeypatch.setattr("app.rag.service.chunk_document_blocks", _broken_chunking)
     failed_response = client.post(
         f"/api/rag/documents/{document_id}/reindex",
         json={"workspaceId": "ws-reindex", "chunking": {"strategy": "semantic_llm"}},
@@ -297,7 +343,7 @@ def test_rag_reindex_replaces_active_artifacts_and_retry_recovers(client, app, d
     assert failed_document.status == "failed"
     assert _count_document_chunks(app, document_id) == 0
 
-    monkeypatch.setattr("app.rag.service.parse_and_chunk_document", original_parse)
+    monkeypatch.setattr("app.rag.service.chunk_document_blocks", original_chunking)
     retry_response = client.post(
         f"/api/rag/documents/{document_id}/reindex",
         json={"workspaceId": "ws-reindex", "chunking": {"strategy": "semantic_llm"}},
@@ -334,6 +380,50 @@ def test_rag_reindex_replaces_active_artifacts_and_retry_recovers(client, app, d
     assert list_response.status_code == 200
     listed_documents = list_response.get_json()["data"]["documents"]
     assert listed_documents[0]["chunkCount"] == retried_chunk_count
+
+
+def test_rag_reindex_reuses_derived_canonical_asset(client, app, db_session, monkeypatch):
+    app.config["RAG_ENABLED"] = True
+    app.config["RAG_AUTO_INDEX_ON_UPLOAD"] = False
+
+    user = _create_user(db_session, "rag-derived-reuse@example.com")
+    headers = _auth_headers(client, user.id)
+    upload_payload = _upload_text_document(
+        client,
+        headers,
+        "ws-derived",
+        "derived.txt",
+        "第一段内容。\n\n第二段内容。",
+    )
+    document_id = int(upload_payload["id"])
+
+    first_job = _index_document(client, headers, "ws-derived", document_id)
+    first_job_response = client.get(f"/api/rag/jobs/{first_job['jobId']}?workspaceId=ws-derived", headers=headers)
+    assert first_job_response.status_code == 200
+    assert first_job_response.get_json()["data"]["status"] == "done"
+
+    stored_document = _load_rag_document(app, document_id)
+    assert stored_document is not None
+    assert stored_document.derived_text_path
+    derived_path = Path(stored_document.derived_text_path)
+    assert derived_path.exists()
+    derived_blocks = parse_canonical_text(derived_path.read_text(encoding="utf-8"))
+    assert derived_blocks
+
+    def _unexpected_load(*args, **kwargs):
+        raise AssertionError("reindex should reuse the persisted canonical asset")
+
+    monkeypatch.setattr("app.rag.service.load_source_document", _unexpected_load)
+    reindex_response = client.post(
+        f"/api/rag/documents/{document_id}/reindex",
+        json={"workspaceId": "ws-derived"},
+        headers=headers,
+    )
+    assert reindex_response.status_code == 200
+    reindex_job_id = reindex_response.get_json()["data"]["jobId"]
+    reindex_job_response = client.get(f"/api/rag/jobs/{reindex_job_id}?workspaceId=ws-derived", headers=headers)
+    assert reindex_job_response.status_code == 200
+    assert reindex_job_response.get_json()["data"]["status"] == "done"
 
 
 def test_rag_embedding_debug_endpoint_returns_chunk_vector(client, app, db_session):
@@ -612,6 +702,90 @@ def test_semantic_chunking_fallback_execution(client, app, db_session):
     assert isinstance(semantic_segment, dict)
     assert semantic_segment["source"] == "paragraph"
     assert isinstance(semantic_segment["text"], str) and semantic_segment["text"]
+
+
+def test_markdown_fileloader_normalizes_structured_text(app, tmp_path: Path):
+    sample = tmp_path / "notes.md"
+    sample.write_text(
+        "# Overview\n"
+        "- item A\n"
+        "- item B\n\n"
+        "| Plan | Price |\n"
+        "| --- | --- |\n"
+        "| Pro | 20 |\n\n"
+        "```python\n"
+        "print('hello')\n"
+        "```\n",
+        encoding="utf-8",
+    )
+
+    with app.app_context():
+        loaded = load_source_document(path=sample, extension="md", source_name="notes.md")
+
+    assert loaded.loader_type == "markdown"
+    assert loaded.extraction_method == "structured_markdown"
+    assert loaded.blocks
+    rendered = "\n".join(block.text for block in loaded.blocks)
+    assert "Section: Overview" in rendered
+    assert "- item A" in rendered
+    assert "Row: Plan, Price" in rendered
+    assert "Row: Pro, 20" in rendered
+    assert "Code block: python" in rendered
+    assert "# Overview" not in rendered
+    assert "| Pro | 20 |" not in rendered
+
+
+def test_pdf_fileloader_prefers_native_text_and_falls_back_to_ocr(app, tmp_path: Path, monkeypatch):
+    class _FakePage:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def extract_text(self) -> str:
+            return self._text
+
+    class _FakeReader:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.pages = [
+                _FakePage("This page has enough native text to skip OCR."),
+                _FakePage(""),
+            ]
+
+    sample = tmp_path / "native-plus-ocr.pdf"
+    sample.write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setattr("pypdf.PdfReader", _FakeReader)
+    monkeypatch.setattr("app.rag.fileloaders.pdf_loader._render_pdf_page_png", lambda *_args, **_kwargs: b"png")
+
+    with app.app_context():
+        loaded = load_source_document(path=sample, extension="pdf", source_name="native-plus-ocr.pdf")
+
+    assert loaded.loader_type == "pdf"
+    assert loaded.extraction_method == "mixed"
+    assert loaded.ocr_used is True
+    assert loaded.ocr_provider == "fake"
+    assert len(loaded.blocks) == 2
+    assert loaded.blocks[0].metadata["extraction_method"] == "native"
+    assert loaded.blocks[1].metadata["extraction_method"] == "ocr"
+    assert loaded.blocks[1].text == "OCR text for native-plus-ocr.pdf page 2"
+
+
+def test_pdf_fileloader_fails_when_ocr_is_required_but_unavailable(app, tmp_path: Path, monkeypatch):
+    class _FakePage:
+        def extract_text(self) -> str:
+            return ""
+
+    class _FakeReader:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.pages = [_FakePage()]
+
+    sample = tmp_path / "ocr-required.pdf"
+    sample.write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setattr("pypdf.PdfReader", _FakeReader)
+    app.config["RAG_OCR_PROVIDER"] = "disabled"
+
+    with app.app_context():
+        with pytest.raises(Exception) as exc_info:
+            load_source_document(path=sample, extension="pdf", source_name="ocr-required.pdf")
+    assert "ocr required" in str(exc_info.value).lower()
 
 
 class _FakeHTTPResponse:

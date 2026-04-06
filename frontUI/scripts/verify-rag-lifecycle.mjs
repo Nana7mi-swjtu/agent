@@ -28,6 +28,8 @@ const composableSource = fs.readFileSync(composablePath, "utf-8");
 assert.match(composableSource, /const startDocumentIndex = async/);
 assert.match(composableSource, /const removeDocument = async/);
 assert.match(composableSource, /ragActionDocumentId/);
+assert.match(composableSource, /SUPPORTED_RAG_EXTENSIONS/);
+assert.match(composableSource, /ragUnsupportedFormat/);
 
 const viewSource = fs.readFileSync(viewPath, "utf-8");
 assert.match(viewSource, /ragDocumentStartIndexing/);
@@ -35,5 +37,7 @@ assert.match(viewSource, /ragDocumentRetry/);
 assert.match(viewSource, /ragDocumentReindex/);
 assert.match(viewSource, /ragDocumentDelete/);
 assert.match(viewSource, /canDeleteRagDocument\(doc\)/);
+assert.match(viewSource, /accept="\.pdf,\.docx,\.md,\.txt/);
+assert.match(viewSource, /ragUploadFormatsHint/);
 
 console.log("rag lifecycle frontend verification passed");
