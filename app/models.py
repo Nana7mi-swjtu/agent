@@ -52,11 +52,17 @@ class RagDocument(Base):
     file_extension: Mapped[str] = mapped_column(String(16), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
     storage_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    derived_text_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="uploaded", index=True)
     error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     embedding_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     embedding_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     embedding_dimension: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    loader_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    loader_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    extraction_method: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ocr_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ocr_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     chunk_strategy: Mapped[str | None] = mapped_column(String(32), nullable=True)
     chunk_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     chunk_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -71,6 +77,7 @@ class RagDocument(Base):
         nullable=False,
     )
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    derived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     chunks: Mapped[list["RagChunk"]] = relationship(

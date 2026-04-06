@@ -68,8 +68,20 @@ def _ensure_rag_columns(engine) -> None:
         if "rag_documents" in table_names:
             columns = {col["name"] for col in inspector.get_columns("rag_documents")}
             alter_sql: list[str] = []
+            if "derived_text_path" not in columns:
+                alter_sql.append("ADD COLUMN derived_text_path VARCHAR(1024) NULL AFTER storage_path")
             if "chunk_strategy" not in columns:
                 alter_sql.append("ADD COLUMN chunk_strategy VARCHAR(32) NULL AFTER embedding_dimension")
+            if "loader_type" not in columns:
+                alter_sql.append("ADD COLUMN loader_type VARCHAR(64) NULL AFTER embedding_dimension")
+            if "loader_version" not in columns:
+                alter_sql.append("ADD COLUMN loader_version VARCHAR(32) NULL AFTER loader_type")
+            if "extraction_method" not in columns:
+                alter_sql.append("ADD COLUMN extraction_method VARCHAR(64) NULL AFTER loader_version")
+            if "ocr_used" not in columns:
+                alter_sql.append("ADD COLUMN ocr_used INT NOT NULL DEFAULT 0 AFTER extraction_method")
+            if "ocr_provider" not in columns:
+                alter_sql.append("ADD COLUMN ocr_provider VARCHAR(64) NULL AFTER ocr_used")
             if "chunk_provider" not in columns:
                 alter_sql.append("ADD COLUMN chunk_provider VARCHAR(64) NULL AFTER chunk_strategy")
             if "chunk_model" not in columns:
@@ -80,6 +92,8 @@ def _ensure_rag_columns(engine) -> None:
                 alter_sql.append("ADD COLUMN chunk_fallback_used INT NOT NULL DEFAULT 0 AFTER chunk_version")
             if "chunk_fallback_reason" not in columns:
                 alter_sql.append("ADD COLUMN chunk_fallback_reason VARCHAR(1024) NULL AFTER chunk_fallback_used")
+            if "derived_at" not in columns:
+                alter_sql.append("ADD COLUMN derived_at DATETIME NULL AFTER indexed_at")
             if alter_sql:
                 conn.execute(text(f"ALTER TABLE rag_documents {', '.join(alter_sql)}"))
 
