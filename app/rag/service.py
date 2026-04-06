@@ -28,8 +28,11 @@ from .repository import (
     create_document,
     create_index_job,
     create_query_log,
+    delete_document_chunks,
+    ensure_document_deletable,
     get_document_for_scope,
     get_index_job_for_scope,
+    list_documents_for_scope,
     replace_document_chunks,
     set_document_status,
     set_index_job_status,
@@ -205,6 +208,32 @@ def _query_chunk_counts(*, db, user_id: int, workspace_id: str, document_ids: li
     return {int(document_id): int(count) for document_id, count in rows}
 
 
+def _clear_document_index_fields(document: RagDocument) -> None:
+    document.embedding_model = None
+    document.embedding_version = None
+    document.embedding_dimension = None
+    document.indexed_at = None
+
+
+def _delete_document_vectors(*, workspace_id: str, document_id: int) -> None:
+    vector_store = get_vector_store()
+    vector_store.delete_document_chunks(
+        workspace_id=workspace_id,
+        collection_name=_collection_name_for_workspace(workspace_id),
+        document_id=document_id,
+    )
+
+
+def _delete_document_file(document: RagDocument) -> None:
+    file_path = Path(str(document.storage_path or "")).expanduser()
+    if not file_path.exists():
+        return
+    try:
+        file_path.unlink()
+    except FileNotFoundError:
+        return
+
+
 def upload_document(*, user_id: int, workspace_id: str, file_storage, chunking: ChunkingRequest | None = None):
     workspace = _workspace_from_request(workspace_id)
     if not file_storage or not file_storage.filename:
@@ -279,6 +308,8 @@ def enqueue_index_job(
     app = current_app._get_current_object()
     with session_scope() as db:
         document = get_document_for_scope(db=db, document_id=document_id, user_id=user_id, workspace_id=workspace)
+        if document.status == "indexing":
+            raise RAGValidationError("document is already indexing")
         set_document_status(document=document, status="indexing")
         document.chunk_strategy = plan.request.strategy
         job = create_index_job(db=db, document=document, requested_chunk_strategy=plan.request.strategy)
@@ -301,6 +332,51 @@ def enqueue_index_job(
     return job_payload
 
 
+def reindex_document(
+    *,
+    user_id: int,
+    workspace_id: str,
+    document_id: int,
+    chunking: ChunkingRequest | None = None,
+) -> dict:
+    return enqueue_index_job(
+        user_id=user_id,
+        workspace_id=workspace_id,
+        document_id=document_id,
+        chunking=chunking,
+    )
+
+
+def delete_document(*, user_id: int, workspace_id: str, document_id: int) -> dict:
+    workspace = _workspace_from_request(workspace_id)
+    with session_scope() as db:
+        document = get_document_for_scope(db=db, document_id=document_id, user_id=user_id, workspace_id=workspace)
+        ensure_document_deletable(document=document)
+        document_payload = {
+            "id": int(document.id),
+            "workspaceId": document.workspace_id,
+            "status": "deleted",
+            "sourceName": document.source_name,
+        }
+        delete_document_chunks(db=db, document=document)
+        _clear_document_index_fields(document)
+        set_document_status(document=document, status="deleted")
+
+    _delete_document_vectors(workspace_id=workspace, document_id=document_id)
+
+    with session_scope() as db:
+        document = get_document_for_scope(
+            db=db,
+            document_id=document_id,
+            user_id=user_id,
+            workspace_id=workspace,
+            include_deleted=True,
+        )
+        _delete_document_file(document)
+
+    return document_payload
+
+
 def _run_index_job(
     app,
     job_id: int,
@@ -311,6 +387,7 @@ def _run_index_job(
     started = datetime.utcnow()
     chunk_count = 0
     chunking_applied = None
+    document_id: int | None = None
     try:
         with app.app_context():
             with session_scope() as db:
@@ -321,6 +398,7 @@ def _run_index_job(
                     user_id=user_id,
                     workspace_id=workspace_id,
                 )
+                document_id = int(document.id)
                 set_index_job_status(job=job, status="running")
                 set_document_status(document=document, status="indexing")
 
@@ -352,6 +430,11 @@ def _run_index_job(
                 if len(vector) != embedder.dimension:
                     raise RAGValidationError("embedding dimension mismatch during indexing")
 
+            vector_store.delete_document_chunks(
+                workspace_id=workspace_id,
+                collection_name=collection_name,
+                document_id=document.id,
+            )
             vector_store.upsert_chunks(
                 workspace_id=workspace_id,
                 collection_name=collection_name,
@@ -397,10 +480,18 @@ def _run_index_job(
                     chunk_version=(chunking_applied.version if chunking_applied else None),
                     chunk_fallback_used=(chunking_applied.fallback_used if chunking_applied else False),
                     chunk_fallback_reason=(chunking_applied.fallback_reason if chunking_applied else None),
-                )
+                    )
     except Exception as exc:
         logger.exception("RAG indexing job failed", extra={"job_id": job_id})
         with app.app_context():
+            if document_id is not None:
+                try:
+                    _delete_document_vectors(workspace_id=workspace_id, document_id=document_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to clear document vectors after indexing failure",
+                        extra={"job_id": job_id, "document_id": document_id},
+                    )
             with session_scope() as db:
                 try:
                     job = get_index_job_for_scope(db=db, job_id=job_id, user_id=user_id, workspace_id=workspace_id)
@@ -410,6 +501,8 @@ def _run_index_job(
                         user_id=user_id,
                         workspace_id=workspace_id,
                     )
+                    delete_document_chunks(db=db, document=document)
+                    _clear_document_index_fields(document)
                     set_document_status(document=document, status="failed", error_message=str(exc))
                     set_index_job_status(
                         job=job,
@@ -602,12 +695,7 @@ def build_cited_response(*, base_reply: str, hits: list[RetrievalHit], knowledge
 def list_documents(*, user_id: int, workspace_id: str) -> list[dict]:
     workspace = _workspace_from_request(workspace_id)
     with session_scope() as db:
-        docs = (
-            db.query(RagDocument)
-            .filter(RagDocument.user_id == user_id, RagDocument.workspace_id == workspace)
-            .order_by(RagDocument.created_at.desc())
-            .all()
-        )
+        docs = list_documents_for_scope(db=db, user_id=user_id, workspace_id=workspace)
         document_ids = [int(doc.id) for doc in docs]
         chunk_count_map = _query_chunk_counts(db=db, user_id=user_id, workspace_id=workspace, document_ids=document_ids)
         return [_document_payload(doc, chunk_count=chunk_count_map.get(int(doc.id), 0)) for doc in docs]
@@ -617,13 +705,7 @@ def build_workspace_debug_snapshot(*, user_id: int, workspace_id: str, limit: in
     workspace = _workspace_from_request(workspace_id)
     safe_limit = max(1, min(int(limit), 50))
     with session_scope() as db:
-        documents = (
-            db.query(RagDocument)
-            .filter(RagDocument.user_id == user_id, RagDocument.workspace_id == workspace)
-            .order_by(RagDocument.created_at.desc())
-            .limit(safe_limit)
-            .all()
-        )
+        documents = list_documents_for_scope(db=db, user_id=user_id, workspace_id=workspace)[:safe_limit]
         document_ids = [int(doc.id) for doc in documents]
         chunk_count_map = _query_chunk_counts(db=db, user_id=user_id, workspace_id=workspace, document_ids=document_ids)
         document_payloads = [

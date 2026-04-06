@@ -7,12 +7,14 @@ from flask import Blueprint, request, session
 from .errors import RAGAuthorizationError, RAGError, RAGValidationError
 from .service import (
     build_workspace_debug_snapshot,
+    delete_document,
     enqueue_index_job,
     get_chunk_embedding_debug,
     get_job_status,
     list_documents,
     parse_chunking_request,
     rag_search,
+    reindex_document,
     upload_document,
 )
 
@@ -224,6 +226,64 @@ def create_index():
     except RAGError:
         logger.exception("RAG index enqueue failed")
         return _json_error("failed to enqueue index job", 500)
+
+    return {"ok": True, "data": data}
+
+
+@rag_bp.post("/documents/<int:document_id>/reindex")
+def create_document_reindex(document_id: int):
+    disabled = _ensure_rag_enabled()
+    if disabled:
+        return disabled
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return _json_error("request body must be an object", 400)
+    workspace_id = str(payload.get("workspaceId", "default")).strip() or "default"
+    chunking_payload = payload.get("chunking")
+
+    try:
+        data = reindex_document(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            document_id=document_id,
+            chunking=parse_chunking_request(chunking_payload),
+        )
+    except RAGAuthorizationError as exc:
+        return _json_error(str(exc), 403)
+    except RAGValidationError as exc:
+        return _json_error(str(exc), 400)
+    except RAGError:
+        logger.exception("RAG document reindex failed")
+        return _json_error("failed to enqueue document reindex", 500)
+
+    return {"ok": True, "data": data}
+
+
+@rag_bp.delete("/documents/<int:document_id>")
+def remove_document(document_id: int):
+    disabled = _ensure_rag_enabled()
+    if disabled:
+        return disabled
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+
+    workspace_id = _workspace_id_from_request()
+    try:
+        data = delete_document(user_id=user_id, workspace_id=workspace_id, document_id=document_id)
+    except RAGAuthorizationError as exc:
+        return _json_error(str(exc), 403)
+    except RAGValidationError as exc:
+        return _json_error(str(exc), 400)
+    except RAGError:
+        logger.exception("RAG document delete failed")
+        return _json_error("failed to delete document", 500)
 
     return {"ok": True, "data": data}
 
