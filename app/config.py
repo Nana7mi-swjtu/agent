@@ -1,9 +1,11 @@
 import os
+from pathlib import Path
 from datetime import timedelta
 
 from dotenv import load_dotenv
 
-load_dotenv()
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_PROJECT_ROOT / ".env")
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -94,6 +96,21 @@ class Config:
     AI_API_KEY = os.getenv("AI_API_KEY", "")
     AI_BASE_URL = os.getenv("AI_BASE_URL", "")
     AI_TIMEOUT_SECONDS = int(os.getenv("AI_TIMEOUT_SECONDS", "30"))
+    AGENT_MAIN_AI_PROVIDER = os.getenv("AGENT_MAIN_AI_PROVIDER", "").strip().lower()
+    AGENT_MAIN_AI_MODEL = os.getenv("AGENT_MAIN_AI_MODEL", "").strip()
+    AGENT_MAIN_AI_API_KEY = os.getenv("AGENT_MAIN_AI_API_KEY", "").strip()
+    AGENT_MAIN_AI_BASE_URL = os.getenv("AGENT_MAIN_AI_BASE_URL", "").strip()
+    AGENT_MAIN_AI_TIMEOUT_SECONDS = int(os.getenv("AGENT_MAIN_AI_TIMEOUT_SECONDS", str(AI_TIMEOUT_SECONDS)))
+    AGENT_SEARCH_AI_PROVIDER = os.getenv("AGENT_SEARCH_AI_PROVIDER", "").strip().lower()
+    AGENT_SEARCH_AI_MODEL = os.getenv("AGENT_SEARCH_AI_MODEL", "").strip()
+    AGENT_SEARCH_AI_API_KEY = os.getenv("AGENT_SEARCH_AI_API_KEY", "").strip()
+    AGENT_SEARCH_AI_BASE_URL = os.getenv("AGENT_SEARCH_AI_BASE_URL", "").strip()
+    AGENT_SEARCH_AI_TIMEOUT_SECONDS = int(os.getenv("AGENT_SEARCH_AI_TIMEOUT_SECONDS", str(AI_TIMEOUT_SECONDS)))
+    AGENT_MCP_AI_PROVIDER = os.getenv("AGENT_MCP_AI_PROVIDER", "").strip().lower()
+    AGENT_MCP_AI_MODEL = os.getenv("AGENT_MCP_AI_MODEL", "").strip()
+    AGENT_MCP_AI_API_KEY = os.getenv("AGENT_MCP_AI_API_KEY", "").strip()
+    AGENT_MCP_AI_BASE_URL = os.getenv("AGENT_MCP_AI_BASE_URL", "").strip()
+    AGENT_MCP_AI_TIMEOUT_SECONDS = int(os.getenv("AGENT_MCP_AI_TIMEOUT_SECONDS", str(AI_TIMEOUT_SECONDS)))
     AGENT_AUTO_TOOL_SELECTION_ENABLED = _bool_env("AGENT_AUTO_TOOL_SELECTION_ENABLED", True)
     AGENT_TOOL_CALL_MAX_ROUNDS = int(os.getenv("AGENT_TOOL_CALL_MAX_ROUNDS", "4"))
     AGENT_WEBSEARCH_ENABLED = _bool_env("AGENT_WEBSEARCH_ENABLED", False)
@@ -103,6 +120,22 @@ class Config:
     AGENT_MCP_ENABLED = _bool_env("AGENT_MCP_ENABLED", False)
     AGENT_MCP_SERVERS_JSON = os.getenv("AGENT_MCP_SERVERS_JSON", "").strip()
     AGENT_MCP_TIMEOUT_SECONDS = int(os.getenv("AGENT_MCP_TIMEOUT_SECONDS", "20"))
+    AGENT_TRACE_VISUALIZATION_ENABLED = _bool_env("AGENT_TRACE_VISUALIZATION_ENABLED", False)
+    AGENT_TRACE_DEBUG_DETAILS_ENABLED = _bool_env("AGENT_TRACE_DEBUG_DETAILS_ENABLED", False)
+
+    BANKRUPTCY_ANALYSIS_ENABLED = _bool_env("BANKRUPTCY_ANALYSIS_ENABLED", False)
+    BANKRUPTCY_MODEL_PATH = os.getenv(
+        "BANKRUPTCY_MODEL_PATH",
+        "assets/bankruptcy/model/xgb_borderline_smote.pkl",
+    )
+    BANKRUPTCY_SCALER_PATH = os.getenv(
+        "BANKRUPTCY_SCALER_PATH",
+        "assets/bankruptcy/model/scaler_borderline_smote.pkl",
+    )
+    BANKRUPTCY_THRESHOLD = _float_env("BANKRUPTCY_THRESHOLD", 0.63)
+    BANKRUPTCY_TOP_FEATURE_COUNT = int(os.getenv("BANKRUPTCY_TOP_FEATURE_COUNT", "10"))
+    BANKRUPTCY_UPLOAD_DIR = os.getenv("BANKRUPTCY_UPLOAD_DIR", "uploads/bankruptcy/csv")
+    BANKRUPTCY_PLOT_DIR = os.getenv("BANKRUPTCY_PLOT_DIR", "uploads/bankruptcy")
 
     RAG_ENABLED = _bool_env("RAG_ENABLED", False)
     RAG_DEBUG_VISUALIZATION_ENABLED = _bool_env("RAG_DEBUG_VISUALIZATION_ENABLED", False)
@@ -121,8 +154,9 @@ class Config:
     RAG_RERANKER_TIMEOUT_SECONDS = int(os.getenv("RAG_RERANKER_TIMEOUT_SECONDS", "20"))
     RAG_RETRIEVAL_TOP_K = int(os.getenv("RAG_RETRIEVAL_TOP_K", "5"))
     RAG_RETRIEVAL_SCORE_THRESHOLD = _float_env("RAG_RETRIEVAL_SCORE_THRESHOLD", 0.0)
-    RAG_ALLOWED_FILE_TYPES = _csv_env("RAG_ALLOWED_FILE_TYPES", "pdf,docx,md,txt,html,csv")
+    RAG_ALLOWED_FILE_TYPES = _csv_env("RAG_ALLOWED_FILE_TYPES", "pdf,docx,md,txt")
     RAG_UPLOAD_DIR = os.getenv("RAG_UPLOAD_DIR", "uploads/rag")
+    RAG_FILELOADER_VERSION = os.getenv("RAG_FILELOADER_VERSION", "v1").strip()
     RAG_AUTO_INDEX_ON_UPLOAD = _bool_env("RAG_AUTO_INDEX_ON_UPLOAD", True)
     RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "1200"))
     RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "150"))
@@ -142,6 +176,11 @@ class Config:
     RAG_CHUNK_AI_API_KEY = os.getenv("RAG_CHUNK_AI_API_KEY", "").strip()
     RAG_CHUNK_AI_BASE_URL = os.getenv("RAG_CHUNK_AI_BASE_URL", "").strip()
     RAG_CHUNK_AI_TIMEOUT_SECONDS = int(os.getenv("RAG_CHUNK_AI_TIMEOUT_SECONDS", "20"))
+    RAG_OCR_PROVIDER = os.getenv("RAG_OCR_PROVIDER", "openai-compatible").strip().lower()
+    RAG_OCR_MODEL = os.getenv("RAG_OCR_MODEL", "").strip()
+    RAG_OCR_API_KEY = os.getenv("RAG_OCR_API_KEY", "").strip()
+    RAG_OCR_BASE_URL = os.getenv("RAG_OCR_BASE_URL", "").strip()
+    RAG_OCR_TIMEOUT_SECONDS = int(os.getenv("RAG_OCR_TIMEOUT_SECONDS", "20"))
     RAG_INDEX_MAX_WORKERS = int(os.getenv("RAG_INDEX_MAX_WORKERS", "2"))
     RAG_CHROMADB_PERSIST_DIR = os.getenv("RAG_CHROMADB_PERSIST_DIR", "uploads/chromadb")
     RAG_CHROMADB_COLLECTION_PREFIX = os.getenv("RAG_CHROMADB_COLLECTION_PREFIX", "rag")

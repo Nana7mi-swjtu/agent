@@ -46,6 +46,14 @@ class VectorStore(Protocol):
         chunk_id: str,
     ) -> list[float] | None: ...
 
+    def delete_document_chunks(
+        self,
+        *,
+        workspace_id: str,
+        collection_name: str,
+        document_id: int,
+    ) -> None: ...
+
 
 class Reranker(Protocol):
     provider_name: str

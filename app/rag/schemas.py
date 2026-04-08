@@ -12,6 +12,18 @@ class TextBlock:
 
 
 @dataclass(slots=True)
+class LoadedDocument:
+    loader_type: str
+    loader_version: str
+    extraction_method: str
+    blocks: list[TextBlock]
+    derived_text: str
+    ocr_used: bool = False
+    ocr_provider: str | None = None
+    warnings: list[str] | None = None
+
+
+@dataclass(slots=True)
 class ChunkPayload:
     chunk_id: str
     text: str

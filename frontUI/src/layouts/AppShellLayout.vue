@@ -55,6 +55,7 @@ const removeSession = (sessionId) => {
 };
 
 const goHome = () => router.push("/app");
+const goBankruptcy = () => router.push("/bankruptcy-analysis");
 const goProfile = () => router.push("/profile");
 const onLogout = async () => {
   await authStore.logout();
@@ -70,6 +71,7 @@ onMounted(async () => {
   <div class="dc-chrome">
     <nav class="dc-server-bar">
       <div class="server-icon icon-home" :class="{ active: $route.path === '/app' }" @click="goHome" title="主页">⚡</div>
+      <div class="server-icon" :class="{ active: $route.path === '/bankruptcy-analysis' }" @click="goBankruptcy" :title="uiStore.t('bankruptcyAnalysis')">📊</div>
       <div class="server-sep"></div>
       <div
         v-for="role in roles"
@@ -87,6 +89,14 @@ onMounted(async () => {
       <div class="sidebar-guild-header">Agent Studio</div>
       <div class="sidebar-scroller">
         <div class="channel-section-header"><span class="ch-caret">▾</span>{{ uiStore.t("switchRole") }}</div>
+        <div
+          class="channel-row"
+          :class="{ active: $route.path === '/bankruptcy-analysis' }"
+          @click="goBankruptcy"
+        >
+          <span class="channel-hash">#</span>
+          <span class="channel-row-name">{{ uiStore.t("bankruptcyAnalysis") }}</span>
+        </div>
         <div
           v-for="role in roles"
           :key="role.key"

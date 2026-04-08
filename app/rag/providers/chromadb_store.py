@@ -171,6 +171,33 @@ class ChromaVectorStore:
             )
         return hits
 
+    def delete_document_chunks(
+        self,
+        *,
+        workspace_id: str,
+        collection_name: str,
+        document_id: int,
+    ) -> None:
+        key = self._collection_key(workspace_id, collection_name)
+        if self._chroma_client is not None:
+            collection = self._chroma_client.get_or_create_collection(name=key)
+            collection.delete(where={"document_id": int(document_id)})
+            return
+
+        collection = self._load_fallback_collection(key)
+        target_ids = [
+            chunk_id
+            for chunk_id, metadata in collection["metadatas"].items()
+            if isinstance(metadata, dict) and metadata.get("document_id") == int(document_id)
+        ]
+        if not target_ids:
+            return
+        for chunk_id in target_ids:
+            collection["vectors"].pop(chunk_id, None)
+            collection["documents"].pop(chunk_id, None)
+            collection["metadatas"].pop(chunk_id, None)
+        self._persist_fallback_collection(key)
+
     def get_chunk_vector(
         self,
         *,

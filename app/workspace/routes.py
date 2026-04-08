@@ -97,6 +97,8 @@ def _workspace_payload(preferences: dict | None) -> dict:
         "workspaceId": workspace_id,
         "selectedRole": selected,
         "ragDebugVisualizationEnabled": bool(current_app.config.get("RAG_DEBUG_VISUALIZATION_ENABLED", False)),
+        "agentTraceVisualizationEnabled": bool(current_app.config.get("AGENT_TRACE_VISUALIZATION_ENABLED", False)),
+        "agentTraceDebugDetailsEnabled": bool(current_app.config.get("AGENT_TRACE_DEBUG_DETAILS_ENABLED", False)),
         "roles": [
             {
                 "key": key,
@@ -180,6 +182,8 @@ def workspace_chat():
             current_app.config.get("RAG_DEBUG_VISUALIZATION_ENABLED", False)
             and current_app.config.get("RAG_ENABLED", False)
         )
+        trace_enabled = bool(current_app.config.get("AGENT_TRACE_VISUALIZATION_ENABLED", False))
+        trace_details_enabled = bool(current_app.config.get("AGENT_TRACE_DEBUG_DETAILS_ENABLED", False))
         try:
             result = generate_reply_payload(
                 role=role,
@@ -188,6 +192,8 @@ def workspace_chat():
                 user_id=user_id,
                 workspace_id=request_workspace_id or _workspace_id(user.preferences),
                 rag_debug_enabled=debug_enabled,
+                agent_trace_enabled=trace_enabled,
+                agent_trace_debug_details_enabled=trace_details_enabled,
             )
         except AgentServiceError:
             logger.exception("Agent runtime failed for workspace chat")
@@ -201,6 +207,7 @@ def workspace_chat():
                 "reply": result["reply"],
                 "citations": result["citations"],
                 "noEvidence": result["noEvidence"],
+                **({"trace": result.get("trace", {})} if trace_enabled and isinstance(result.get("trace"), dict) else {}),
                 **({"debug": result.get("debug", {})} if debug_enabled else {}),
             },
         }

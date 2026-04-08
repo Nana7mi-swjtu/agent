@@ -39,13 +39,33 @@ def create_document(
     return doc
 
 
-def get_document_for_scope(*, db, document_id: int, user_id: int, workspace_id: str) -> RagDocument:
+def get_document_for_scope(
+    *,
+    db,
+    document_id: int,
+    user_id: int,
+    workspace_id: str,
+    include_deleted: bool = False,
+) -> RagDocument:
     document = db.execute(select(RagDocument).where(RagDocument.id == document_id)).scalar_one_or_none()
     if document is None:
         raise RAGValidationError("document not found")
     if document.user_id != user_id or document.workspace_id != workspace_id:
         raise RAGAuthorizationError("document is outside authorized scope")
+    if not include_deleted and document.status == "deleted":
+        raise RAGValidationError("document not found")
     return document
+
+
+def list_documents_for_scope(*, db, user_id: int, workspace_id: str, include_deleted: bool = False) -> list[RagDocument]:
+    query = (
+        db.query(RagDocument)
+        .filter(RagDocument.user_id == user_id, RagDocument.workspace_id == workspace_id)
+        .order_by(RagDocument.created_at.desc())
+    )
+    if not include_deleted:
+        query = query.filter(RagDocument.status != "deleted")
+    return query.all()
 
 
 def set_document_status(
@@ -63,8 +83,16 @@ def set_document_status(
     document.error_message = error_message
     if status == "indexed":
         document.indexed_at = indexed_at or datetime.utcnow()
+        document.deleted_at = None
     if status == "deleted":
         document.deleted_at = datetime.utcnow()
+
+
+def ensure_document_deletable(*, document: RagDocument) -> None:
+    if document.status == "deleted":
+        raise RAGValidationError("document not found")
+    if document.status == "indexing":
+        raise RAGValidationError("cannot delete document while indexing")
 
 
 def create_index_job(
@@ -144,6 +172,10 @@ def replace_document_chunks(*, db, document: RagDocument, chunks: list[RagChunk]
     db.execute(delete(RagChunk).where(RagChunk.document_id == document.id))
     for chunk in chunks:
         db.add(chunk)
+
+
+def delete_document_chunks(*, db, document: RagDocument) -> None:
+    db.execute(delete(RagChunk).where(RagChunk.document_id == document.id))
 
 
 def create_chunk_entities(

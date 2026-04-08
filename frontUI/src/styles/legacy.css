@@ -581,6 +581,12 @@
         justify-content: space-between;
         gap: 10px;
       }
+      .rag-doc-main {
+        min-width: 0;
+        display: grid;
+        gap: 2px;
+        flex: 1;
+      }
       .rag-doc-name {
         font-size: 13px;
         color: var(--text);
@@ -592,6 +598,32 @@
         font-size: 11px;
         color: var(--text-muted);
         text-transform: uppercase;
+      }
+      .rag-doc-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+      .rag-doc-action-btn {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+        border-radius: 6px;
+        padding: 4px 8px;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .rag-doc-action-btn:hover:not(:disabled) {
+        background: var(--bg-hover);
+      }
+      .rag-doc-action-btn.is-danger {
+        color: #ffb5b7;
+        border-color: rgba(242, 63, 67, 0.4);
+      }
+      .rag-doc-action-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
       }
       .rag-doc-empty {
         font-size: 13px;
@@ -661,6 +693,82 @@
       }
       .rag-message-debug {
         margin-top: 8px;
+      }
+      .agent-trace-panel,
+      .agent-citations-panel {
+        margin-top: 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .agent-trace-title,
+      .agent-citations-title {
+        font-size: 12px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: .04em;
+        margin-bottom: 8px;
+      }
+      .agent-trace-list {
+        display: grid;
+        gap: 8px;
+      }
+      .agent-trace-step,
+      .agent-trace-child {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 8px;
+        background: rgba(0, 0, 0, 0.08);
+      }
+      .agent-trace-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .agent-trace-status {
+        font-size: 11px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+      }
+      .agent-trace-summary {
+        margin-top: 4px;
+        font-size: 13px;
+        color: var(--text);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .agent-trace-details {
+        margin-top: 8px;
+        display: grid;
+        gap: 4px;
+      }
+      .agent-trace-detail-row {
+        display: grid;
+        grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+        gap: 8px;
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+      .agent-trace-children {
+        margin-top: 8px;
+        display: grid;
+        gap: 6px;
+      }
+      .agent-citations-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 6px;
+      }
+      .agent-citation-item {
+        font-size: 12px;
+        color: var(--text-muted);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 6px 8px;
       }
 
       /* ── Message feed ── */

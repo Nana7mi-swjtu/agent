@@ -3,32 +3,12 @@ import { computed, ref, watch } from "vue";
 
 import { CHAT_SESSIONS_KEY } from "@/constants/storage";
 import { safeJsonParse } from "@/utils/json";
-
-const buildConversationId = () => `c_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-const normalizeMessage = (raw) => ({
-  from: raw?.from === "agent" ? "agent" : "user",
-  text: String(raw?.text || ""),
-  time: typeof raw?.time === "string" ? raw.time : new Date().toISOString(),
-  citations: Array.isArray(raw?.citations) ? raw.citations : [],
-  noEvidence: Boolean(raw?.noEvidence),
-  debug: raw?.debug && typeof raw.debug === "object" ? raw.debug : null,
-});
-
-const normalizeSession = (raw) => ({
-  id: String(raw?.id || `s_${Date.now()}`),
-  conversationId: String(raw?.conversationId || raw?.id || buildConversationId()),
-  workspaceId: String(raw?.workspaceId || "default"),
-  role: typeof raw?.role === "string" ? raw.role : "",
-  title: String(raw?.title || "新对话"),
-  messages: Array.isArray(raw?.messages) ? raw.messages.map(normalizeMessage) : [],
-  updatedAt: typeof raw?.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
-});
+import { buildConversationId, normalizeChatMessage, normalizeChatSession } from "@/utils/chatSessionState";
 
 const loadSessions = () => {
   const raw = safeJsonParse(localStorage.getItem(CHAT_SESSIONS_KEY) || "[]", []);
   if (!Array.isArray(raw)) return [];
-  return raw.map(normalizeSession);
+  return raw.map(normalizeChatSession);
 };
 
 export const useChatStore = defineStore("chat", () => {
@@ -48,7 +28,7 @@ export const useChatStore = defineStore("chat", () => {
   const createSession = (role, roleNameResolver, workspaceId = "default") => {
     const id = `s_${Date.now()}`;
     const roleTitle = role ? roleNameResolver(role) : "新对话";
-    const record = normalizeSession({
+    const record = normalizeChatSession({
       id,
       conversationId: buildConversationId(),
       workspaceId: String(workspaceId || "default"),
@@ -69,7 +49,7 @@ export const useChatStore = defineStore("chat", () => {
 
   const appendMessage = (message) => {
     if (!activeSession.value) return;
-    activeSession.value.messages.push(normalizeMessage(message));
+    activeSession.value.messages.push(normalizeChatMessage(message));
     activeSession.value.updatedAt = new Date().toISOString();
   };
 

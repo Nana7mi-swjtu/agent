@@ -6,12 +6,14 @@ import { storeToRefs } from "pinia";
 import { useChatSession } from "@/composables/useChatSession";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUiStore } from "@/stores/ui";
+import { formatTraceDetailValue, getMessageRagDebug, getMessageTraceSteps } from "@/utils/chatMessage";
+import { canDeleteRagDocument, getRagDocumentActionType } from "@/utils/rag";
 
 const router = useRouter();
 const uiStore = useUiStore();
 const workspaceStore = useWorkspaceStore();
 const { ready } = storeToRefs(workspaceStore);
-  const {
+const {
   input,
   selectedRole,
   selectedRoleName,
@@ -24,17 +26,21 @@ const { ready } = storeToRefs(workspaceStore);
   ragUploading,
   uploadPercent,
   ragStageText,
-    ragError,
+  ragError,
   ragDocuments,
   ragDebugEnabled,
+  agentTraceEnabled,
   ragDebugSnapshot,
   chunkingStrategy,
   chunkingAppliedText,
+  ragActionDocumentId,
   loadDocuments,
   uploadDocument,
+  startDocumentIndex,
+  removeDocument,
   loadRagDebugSnapshot,
   send,
-  } = useChatSession();
+} = useChatSession();
 
 const sendMessage = async () => {
   const result = await send();
@@ -58,6 +64,64 @@ const onChooseDocument = async (event) => {
   event.target.value = "";
 };
 
+const documentActionLabel = (document) => {
+  const actionType = getRagDocumentActionType(document);
+  if (actionType === "start") return uiStore.t("ragDocumentStartIndexing");
+  if (actionType === "retry") return uiStore.t("ragDocumentRetry");
+  if (actionType === "reindex") return uiStore.t("ragDocumentReindex");
+  return "";
+};
+
+const onRunDocumentAction = async (document) => {
+  await startDocumentIndex(document?.id);
+};
+
+const onDeleteDocument = async (document) => {
+  await removeDocument(document?.id);
+};
+
+const isDocumentBusy = (document) => Number(ragActionDocumentId.value) === Number(document?.id);
+
+const traceTitleMap = {
+  planner: "agentTraceStepPlanner",
+  clarify: "agentTraceStepClarify",
+  search_subagent: "agentTraceStepSearchSubagent",
+  rag_lookup: "agentTraceStepRagLookup",
+  web_lookup: "agentTraceStepWebLookup",
+  merge_results: "agentTraceStepMergeResults",
+  mcp_subagent: "agentTraceStepMcpSubagent",
+  compose_answer: "agentTraceStepComposeAnswer",
+  citations: "agentTraceStepCitations",
+};
+
+const traceTitle = (step) => {
+  const key = traceTitleMap[String(step?.id || "").trim()];
+  return key ? uiStore.t(key) : step?.title || step?.id || "-";
+};
+
+const traceStatus = (step) => String(step?.status || "done").replaceAll("_", " ");
+
+const traceDetailsEntries = (step) =>
+  step?.details && typeof step.details === "object" ? Object.entries(step.details) : [];
+
+const ragDebugForMessage = (msg) => getMessageRagDebug(msg);
+const traceStepsForMessage = (msg) => getMessageTraceSteps(msg);
+const showGroundingMeta = (msg) =>
+  msg?.from === "agent" &&
+  (
+    Boolean(msg?.noEvidence)
+    || (Array.isArray(msg?.citations) && msg.citations.length > 0)
+    || traceStepsForMessage(msg).length > 0
+    || Boolean(ragDebugForMessage(msg))
+  );
+const citationLabel = (citation) => {
+  if (!citation || typeof citation !== "object") return "-";
+  const labels = [String(citation.source || "-")];
+  if (citation.page != null) labels.push(`p.${citation.page}`);
+  if (citation.section) labels.push(String(citation.section));
+  return labels.join(" · ");
+};
+
 </script>
 
 <template>
@@ -77,9 +141,14 @@ const onChooseDocument = async (event) => {
       </label>
       <button class="toolbar-upload-btn" :disabled="ragUploading">
         {{ uiStore.t("ragUploadFile") }}
-        <input type="file" @change="onChooseDocument" />
+        <input
+          type="file"
+          accept=".pdf,.docx,.md,.txt,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          @change="onChooseDocument"
+        />
       </button>
     </div>
+    <div class="rag-applied-row">{{ uiStore.t("ragUploadFormatsHint") }}</div>
 
     <div class="rag-status-row">
       <span class="rag-status-text">{{ ragStageText || uiStore.t("ragUploadIdle") }}</span>
@@ -94,12 +163,32 @@ const onChooseDocument = async (event) => {
       <div class="rag-docs-title">{{ uiStore.t("ragUploadedFiles") }}</div>
       <ul class="rag-docs-list">
         <li v-for="doc in ragDocuments" :key="doc.id" class="rag-doc-item">
-          <span class="rag-doc-name">{{ doc.sourceName || doc.fileName }}</span>
-          <span class="rag-doc-status">
-            {{ doc.status }}
-            <template v-if="doc.chunkingApplied?.strategy"> · {{ doc.chunkingApplied.strategy }}</template>
-            <template v-if="doc.chunkingApplied?.fallbackUsed"> ({{ uiStore.t("ragChunkFallback") }})</template>
-          </span>
+          <div class="rag-doc-main">
+            <span class="rag-doc-name">{{ doc.sourceName || doc.fileName }}</span>
+            <span class="rag-doc-status">
+              {{ doc.status }}
+              <template v-if="doc.chunkingApplied?.strategy"> · {{ doc.chunkingApplied.strategy }}</template>
+              <template v-if="doc.chunkingApplied?.fallbackUsed"> ({{ uiStore.t("ragChunkFallback") }})</template>
+            </span>
+          </div>
+          <div class="rag-doc-actions">
+            <button
+              v-if="documentActionLabel(doc)"
+              class="rag-doc-action-btn"
+              :disabled="ragUploading || isDocumentBusy(doc)"
+              @click="onRunDocumentAction(doc)"
+            >
+              {{ documentActionLabel(doc) }}
+            </button>
+            <button
+              v-if="canDeleteRagDocument(doc)"
+              class="rag-doc-action-btn is-danger"
+              :disabled="ragUploading || isDocumentBusy(doc)"
+              @click="onDeleteDocument(doc)"
+            >
+              {{ uiStore.t("ragDocumentDelete") }}
+            </button>
+          </div>
         </li>
         <li v-if="!ragDocuments.length" class="rag-doc-empty">{{ uiStore.t("ragNoFiles") }}</li>
       </ul>
@@ -161,35 +250,79 @@ const onChooseDocument = async (event) => {
               <span class="msg-timestamp">{{ displayTime(msg.time) }}</span>
             </div>
             <div class="msg-content">{{ msg.text }}</div>
+            <div v-if="msg.from === 'agent' && msg.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
+            <div v-if="msg.from === 'agent' && msg.citations?.length" class="agent-citations-panel">
+              <div class="agent-citations-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
+              <ul class="agent-citations-list">
+                <li v-for="(citation, citationIdx) in msg.citations" :key="`citation_${citationIdx}`" class="agent-citation-item">
+                  {{ citationLabel(citation) }}
+                </li>
+              </ul>
+            </div>
+            <div v-else-if="showGroundingMeta(msg) && !msg.noEvidence" class="rag-debug-mini">
+              {{ uiStore.t("agentTraceNoCitations") }}
+            </div>
+            <div v-if="agentTraceEnabled && msg.from === 'agent' && traceStepsForMessage(msg).length" class="agent-trace-panel">
+              <div class="agent-trace-title">{{ uiStore.t("agentTracePanelTitle") }}</div>
+              <div class="agent-trace-list">
+                <div v-for="step in traceStepsForMessage(msg)" :key="step.id" class="agent-trace-step">
+                  <div class="agent-trace-head">
+                    <strong>{{ traceTitle(step) }}</strong>
+                    <span class="agent-trace-status">{{ traceStatus(step) }}</span>
+                  </div>
+                  <div class="agent-trace-summary">{{ step.summary }}</div>
+                  <div v-if="traceDetailsEntries(step).length" class="agent-trace-details">
+                    <div class="rag-debug-mini">{{ uiStore.t("agentTraceDetailsLabel") }}</div>
+                    <div
+                      v-for="[key, value] in traceDetailsEntries(step)"
+                      :key="`${step.id}_${key}`"
+                      class="agent-trace-detail-row"
+                    >
+                      <span>{{ key }}</span>
+                      <span>{{ formatTraceDetailValue(value) }}</span>
+                    </div>
+                  </div>
+                  <div v-if="Array.isArray(step.children) && step.children.length" class="agent-trace-children">
+                    <div v-for="child in step.children" :key="child.id" class="agent-trace-child">
+                      <div class="agent-trace-head">
+                        <strong>{{ traceTitle(child) }}</strong>
+                        <span class="agent-trace-status">{{ traceStatus(child) }}</span>
+                      </div>
+                      <div class="agent-trace-summary">{{ child.summary }}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div v-if="ragDebugEnabled && msg.from === 'agent'" class="rag-message-debug">
-              <details v-if="msg.debug" class="rag-debug-section">
+              <details v-if="ragDebugForMessage(msg)" class="rag-debug-section">
                 <summary>{{ uiStore.t("ragDebugMessageSummary") }}</summary>
                 <div class="rag-debug-grid">
                   <div>
                     <strong>{{ uiStore.t("ragDebugLabelEmbedding") }}</strong>
                     <div class="rag-debug-mini">
-                      {{ msg.debug?.vector?.embedderProvider || "-" }} / {{ msg.debug?.vector?.embeddingModel || "-" }}
+                      {{ ragDebugForMessage(msg)?.vector?.embedderProvider || "-" }} / {{ ragDebugForMessage(msg)?.vector?.embeddingModel || "-" }}
                     </div>
                     <div class="rag-debug-mini">
-                      dim={{ msg.debug?.vector?.embeddingDimension ?? "-" }} norm={{ msg.debug?.vector?.queryVectorNorm ?? "-" }}
+                      dim={{ ragDebugForMessage(msg)?.vector?.embeddingDimension ?? "-" }} norm={{ ragDebugForMessage(msg)?.vector?.queryVectorNorm ?? "-" }}
                     </div>
                     <div class="rag-debug-mini">
-                      sample={{ (msg.debug?.vector?.queryVectorSample || []).join(", ") }}
+                      sample={{ (ragDebugForMessage(msg)?.vector?.queryVectorSample || []).join(", ") }}
                     </div>
                   </div>
                   <div>
                     <strong>{{ uiStore.t("ragDebugLabelRetrieval") }}</strong>
                     <div class="rag-debug-mini">
-                      raw={{ msg.debug?.retrieval?.rawCount ?? 0 }}, threshold={{ msg.debug?.retrieval?.afterThresholdCount ?? 0 }}
+                      raw={{ ragDebugForMessage(msg)?.retrieval?.rawCount ?? 0 }}, threshold={{ ragDebugForMessage(msg)?.retrieval?.afterThresholdCount ?? 0 }}
                     </div>
-                    <div class="rag-debug-mini">latency={{ msg.debug?.latencyMs ?? "-" }}ms</div>
+                    <div class="rag-debug-mini">latency={{ ragDebugForMessage(msg)?.latencyMs ?? "-" }}ms</div>
                   </div>
                 </div>
                 <details class="rag-debug-section">
                   <summary>{{ uiStore.t("ragDebugLabelRetrievalRaw") }}</summary>
                   <ul class="rag-debug-list">
                     <li
-                      v-for="item in msg.debug?.retrieval?.rawHits || []"
+                      v-for="item in ragDebugForMessage(msg)?.retrieval?.rawHits || []"
                       :key="`raw_${item.chunkId}`"
                       class="rag-debug-item"
                     >
@@ -202,7 +335,7 @@ const onChooseDocument = async (event) => {
                   <summary>{{ uiStore.t("ragDebugLabelRerankAfter") }}</summary>
                   <ul class="rag-debug-list">
                     <li
-                      v-for="item in msg.debug?.rerank?.after || msg.debug?.rerank?.afterRuntimeSort || []"
+                      v-for="item in ragDebugForMessage(msg)?.rerank?.after || ragDebugForMessage(msg)?.rerank?.afterRuntimeSort || []"
                       :key="`rerank_${item.chunkId}`"
                       class="rag-debug-item"
                     >
@@ -212,7 +345,6 @@ const onChooseDocument = async (event) => {
                   </ul>
                 </details>
               </details>
-              <div v-if="msg.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
             </div>
           </div>
         </template>
@@ -220,14 +352,38 @@ const onChooseDocument = async (event) => {
           <div class="msg-avatar is-empty"></div>
           <div class="msg-body">
             <div class="msg-content">{{ msg.text }}</div>
+            <div v-if="msg.from === 'agent' && msg.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
+            <div v-if="msg.from === 'agent' && msg.citations?.length" class="agent-citations-panel">
+              <div class="agent-citations-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
+              <ul class="agent-citations-list">
+                <li v-for="(citation, citationIdx) in msg.citations" :key="`grouped_citation_${citationIdx}`" class="agent-citation-item">
+                  {{ citationLabel(citation) }}
+                </li>
+              </ul>
+            </div>
+            <div v-else-if="showGroundingMeta(msg) && !msg.noEvidence" class="rag-debug-mini">
+              {{ uiStore.t("agentTraceNoCitations") }}
+            </div>
+            <div v-if="agentTraceEnabled && msg.from === 'agent' && traceStepsForMessage(msg).length" class="agent-trace-panel">
+              <div class="agent-trace-title">{{ uiStore.t("agentTracePanelTitle") }}</div>
+              <div class="agent-trace-list">
+                <div v-for="step in traceStepsForMessage(msg)" :key="`group_${step.id}`" class="agent-trace-step">
+                  <div class="agent-trace-head">
+                    <strong>{{ traceTitle(step) }}</strong>
+                    <span class="agent-trace-status">{{ traceStatus(step) }}</span>
+                  </div>
+                  <div class="agent-trace-summary">{{ step.summary }}</div>
+                </div>
+              </div>
+            </div>
             <div v-if="ragDebugEnabled && msg.from === 'agent'" class="rag-message-debug">
-              <details v-if="msg.debug" class="rag-debug-section">
+              <details v-if="ragDebugForMessage(msg)" class="rag-debug-section">
                 <summary>{{ uiStore.t("ragDebugMessageSummary") }}</summary>
                 <div class="rag-debug-mini">
                   {{ uiStore.t("ragDebugLabelEmbedding") }}:
-                  {{ msg.debug?.vector?.embedderProvider || "-" }} /
-                  {{ msg.debug?.vector?.embeddingModel || "-" }} /
-                  dim={{ msg.debug?.vector?.embeddingDimension ?? "-" }}
+                  {{ ragDebugForMessage(msg)?.vector?.embedderProvider || "-" }} /
+                  {{ ragDebugForMessage(msg)?.vector?.embeddingModel || "-" }} /
+                  dim={{ ragDebugForMessage(msg)?.vector?.embeddingDimension ?? "-" }}
                 </div>
               </details>
             </div>

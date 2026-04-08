@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify:agent-trace": "node ./scripts/verify-agent-trace.mjs",
+    "verify:bankruptcy-analysis": "node ./scripts/verify-bankruptcy-analysis.mjs",
+    "verify:rag-lifecycle": "node ./scripts/verify-rag-lifecycle.mjs"
   },
   "dependencies": {
     "pinia": "^3.0.3",
