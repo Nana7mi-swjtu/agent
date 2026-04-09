@@ -21,7 +21,15 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  traceDetailsVisible: {
+    type: Boolean,
+    default: false,
+  },
   ragDebugEnabled: {
+    type: Boolean,
+    default: false,
+  },
+  ragDebugDetailsVisible: {
     type: Boolean,
     default: false,
   },
@@ -88,6 +96,7 @@ const citationLabel = (citation) => {
         <AgentTracePanel
           v-if="agentTraceEnabled && message.from === 'agent' && traceStepsForMessage(message).length"
           :steps="traceStepsForMessage(message)"
+          :details-visible="traceDetailsVisible"
           :title-resolver="traceTitle"
           :status-resolver="traceStatus"
           :detail-entries-resolver="traceDetailsEntries"
@@ -95,6 +104,7 @@ const citationLabel = (citation) => {
         <RagMessageDebug
           v-if="ragDebugEnabled && message.from === 'agent'"
           :debug-payload="ragDebugForMessage(message)"
+          :detailed="ragDebugDetailsVisible"
         />
       </div>
     </template>
@@ -117,6 +127,7 @@ const citationLabel = (citation) => {
         <AgentTracePanel
           v-if="agentTraceEnabled && message.from === 'agent' && traceStepsForMessage(message).length"
           :steps="traceStepsForMessage(message)"
+          :details-visible="false"
           :title-resolver="traceTitle"
           :status-resolver="traceStatus"
           :detail-entries-resolver="traceDetailsEntries"
@@ -125,6 +136,7 @@ const citationLabel = (citation) => {
         <RagMessageDebug
           v-if="ragDebugEnabled && message.from === 'agent'"
           :debug-payload="ragDebugForMessage(message)"
+          :detailed="ragDebugDetailsVisible"
           condensed
         />
       </div>
@@ -136,23 +148,22 @@ const citationLabel = (citation) => {
 .msg-row {
   display: flex;
   gap: 16px;
-  padding: 2px 16px;
-  transition: background 0.1s;
+  padding: 10px 24px;
+  transition: background 0.18s ease;
 }
 
 .msg-row:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: rgba(47, 107, 255, 0.04);
 }
 
 .msg-row.is-first {
-  padding-top: 16px;
-  margin-top: 8px;
+  padding-top: 20px;
 }
 
 .msg-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+  width: 42px;
+  height: 42px;
+  border-radius: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -165,7 +176,7 @@ const citationLabel = (citation) => {
 }
 
 .msg-avatar.is-agent {
-  background: linear-gradient(135deg, #3ba55d, #1f8b4c);
+  background: linear-gradient(135deg, #1f9d74, #54caa2);
 }
 
 .msg-avatar.is-empty {
@@ -175,13 +186,14 @@ const citationLabel = (citation) => {
 .msg-body {
   flex: 1;
   min-width: 0;
+  max-width: 88ch;
 }
 
 .msg-meta {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  margin-bottom: 2px;
+  margin-bottom: 6px;
 }
 
 .msg-author {
@@ -192,7 +204,7 @@ const citationLabel = (citation) => {
 }
 
 .msg-author:hover {
-  text-decoration: underline;
+  text-decoration: none;
 }
 
 .msg-timestamp {
@@ -202,7 +214,7 @@ const citationLabel = (citation) => {
 
 .msg-content {
   font-size: 15px;
-  line-height: 1.55;
+  line-height: 1.7;
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
@@ -215,11 +227,7 @@ const citationLabel = (citation) => {
 }
 
 .agent-citations-panel {
-  margin-top: 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.02);
+  margin-top: 12px;
 }
 
 .agent-citations-title {
@@ -227,22 +235,24 @@ const citationLabel = (citation) => {
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .agent-citations-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: grid;
-  gap: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .agent-citation-item {
   font-size: 12px;
-  color: var(--text-muted);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 6px 8px;
+  color: var(--text-channel);
+  border: 1px solid rgba(47, 107, 255, 0.12);
+  border-radius: 999px;
+  padding: 7px 10px;
+  background: rgba(47, 107, 255, 0.05);
 }
 </style>
