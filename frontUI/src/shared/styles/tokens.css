@@ -1,0 +1,21 @@
+/* ─── Discord design tokens ─── */
+      :root {
+        --bg-server-bar:   #1e1f22;
+        --bg-sidebar:      #2b2d31;
+        --bg-main:         #313338;
+        --bg-overlay:      #232428;
+        --bg-input:        #383a40;
+        --bg-hover:        rgba(79,84,92,.16);
+        --bg-active:       rgba(79,84,92,.32);
+        --bg-selected:     #404249;
+        --line:            #3f4147;
+        --text:            #f2f3f5;
+        --text-muted:      #80848e;
+        --text-channel:    #8e9297;
+        --accent:          #5865f2;
+        --accent-2:        #7b86ff;
+        --ok:              #23a559;
+        --danger:          #f23f43;
+        --mention:         rgba(88,101,242,.15);
+      }
+

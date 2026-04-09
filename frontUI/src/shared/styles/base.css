@@ -1,0 +1,22 @@
+      *, *::before, *::after { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; overflow: hidden; }
+      body {
+        color: var(--text);
+        background: var(--bg-main);
+        font-family: "gg sans", "Noto Sans SC", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        font-size: 15px;
+        line-height: 1.375;
+        -webkit-font-smoothing: antialiased;
+      }
+      #app { height: 100%; }
+
+      /* ─────────────────────────────────────────────
+         SCROLLBAR
+      ───────────────────────────────────────────── */
+      ::-webkit-scrollbar { width: 8px; }
+      ::-webkit-scrollbar-thumb {
+        background: #1a1b1e;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-track { background: transparent; }
+

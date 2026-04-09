@@ -1,6 +1,4 @@
 <script setup>
-import ContentSection from "@/shared/ui/ContentSection.vue";
-
 defineProps({
   title: {
     type: String,
@@ -14,7 +12,11 @@ defineProps({
 </script>
 
 <template>
-  <ContentSection v-bind="$props">
+  <div class="content-panel">
+    <div class="content-header">
+      <h1>{{ title }}</h1>
+      <p v-if="subtitle">{{ subtitle }}</p>
+    </div>
     <slot />
-  </ContentSection>
+  </div>
 </template>
