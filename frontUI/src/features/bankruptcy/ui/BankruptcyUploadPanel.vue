@@ -34,13 +34,17 @@ defineEmits(["update:enterpriseName", "select-file", "submit"]);
 
     <div class="prompt-box upload-card">
       <strong>{{ uiStore.t("bankruptcySaveUpload") }}</strong>
-      <input
-        :key="fileInputKey"
-        type="file"
-        accept=".csv,text/csv"
-        class="bankruptcy-file-input"
-        @change="$emit('select-file', $event)"
-      />
+      <label class="bankruptcy-upload-dropzone">
+        <span class="bankruptcy-upload-title">CSV</span>
+        <span class="bankruptcy-upload-subtitle">{{ uiStore.t("bankruptcySaveUpload") }}</span>
+        <input
+          :key="fileInputKey"
+          type="file"
+          accept=".csv,text/csv"
+          class="bankruptcy-file-input"
+          @change="$emit('select-file', $event)"
+        />
+      </label>
 
       <div class="bankruptcy-form-row">
         <label class="bankruptcy-label">{{ uiStore.t("bankruptcyEnterpriseName") }}</label>
@@ -77,9 +81,33 @@ defineEmits(["update:enterpriseName", "select-file", "submit"]);
 }
 
 .bankruptcy-file-input {
-  display: block;
-  width: 100%;
-  margin-top: 12px;
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.bankruptcy-upload-dropzone {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  margin-top: 14px;
+  padding: 18px;
+  border: 1px dashed rgba(47, 107, 255, 0.28);
+  border-radius: 18px;
+  background: rgba(47, 107, 255, 0.05);
+  cursor: pointer;
+}
+
+.bankruptcy-upload-title {
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.bankruptcy-upload-subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
 .bankruptcy-form-row {
@@ -99,9 +127,9 @@ defineEmits(["update:enterpriseName", "select-file", "submit"]);
 .bankruptcy-input {
   width: 100%;
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: 14px;
   border: 1px solid var(--line);
-  background: var(--bg-server-bar);
+  background: #fff;
   color: var(--text);
   outline: none;
 }

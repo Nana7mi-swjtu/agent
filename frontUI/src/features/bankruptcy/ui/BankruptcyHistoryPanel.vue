@@ -93,8 +93,8 @@ defineEmits(["select-record", "delete-record"]);
   min-width: 28px;
   padding: 4px 8px;
   border-radius: 999px;
-  background: rgba(88, 101, 242, 0.18);
-  color: var(--text);
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: 12px;
   text-align: center;
 }
@@ -110,20 +110,21 @@ defineEmits(["select-record", "delete-record"]);
   justify-content: space-between;
   gap: 12px;
   width: 100%;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.02);
+  padding: 14px;
+  border: 1px solid rgba(47, 107, 255, 0.08);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(244, 249, 255, 0.92));
   color: var(--text);
   cursor: pointer;
-  transition: border-color 0.2s ease, background 0.2s ease;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
   text-align: left;
 }
 
 .bankruptcy-record-row:hover,
 .bankruptcy-record-row.active {
-  border-color: rgba(88, 101, 242, 0.55);
-  background: rgba(88, 101, 242, 0.12);
+  transform: translateY(-1px);
+  border-color: rgba(47, 107, 255, 0.24);
+  background: rgba(47, 107, 255, 0.08);
 }
 
 .bankruptcy-record-main {
@@ -161,25 +162,25 @@ defineEmits(["select-record", "delete-record"]);
 }
 
 .bankruptcy-status-chip[data-status="uploaded"] {
-  background: rgba(99, 102, 241, 0.18);
-  color: #c7d2fe;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .bankruptcy-status-chip[data-status="analyzed"] {
-  background: rgba(34, 197, 94, 0.18);
-  color: #86efac;
+  background: var(--ok-soft);
+  color: var(--ok);
 }
 
 .bankruptcy-status-chip[data-status="failed"] {
-  background: rgba(248, 113, 113, 0.18);
-  color: #fca5a5;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .bankruptcy-delete-btn {
-  border: 1px solid rgba(248, 113, 113, 0.25);
-  background: transparent;
-  color: #fca5a5;
-  border-radius: 8px;
+  border: 1px solid rgba(217, 92, 92, 0.18);
+  background: rgba(217, 92, 92, 0.04);
+  color: var(--danger);
+  border-radius: 999px;
   padding: 8px 10px;
   font-size: 12px;
   font-weight: 700;
@@ -188,8 +189,8 @@ defineEmits(["select-record", "delete-record"]);
 }
 
 .bankruptcy-delete-btn:hover:not(:disabled) {
-  background: rgba(248, 113, 113, 0.12);
-  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(217, 92, 92, 0.1);
+  border-color: rgba(217, 92, 92, 0.26);
 }
 
 .bankruptcy-delete-btn:disabled {

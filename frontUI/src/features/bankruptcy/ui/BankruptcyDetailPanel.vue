@@ -187,10 +187,10 @@ defineEmits(["analyze-selected", "delete-record"]);
 .detail-delete,
 .bankruptcy-delete-btn {
   min-width: 112px;
-  border: 1px solid rgba(248, 113, 113, 0.25);
-  background: transparent;
-  color: #fca5a5;
-  border-radius: 8px;
+  border: 1px solid rgba(217, 92, 92, 0.18);
+  background: rgba(217, 92, 92, 0.04);
+  color: var(--danger);
+  border-radius: 999px;
   padding: 8px 10px;
   font-size: 12px;
   font-weight: 700;
@@ -199,8 +199,8 @@ defineEmits(["analyze-selected", "delete-record"]);
 }
 
 .bankruptcy-delete-btn:hover:not(:disabled) {
-  background: rgba(248, 113, 113, 0.12);
-  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(217, 92, 92, 0.1);
+  border-color: rgba(217, 92, 92, 0.24);
 }
 
 .bankruptcy-delete-btn:disabled {
@@ -219,10 +219,10 @@ defineEmits(["analyze-selected", "delete-record"]);
 .bankruptcy-result-card {
   display: grid;
   gap: 6px;
-  padding: 14px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.02);
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(47, 107, 255, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(243, 248, 255, 0.92));
 }
 
 .bankruptcy-meta-item span,
@@ -280,18 +280,19 @@ defineEmits(["analyze-selected", "delete-record"]);
   justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(47, 107, 255, 0.04);
+  border: 1px solid rgba(47, 107, 255, 0.08);
   font-variant-numeric: tabular-nums;
 }
 
 .bankruptcy-plot-card {
   margin-top: 12px;
-  border-radius: 14px;
+  border-radius: 20px;
   overflow: hidden;
   background: #fff;
-  padding: 10px;
+  padding: 12px;
+  box-shadow: var(--shadow-sm);
 }
 
 .bankruptcy-plot {

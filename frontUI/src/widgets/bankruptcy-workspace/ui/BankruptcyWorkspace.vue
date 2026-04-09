@@ -41,6 +41,11 @@ const {
       :muted="uploading || analyzing ? uiStore.t('bankruptcyRunning') : ''"
     />
 
+    <div class="bankruptcy-lab-banner">
+      <span class="bankruptcy-lab-badge">Workflow validation</span>
+      <p>Bankruptcy analysis is staged here for agent workflow verification before it moves into the main conversation workspace.</p>
+    </div>
+
     <div class="bankruptcy-shell">
       <aside class="bankruptcy-sidebar">
         <BankruptcyUploadPanel
@@ -89,7 +94,7 @@ const {
 .bankruptcy-shell {
   display: grid;
   grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
-  gap: 18px;
+  gap: 20px;
   min-height: 0;
 }
 
@@ -97,6 +102,39 @@ const {
   display: grid;
   gap: 16px;
   align-content: start;
+}
+
+.bankruptcy-lab-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid rgba(47, 107, 255, 0.14);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(244, 249, 255, 0.94), rgba(255, 255, 255, 0.92));
+  box-shadow: var(--shadow-sm);
+}
+
+.bankruptcy-lab-banner p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.bankruptcy-lab-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 @media (max-width: 1024px) {
