@@ -3,7 +3,13 @@ import { computed, ref, watch } from "vue";
 
 import { CHAT_SESSIONS_KEY } from "@/shared/config/storage";
 import { safeJsonParse } from "@/shared/lib/json";
-import { buildConversationId, normalizeChatMessage, normalizeChatSession } from "@/entities/chat/lib/session";
+import {
+  buildConversationId,
+  buildMessageId,
+  normalizeChatMessage,
+  normalizeChatSession,
+  serializeChatSession,
+} from "@/entities/chat/lib/session";
 
 const loadSessions = () => {
   const raw = safeJsonParse(localStorage.getItem(CHAT_SESSIONS_KEY) || "[]", []);
@@ -51,6 +57,39 @@ export const useChatStore = defineStore("chat", () => {
     if (!activeSession.value) return;
     activeSession.value.messages.push(normalizeChatMessage(message));
     activeSession.value.updatedAt = new Date().toISOString();
+  };
+
+  const replaceMessage = (messageId, message) => {
+    if (!activeSession.value) return false;
+    const targetId = String(messageId || "");
+    const index = activeSession.value.messages.findIndex((item) => item.id === targetId);
+    if (index < 0) return false;
+    activeSession.value.messages.splice(index, 1, normalizeChatMessage({ ...message, id: targetId }));
+    activeSession.value.updatedAt = new Date().toISOString();
+    return true;
+  };
+
+  const removeMessage = (messageId) => {
+    if (!activeSession.value) return false;
+    const targetId = String(messageId || "");
+    const index = activeSession.value.messages.findIndex((item) => item.id === targetId);
+    if (index < 0) return false;
+    activeSession.value.messages.splice(index, 1);
+    activeSession.value.updatedAt = new Date().toISOString();
+    return true;
+  };
+
+  const appendPendingAssistantMessage = (pendingStage = "") => {
+    const id = buildMessageId();
+    appendMessage({
+      id,
+      from: "agent",
+      text: "",
+      time: new Date().toISOString(),
+      pending: true,
+      pendingStage,
+    });
+    return id;
   };
 
   const setSessionScope = ({ workspaceId, role }) => {
@@ -107,7 +146,7 @@ export const useChatStore = defineStore("chat", () => {
   watch(
     sessions,
     (next) => {
-      localStorage.setItem(CHAT_SESSIONS_KEY, JSON.stringify(next));
+      localStorage.setItem(CHAT_SESSIONS_KEY, JSON.stringify(next.map(serializeChatSession)));
     },
     { deep: true },
   );
@@ -122,6 +161,9 @@ export const useChatStore = defineStore("chat", () => {
     createSession,
     ensureSession,
     appendMessage,
+    replaceMessage,
+    removeMessage,
+    appendPendingAssistantMessage,
     setSessionScope,
     deleteSession,
     setSending,

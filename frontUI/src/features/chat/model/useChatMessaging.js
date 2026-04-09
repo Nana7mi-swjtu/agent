@@ -47,17 +47,30 @@ export const useChatMessaging = () => {
     if (current.messages.length === 1) {
       current.title = text.slice(0, 20) || current.title;
     }
+    input.value = "";
+    const pendingMessageId = chatStore.appendPendingAssistantMessage(uiStore.t("assistantWorking"));
 
     sending.value = true;
-    const result = await postWorkspaceChat(text, workspaceId.value, current.conversationId);
+    let result;
+    try {
+      result = await postWorkspaceChat(text, workspaceId.value, current.conversationId);
+    } catch (requestError) {
+      sending.value = false;
+      chatStore.removeMessage(pendingMessageId);
+      error.value = requestError instanceof Error ? requestError.message : uiStore.t("sendFailed");
+      input.value = text;
+      return { ok: false, error: error.value };
+    }
     sending.value = false;
 
     if (!result.ok) {
+      chatStore.removeMessage(pendingMessageId);
       error.value = result.data?.error || uiStore.t("sendFailed");
+      input.value = text;
       return result;
     }
 
-    chatStore.appendMessage({
+    chatStore.replaceMessage(pendingMessageId, {
       from: "agent",
       text: result.data?.data?.reply || "",
       time: new Date().toISOString(),
@@ -67,10 +80,6 @@ export const useChatMessaging = () => {
       trace: result.data?.data?.trace || null,
     });
     workspaceStore.systemPrompt = result.data?.data?.systemPrompt || workspaceStore.systemPrompt;
-
-    if (!result.empty) {
-      input.value = "";
-    }
     return result;
   };
 
