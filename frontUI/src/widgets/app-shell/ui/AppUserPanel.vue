@@ -40,7 +40,7 @@ defineEmits(["go-profile", "logout"]);
       <strong>{{ displayName }}</strong>
       <small>{{ workspaceId }} · {{ activeSessionCount }} {{ uiStore.t("chatHistory") }}</small>
     </div>
-    <button class="panel-icon-btn" title="设置" @click="$emit('go-profile')">⚙</button>
-    <button class="panel-icon-btn" title="退出" @click="$emit('logout')">⏻</button>
+    <button class="panel-icon-btn" title="设置" @click="$emit('go-profile')">Me</button>
+    <button class="panel-icon-btn" title="退出" @click="$emit('logout')">Out</button>
   </div>
 </template>

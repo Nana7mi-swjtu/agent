@@ -1,21 +1,64 @@
-/* ─── Discord design tokens ─── */
-      :root {
-        --bg-server-bar:   #1e1f22;
-        --bg-sidebar:      #2b2d31;
-        --bg-main:         #313338;
-        --bg-overlay:      #232428;
-        --bg-input:        #383a40;
-        --bg-hover:        rgba(79,84,92,.16);
-        --bg-active:       rgba(79,84,92,.32);
-        --bg-selected:     #404249;
-        --line:            #3f4147;
-        --text:            #f2f3f5;
-        --text-muted:      #80848e;
-        --text-channel:    #8e9297;
-        --accent:          #5865f2;
-        --accent-2:        #7b86ff;
-        --ok:              #23a559;
-        --danger:          #f23f43;
-        --mention:         rgba(88,101,242,.15);
-      }
+:root {
+  --bg-app: #f3f8ff;
+  --bg-main: #eef5ff;
+  --bg-server-bar: #f8fbff;
+  --bg-sidebar: #ffffff;
+  --bg-overlay: #f6faff;
+  --bg-input: #edf4ff;
+  --bg-subtle: #e4efff;
+  --bg-hover: rgba(47, 107, 255, 0.08);
+  --bg-active: rgba(47, 107, 255, 0.14);
+  --bg-selected: #dce9ff;
+  --line: #d5e2f3;
+  --line-strong: #b8cbe7;
+  --text: #142033;
+  --text-muted: #60728f;
+  --text-soft: #8193af;
+  --text-channel: #36506f;
+  --accent: #2f6bff;
+  --accent-2: #6fa2ff;
+  --accent-soft: #dbe8ff;
+  --ok: #1f9d74;
+  --ok-soft: #ddf6ee;
+  --danger: #d95c5c;
+  --danger-soft: #fee9e9;
+  --warn: #e1a12b;
+  --warn-soft: #fff3d8;
+  --mention: rgba(47, 107, 255, 0.1);
+  --shadow-sm: 0 10px 30px rgba(28, 69, 126, 0.08);
+  --shadow-md: 0 22px 45px rgba(28, 69, 126, 0.12);
+  --radius-sm: 12px;
+  --radius-md: 18px;
+  --radius-lg: 26px;
+}
 
+[data-theme="dark"] {
+  --bg-app: #081221;
+  --bg-main: #0c1627;
+  --bg-server-bar: #101c2f;
+  --bg-sidebar: #0f1a2c;
+  --bg-overlay: #122037;
+  --bg-input: #13233b;
+  --bg-subtle: #132741;
+  --bg-hover: rgba(111, 162, 255, 0.12);
+  --bg-active: rgba(111, 162, 255, 0.2);
+  --bg-selected: rgba(111, 162, 255, 0.18);
+  --line: rgba(179, 207, 255, 0.12);
+  --line-strong: rgba(179, 207, 255, 0.24);
+  --text: #edf4ff;
+  --text-muted: #9bb0ce;
+  --text-soft: #7f94b3;
+  --text-channel: #bfd2ef;
+  --accent: #73a5ff;
+  --accent-2: #9cc1ff;
+  --accent-soft: rgba(115, 165, 255, 0.16);
+  --ok: #4cd2a4;
+  --ok-soft: rgba(76, 210, 164, 0.14);
+  --danger: #ff8d8d;
+  --danger-soft: rgba(255, 141, 141, 0.14);
+  --warn: #ffd166;
+  --warn-soft: rgba(255, 209, 102, 0.14);
+  --mention: rgba(115, 165, 255, 0.16);
+  --shadow-sm: 0 18px 36px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 24px 60px rgba(0, 0, 0, 0.32);
+}

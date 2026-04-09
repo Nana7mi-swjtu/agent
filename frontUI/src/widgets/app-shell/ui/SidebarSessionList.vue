@@ -26,7 +26,7 @@ defineEmits(["select-session", "delete-session", "new-chat"]);
     :class="{ active: activeSessionId === session.id }"
     @click="$emit('select-session', session.id)"
   >
-    <span class="channel-hash session-hash">🕐</span>
+    <span class="channel-hash session-hash">S</span>
     <span class="channel-row-name">{{ session.title }}</span>
     <button class="session-delete-btn" :title="uiStore.t('deleteChat')" @click.stop="$emit('delete-session', session.id)">
       ×
@@ -34,7 +34,7 @@ defineEmits(["select-session", "delete-session", "new-chat"]);
   </div>
 
   <div class="channel-row channel-row-new" @click="$emit('new-chat')">
-    <span class="channel-hash">＋</span>
+    <span class="channel-hash">+</span>
     <span class="channel-row-name">{{ uiStore.t("newChat") }}</span>
   </div>
 </template>
@@ -45,7 +45,7 @@ defineEmits(["select-session", "delete-session", "new-chat"]);
 }
 
 .session-hash {
-  font-size: 13px;
+  font-size: 11px;
 }
 
 .channel-row-new {

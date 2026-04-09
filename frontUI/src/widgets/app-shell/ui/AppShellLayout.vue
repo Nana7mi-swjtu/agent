@@ -69,7 +69,9 @@ onMounted(initialize);
     />
 
     <div class="dc-main">
+      <div class="dc-main-scroll">
       <RouterView />
+      </div>
     </div>
   </div>
 </template>

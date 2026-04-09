@@ -59,7 +59,10 @@ defineEmits(["go-bankruptcy", "switch-role", "select-session", "delete-session",
 
 <template>
   <div class="dc-sidebar">
-    <div class="sidebar-guild-header">Agent Studio</div>
+    <div class="sidebar-guild-header">
+      <div class="sidebar-guild-title">Agent Studio</div>
+      <div class="sidebar-guild-subtitle">{{ workspaceId }}</div>
+    </div>
     <div class="sidebar-scroller">
       <SidebarRoleSection
         :current-path="currentPath"

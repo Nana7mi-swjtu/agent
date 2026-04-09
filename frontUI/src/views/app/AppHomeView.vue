@@ -12,7 +12,7 @@ import { useWorkspaceStore } from "@/stores/workspace";
 const router = useRouter();
 const uiStore = useUiStore();
 const workspaceStore = useWorkspaceStore();
-const { roles, selectedRole, systemPrompt, ready } = storeToRefs(workspaceStore);
+const { roles, selectedRole, ready } = storeToRefs(workspaceStore);
 const { loadContext, selectRole } = useWorkspaceContext();
 const error = ref("");
 
@@ -60,11 +60,6 @@ onMounted(async () => {
           <strong>{{ role.name }}</strong>
           <span>{{ role.description }}</span>
         </button>
-      </div>
-
-      <div class="prompt-box" v-if="systemPrompt">
-        <strong>{{ uiStore.t("promptLabel") }}</strong>
-        <p style="margin: 8px 0 0; font-size: 13px; white-space: pre-wrap; word-break: break-word">{{ systemPrompt }}</p>
       </div>
 
       <FeedbackMessage :error="error" />
