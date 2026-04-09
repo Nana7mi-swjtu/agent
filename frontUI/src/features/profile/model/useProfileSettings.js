@@ -27,13 +27,19 @@ export const useProfileSettings = () => {
   const uiStore = useUiStore();
   const workspaceStore = useWorkspaceStore();
   const authStore = useAuthStore();
-  const { loading, submitting, error, success, profile } = storeToRefs(profileStore);
+  const { loading, error, profile } = storeToRefs(profileStore);
 
   const avatarFile = ref(null);
   const avatarPreset = ref("");
   const avatarPreview = ref("");
   const prefRole = ref("investor");
   const authBgGifUrl = ref(uiStore.authBgGifUrl);
+  const accountSubmitting = ref(false);
+  const accountError = ref("");
+  const accountSuccess = ref("");
+  const preferencesSubmitting = ref(false);
+  const preferencesError = ref("");
+  const preferencesSuccess = ref("");
 
   const form = reactive({
     nickname: "",
@@ -67,6 +73,52 @@ export const useProfileSettings = () => {
     profileStore.clearFeedback();
   };
 
+  const clearAccountFeedback = () => {
+    accountError.value = "";
+    accountSuccess.value = "";
+  };
+
+  const setAccountError = (message = "") => {
+    accountError.value = String(message || "");
+    if (accountError.value) {
+      accountSuccess.value = "";
+    }
+  };
+
+  const setAccountSuccess = (message = "") => {
+    accountSuccess.value = String(message || "");
+    if (accountSuccess.value) {
+      accountError.value = "";
+    }
+  };
+
+  const setAccountSubmitting = (value) => {
+    accountSubmitting.value = Boolean(value);
+  };
+
+  const clearPreferencesFeedback = () => {
+    preferencesError.value = "";
+    preferencesSuccess.value = "";
+  };
+
+  const setPreferencesError = (message = "") => {
+    preferencesError.value = String(message || "");
+    if (preferencesError.value) {
+      preferencesSuccess.value = "";
+    }
+  };
+
+  const setPreferencesSuccess = (message = "") => {
+    preferencesSuccess.value = String(message || "");
+    if (preferencesSuccess.value) {
+      preferencesError.value = "";
+    }
+  };
+
+  const setPreferencesSubmitting = (value) => {
+    preferencesSubmitting.value = Boolean(value);
+  };
+
   const loadProfile = async () =>
     loadProfileSettingsAction({
       profileStore,
@@ -85,9 +137,7 @@ export const useProfileSettings = () => {
     workspaceStore,
     authStore,
     loading,
-    submitting,
     error,
-    success,
     profile,
     form,
     prefForm,
@@ -99,8 +149,22 @@ export const useProfileSettings = () => {
     nicknameValid,
     emailValid,
     passwordStrength,
+    accountSubmitting,
+    accountError,
+    accountSuccess,
+    preferencesSubmitting,
+    preferencesError,
+    preferencesSuccess,
     syncPrefForm,
     clearFeedback,
+    clearAccountFeedback,
+    setAccountError,
+    setAccountSuccess,
+    setAccountSubmitting,
+    clearPreferencesFeedback,
+    setPreferencesError,
+    setPreferencesSuccess,
+    setPreferencesSubmitting,
     loadProfile,
   };
 };

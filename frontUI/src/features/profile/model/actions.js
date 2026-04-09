@@ -45,19 +45,21 @@ export const loadProfileSettingsAction = async ({
 
 export const saveProfileAccountAction = async ({
   payload,
-  profileStore,
   uiStore,
   authStore,
   profile,
   avatarPreview,
   form,
+  setAccountSubmitting,
+  setAccountError,
+  setAccountSuccess,
 }) => {
-  profileStore.setSubmitting(true);
+  setAccountSubmitting(true);
   const result = await updateUserProfile(payload);
-  profileStore.setSubmitting(false);
+  setAccountSubmitting(false);
 
   if (!result.ok) {
-    profileStore.setError(result.data?.error || uiStore.t("profileSaveFailed"));
+    setAccountError(result.data?.error || uiStore.t("profileSaveFailed"));
     return result;
   }
 
@@ -68,23 +70,26 @@ export const saveProfileAccountAction = async ({
   form.old_password = "";
   form.new_password = "";
   form.confirm_password = "";
-  profileStore.setSuccess(uiStore.t("profileSaveSuccess"));
+  setAccountSuccess(uiStore.t("profileSaveSuccess"));
   await authStore.refreshUserProfile();
   return result;
 };
 
 export const saveProfilePreferencesAction = async ({
-  profileStore,
   uiStore,
   workspaceStore,
   prefForm,
   prefRole,
   authBgGifUrl,
   syncPrefForm,
+  setPreferencesSubmitting,
+  setPreferencesError,
+  setPreferencesSuccess,
 }) => {
   uiStore.setAuthBgGifUrl(authBgGifUrl.value);
   uiStore.mergePreferences(prefForm);
 
+  setPreferencesSubmitting(true);
   const [prefRes, roleRes] = await Promise.all([
     patchUserPreferences({
       theme: prefForm.theme,
@@ -96,13 +101,14 @@ export const saveProfilePreferencesAction = async ({
     }),
     patchWorkspaceContext(prefRole.value),
   ]);
+  setPreferencesSubmitting(false);
 
   if (!prefRes.ok) {
-    profileStore.setError(prefRes.data?.error || uiStore.t("preferencesSaveFailed"));
+    setPreferencesError(prefRes.data?.error || uiStore.t("preferencesSaveFailed"));
     return prefRes;
   }
   if (!roleRes.ok) {
-    profileStore.setError(roleRes.data?.error || uiStore.t("roleSaveFailed"));
+    setPreferencesError(roleRes.data?.error || uiStore.t("roleSaveFailed"));
     return roleRes;
   }
 
@@ -114,7 +120,7 @@ export const saveProfilePreferencesAction = async ({
     workspaceStore.applyContext(roleRes.data.data);
   }
 
-  profileStore.setSuccess(uiStore.t("savePreferencesSuccess"));
+  setPreferencesSuccess(uiStore.t("savePreferencesSuccess"));
   return {
     ok: true,
     preferenceResult: prefRes,

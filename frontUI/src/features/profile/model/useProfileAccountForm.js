@@ -3,7 +3,6 @@ import { saveProfileAccountAction } from "@/features/profile/model/actions";
 
 export const useProfileAccountForm = (settings) => {
   const {
-    profileStore,
     uiStore,
     authStore,
     profile,
@@ -14,20 +13,23 @@ export const useProfileAccountForm = (settings) => {
     nicknameValid,
     emailValid,
     passwordStrength,
-    clearFeedback,
+    clearAccountFeedback,
+    setAccountError,
+    setAccountSuccess,
+    setAccountSubmitting,
   } = settings;
 
   const onAvatarChange = async (event) => {
     const [rawFile] = event.target.files || [];
     if (!rawFile) return;
-    clearFeedback();
+    clearAccountFeedback();
     try {
       const compressed = await compressImage(rawFile);
       avatarFile.value = compressed;
       avatarPreset.value = "";
       avatarPreview.value = URL.createObjectURL(compressed);
     } catch (err) {
-      profileStore.setError(err?.message || uiStore.t("avatarProcessFailed"));
+      setAccountError(err?.message || uiStore.t("avatarProcessFailed"));
     }
   };
 
@@ -38,29 +40,30 @@ export const useProfileAccountForm = (settings) => {
   };
 
   const saveProfile = async () => {
-    clearFeedback();
+    clearAccountFeedback();
+    setAccountSuccess("");
 
     if (!nicknameValid.value) {
-      profileStore.setError(uiStore.t("nicknameInvalidError"));
+      setAccountError(uiStore.t("nicknameInvalidError"));
       return;
     }
     if (!emailValid.value) {
-      profileStore.setError(uiStore.t("emailFormatInvalid"));
+      setAccountError(uiStore.t("emailFormatInvalid"));
       return;
     }
 
     const hasPasswordInput = form.old_password || form.new_password || form.confirm_password;
     if (hasPasswordInput) {
       if (!form.old_password || !form.new_password) {
-        profileStore.setError(uiStore.t("passwordOldNewRequired"));
+        setAccountError(uiStore.t("passwordOldNewRequired"));
         return;
       }
       if (form.new_password !== form.confirm_password) {
-        profileStore.setError(uiStore.t("passwordNotMatch"));
+        setAccountError(uiStore.t("passwordNotMatch"));
         return;
       }
       if (form.new_password.length < 8) {
-        profileStore.setError(uiStore.t("passwordTooShortClient"));
+        setAccountError(uiStore.t("passwordTooShortClient"));
         return;
       }
     }
@@ -80,6 +83,9 @@ export const useProfileAccountForm = (settings) => {
       profile,
       avatarPreview,
       form,
+      setAccountSubmitting,
+      setAccountError,
+      setAccountSuccess,
     });
   };
 

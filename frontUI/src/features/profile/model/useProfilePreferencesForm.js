@@ -2,26 +2,31 @@ import { saveProfilePreferencesAction } from "@/features/profile/model/actions";
 
 export const useProfilePreferencesForm = (settings) => {
   const {
-    profileStore,
     uiStore,
     workspaceStore,
     prefForm,
     prefRole,
     authBgGifUrl,
     syncPrefForm,
-    clearFeedback,
+    clearPreferencesFeedback,
+    setPreferencesSubmitting,
+    setPreferencesError,
+    setPreferencesSuccess,
   } = settings;
 
   const savePreferences = async () => {
-    clearFeedback();
+    clearPreferencesFeedback();
+    setPreferencesSuccess("");
     return saveProfilePreferencesAction({
-      profileStore,
       uiStore,
       workspaceStore,
       prefForm,
       prefRole,
       authBgGifUrl,
       syncPrefForm,
+      setPreferencesSubmitting,
+      setPreferencesError,
+      setPreferencesSuccess,
     });
   };
 
