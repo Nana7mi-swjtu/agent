@@ -1,4 +1,4 @@
-import { apiRequest } from "@/services/api/client";
+import { apiRequest } from "@/shared/api/client";
 
 export const getWorkspaceContext = () => apiRequest("/api/workspace/context");
 

@@ -1,9 +1,9 @@
 import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 
-import { CHAT_SESSIONS_KEY } from "@/constants/storage";
-import { safeJsonParse } from "@/utils/json";
-import { buildConversationId, normalizeChatMessage, normalizeChatSession } from "@/utils/chatSessionState";
+import { CHAT_SESSIONS_KEY } from "@/shared/config/storage";
+import { safeJsonParse } from "@/shared/lib/json";
+import { buildConversationId, normalizeChatMessage, normalizeChatSession } from "@/entities/chat/lib/session";
 
 const loadSessions = () => {
   const raw = safeJsonParse(localStorage.getItem(CHAT_SESSIONS_KEY) || "[]", []);

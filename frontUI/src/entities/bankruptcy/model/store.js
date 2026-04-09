@@ -7,7 +7,7 @@ import {
   getBankruptcyRecord,
   listBankruptcyRecords,
   uploadBankruptcyRecord,
-} from "@/services/bankruptcy";
+} from "@/entities/bankruptcy/api";
 
 export const useBankruptcyStore = defineStore("bankruptcy", () => {
   const records = ref([]);

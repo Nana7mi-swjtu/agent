@@ -1,14 +1,14 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
-import { AUTH_BG_GIF_KEY, DEFAULT_AUTH_BG_GIF_URL } from "@/constants/storage";
+import { AUTH_BG_GIF_KEY, DEFAULT_AUTH_BG_GIF_URL } from "@/shared/config/storage";
 import {
   loadPreferencesFromLocal,
   normalizePreferences,
   persistPreferences,
   roleDisplayName,
   translate,
-} from "@/utils/preferences";
+} from "@/shared/lib/preferences";
 
 export const useUiStore = defineStore("ui", () => {
   const preferences = ref(loadPreferencesFromLocal());

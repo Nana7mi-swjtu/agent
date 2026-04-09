@@ -3,10 +3,10 @@ import { createPinia } from "pinia";
 
 import App from "@/App.vue";
 import router from "@/app/router";
+import { useAuthStore } from "@/entities/auth/model/store";
+import { useChatStore } from "@/entities/chat/model/store";
+import { useWorkspaceStore } from "@/entities/workspace/model/store";
 import { handleUnauthorizedAction } from "@/features/auth/model/actions";
-import { useChatStore } from "@/stores/chat";
-import { useAuthStore } from "@/stores/auth";
-import { useWorkspaceStore } from "@/stores/workspace";
 import { setUnauthorizedHandler } from "@/shared/api/client";
 import "@/shared/styles/tokens.css";
 import "@/shared/styles/base.css";

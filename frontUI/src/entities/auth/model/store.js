@@ -1,9 +1,9 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
-import { clearCsrfToken, setCsrfToken } from "@/services/api/csrf";
-import { apiRequest } from "@/services/api/client";
-import { getUserProfile } from "@/services/user";
+import { clearCsrfToken, setCsrfToken } from "@/shared/api/csrf";
+import { apiRequest } from "@/shared/api/client";
+import { getUserProfile } from "@/entities/profile/api";
 
 export const useAuthStore = defineStore("auth", () => {
   const ready = ref(false);

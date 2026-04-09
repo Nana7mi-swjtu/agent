@@ -1,5 +1,9 @@
-import { apiRequest, buildApiUrl } from "@/services/api/client";
-import { normalizeBankruptcyRecord, normalizeBankruptcyRecordList, normalizeBankruptcyResult } from "@/utils/bankruptcy";
+import { apiRequest, buildApiUrl } from "@/shared/api/client";
+import {
+  normalizeBankruptcyRecord,
+  normalizeBankruptcyRecordList,
+  normalizeBankruptcyResult,
+} from "@/entities/bankruptcy/lib/record";
 
 const normalizePlotUrl = (value) => {
   if (typeof value !== "string" || !value.trim()) {
