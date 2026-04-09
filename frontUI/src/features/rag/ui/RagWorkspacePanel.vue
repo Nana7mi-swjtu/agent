@@ -7,10 +7,6 @@ const props = defineProps({
     type: String,
     default: "",
   },
-  systemPrompt: {
-    type: String,
-    default: "",
-  },
   selectedRoleName: {
     type: String,
     default: "",
@@ -80,13 +76,26 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
 </script>
 
 <template>
-  <div>
-    <div class="dc-toolbar">
-      <span class="ch-hash">#</span>
-      <span class="ch-name">{{ channelName }}</span>
-      <span class="toolbar-divider"></span>
-      <span class="ch-topic">{{ systemPrompt || "-" }}</span>
-      <span class="badge-pill">{{ selectedRoleName || "-" }}</span>
+  <section class="knowledge-panel">
+    <header class="knowledge-header">
+      <div>
+        <div class="knowledge-kicker">{{ selectedRoleName || channelName || "Agent" }}</div>
+        <h2>{{ uiStore.t("ragUploadedFiles") }}</h2>
+        <p>{{ uiStore.t("ragUploadFormatsHint") }}</p>
+      </div>
+      <button class="panel-icon-btn rag-refresh-btn" :title="uiStore.t('loading')" @click="emit('load-documents')">Sync</button>
+    </header>
+
+    <div class="knowledge-upload-row">
+      <label class="toolbar-upload-btn" :class="{ disabled: ragUploading }">
+        <span>{{ uiStore.t("ragUploadFile") }}</span>
+        <input
+          type="file"
+          accept=".pdf,.docx,.md,.txt,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          :disabled="ragUploading"
+          @change="emit('choose-document', $event)"
+        />
+      </label>
       <label class="rag-strategy-select">
         <span>{{ uiStore.t("ragChunkStrategyLabel") }}</span>
         <select
@@ -98,28 +107,20 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
           <option value="semantic_llm">{{ uiStore.t("ragChunkStrategySemanticLlm") }}</option>
         </select>
       </label>
-      <button class="toolbar-upload-btn" :disabled="ragUploading">
-        {{ uiStore.t("ragUploadFile") }}
-        <input
-          type="file"
-          accept=".pdf,.docx,.md,.txt,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          @change="emit('choose-document', $event)"
-        />
-      </button>
     </div>
-    <div class="rag-applied-row">{{ uiStore.t("ragUploadFormatsHint") }}</div>
 
     <div class="rag-status-row">
-      <span class="rag-status-text">{{ ragStageText || uiStore.t("ragUploadIdle") }}</span>
+      <div class="rag-status-copy">
+        <strong>{{ ragStageText || uiStore.t("ragUploadIdle") }}</strong>
+        <span v-if="chunkingAppliedText">{{ chunkingAppliedText }}</span>
+      </div>
       <div class="rag-progress-bar">
         <div class="rag-progress-fill" :style="{ width: `${uploadPercent}%` }"></div>
       </div>
-      <button class="panel-icon-btn rag-refresh-btn" :title="uiStore.t('loading')" @click="emit('load-documents')">↻</button>
     </div>
-    <div v-if="chunkingAppliedText" class="rag-applied-row">{{ chunkingAppliedText }}</div>
     <div v-if="ragError" class="msg-err rag-inline-err">{{ ragError }}</div>
+
     <div class="rag-docs-panel">
-      <div class="rag-docs-title">{{ uiStore.t("ragUploadedFiles") }}</div>
       <ul class="rag-docs-list">
         <li v-for="doc in ragDocuments" :key="doc.id" class="rag-doc-item">
           <div class="rag-doc-main">
@@ -152,10 +153,12 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
         <li v-if="!ragDocuments.length" class="rag-doc-empty">{{ uiStore.t("ragNoFiles") }}</li>
       </ul>
     </div>
-    <div v-if="ragDebugEnabled" class="rag-debug-panel">
+
+    <details v-if="ragDebugEnabled" class="rag-debug-panel">
+      <summary>Engineering</summary>
       <div class="rag-debug-header">
         <div class="rag-docs-title">{{ uiStore.t("ragDebugPanelTitle") }}</div>
-        <button class="panel-icon-btn rag-refresh-btn" :title="uiStore.t('loading')" @click="emit('load-rag-debug-snapshot')">↻</button>
+        <button class="panel-icon-btn rag-refresh-btn" :title="uiStore.t('loading')" @click="emit('load-rag-debug-snapshot')">Sync</button>
       </div>
       <div class="rag-debug-metrics">
         <span>{{ uiStore.t("ragDebugMetricDocuments") }}: {{ ragDebugSnapshot?.totalDocuments || 0 }}</span>
@@ -185,55 +188,73 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
           </li>
         </ul>
       </details>
-    </div>
-  </div>
+    </details>
+  </section>
 </template>
 
 <style scoped>
-.dc-toolbar {
-  height: 48px;
+.knowledge-panel {
+  display: grid;
+  gap: 16px;
+  height: 100%;
+  align-content: start;
+  overflow-y: auto;
+  padding: 22px 20px;
+  border: 1px solid var(--line);
+  border-radius: 30px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(243, 248, 255, 0.95));
+  box-shadow: var(--shadow-sm);
+}
+
+.knowledge-header {
   display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.knowledge-header h2 {
+  margin: 6px 0 6px;
+  font-size: 20px;
+}
+
+.knowledge-header p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.knowledge-kicker {
+  display: inline-flex;
   align-items: center;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--line);
-  gap: 8px;
-  flex-shrink: 0;
-  background: var(--bg-main);
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.2);
-}
-
-.ch-hash {
-  font-size: 22px;
-  font-weight: 900;
-  color: var(--text-muted);
-  line-height: 1;
-}
-
-.ch-name {
-  font-size: 16px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
   font-weight: 700;
-  color: var(--text);
-  flex: 1;
 }
 
-.ch-topic {
-  font-size: 14px;
-  color: var(--text-muted);
-  max-width: 40ch;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.knowledge-upload-row {
+  display: grid;
+  gap: 12px;
 }
 
 .toolbar-upload-btn {
   position: relative;
-  border: 1px solid var(--line);
-  background: var(--bg-overlay);
-  color: var(--text);
-  font-size: 12px;
-  border-radius: 6px;
-  padding: 6px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  border: 1px dashed rgba(47, 107, 255, 0.26);
+  background: rgba(47, 107, 255, 0.05);
+  color: var(--accent);
+  border-radius: 18px;
+  padding: 0 14px;
   cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .toolbar-upload-btn input {
@@ -243,61 +264,49 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
   cursor: pointer;
 }
 
-.toolbar-upload-btn:disabled {
+.toolbar-upload-btn.disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
 
 .rag-strategy-select {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  display: grid;
+  gap: 8px;
   font-size: 12px;
   color: var(--text-muted);
 }
 
 .rag-strategy-select select {
   border: 1px solid var(--line);
-  background: var(--bg-input);
+  min-height: 42px;
+  background: rgba(255, 255, 255, 0.9);
   color: var(--text);
-  border-radius: 6px;
-  padding: 4px 6px;
-  font-size: 12px;
-}
-
-.toolbar-divider {
-  width: 1px;
-  height: 24px;
-  background: var(--line);
-  margin: 0 4px;
-}
-
-.badge-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 700;
-  background: var(--accent);
-  color: #fff;
+  border-radius: 14px;
+  padding: 0 12px;
+  font-size: 13px;
 }
 
 .rag-status-row {
-  display: flex;
-  align-items: center;
+  display: grid;
   gap: 10px;
-  padding: 10px 16px 0;
 }
 
-.rag-status-text {
-  min-width: 120px;
+.rag-status-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.rag-status-copy strong {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.rag-status-copy span {
   font-size: 12px;
   color: var(--text-muted);
 }
 
 .rag-progress-bar {
-  flex: 1;
   height: 8px;
   background: var(--bg-input);
   border-radius: 999px;
@@ -308,31 +317,23 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
   height: 100%;
   width: 0;
   background: linear-gradient(90deg, var(--accent), var(--accent-2));
-  transition: width 0.2s ease;
+  transition: width 0.18s ease;
 }
 
 .rag-refresh-btn {
-  width: 24px;
-  height: 24px;
-  font-size: 13px;
+  min-width: 56px;
+  font-size: 11px;
 }
 
 .rag-inline-err {
-  margin: 8px 16px 0;
-}
-
-.rag-applied-row {
-  margin: 6px 16px 0;
-  font-size: 12px;
-  color: var(--text-muted);
+  margin: 0;
 }
 
 .rag-docs-panel {
-  margin: 10px 16px 0;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: var(--bg-overlay);
+  border-radius: 22px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.82);
 }
 
 .rag-docs-title {
@@ -348,14 +349,19 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 6px;
+  gap: 10px;
 }
 
 .rag-doc-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
   gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(213, 226, 243, 0.66);
+}
+
+.rag-doc-item:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
 }
 
 .rag-doc-main {
@@ -368,41 +374,42 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
 .rag-doc-name {
   font-size: 13px;
   color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.35;
 }
 
 .rag-doc-status {
   font-size: 11px;
   color: var(--text-muted);
   text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .rag-doc-actions {
-  display: inline-flex;
-  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
-  flex-shrink: 0;
 }
 
 .rag-doc-action-btn {
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 4px 8px;
+  min-height: 30px;
+  border: 1px solid rgba(47, 107, 255, 0.12);
+  background: rgba(47, 107, 255, 0.05);
+  color: var(--text-channel);
+  border-radius: 999px;
+  padding: 0 10px;
   font-size: 11px;
+  font-weight: 700;
   cursor: pointer;
 }
 
 .rag-doc-action-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: rgba(47, 107, 255, 0.1);
 }
 
 .rag-doc-action-btn.is-danger {
-  color: #ffb5b7;
-  border-color: rgba(242, 63, 67, 0.4);
+  color: var(--danger);
+  border-color: rgba(217, 92, 92, 0.18);
+  background: rgba(217, 92, 92, 0.05);
 }
 
 .rag-doc-action-btn:disabled {
@@ -413,17 +420,31 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
 .rag-doc-empty {
   font-size: 13px;
   color: var(--text-muted);
+  text-align: center;
+  padding: 12px 0;
 }
 
 .rag-debug-panel {
-  margin: 10px 16px 0;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: var(--bg-overlay);
+  border-radius: 20px;
+  padding: 12px 14px;
+  background: rgba(244, 248, 255, 0.86);
+}
+
+.rag-debug-panel > summary {
+  cursor: pointer;
+  color: var(--text-channel);
+  font-size: 12px;
+  font-weight: 700;
+  list-style: none;
+}
+
+.rag-debug-panel > summary::-webkit-details-marker {
+  display: none;
 }
 
 .rag-debug-header {
+  margin-top: 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -442,9 +463,9 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
 .rag-debug-section {
   margin-top: 8px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 14px;
   padding: 8px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .rag-debug-section > summary {
@@ -463,7 +484,7 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
 
 .rag-debug-item {
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 12px;
   padding: 6px 8px;
   font-size: 12px;
 }
@@ -478,5 +499,11 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
 .rag-debug-mini {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+@media (max-width: 1200px) {
+  .knowledge-panel {
+    height: auto;
+  }
 }
 </style>

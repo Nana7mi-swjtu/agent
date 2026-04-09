@@ -7,6 +7,10 @@ defineProps({
     type: Array,
     default: () => [],
   },
+  detailsVisible: {
+    type: Boolean,
+    default: false,
+  },
   titleResolver: {
     type: Function,
     required: true,
@@ -39,17 +43,6 @@ const uiStore = useUiStore();
         </div>
         <div class="agent-trace-summary">{{ step.summary }}</div>
         <template v-if="!summaryOnly">
-          <div v-if="detailEntriesResolver(step).length" class="agent-trace-details">
-            <div class="rag-debug-mini">{{ uiStore.t("agentTraceDetailsLabel") }}</div>
-            <div
-              v-for="[key, value] in detailEntriesResolver(step)"
-              :key="`${step.id}_${key}`"
-              class="agent-trace-detail-row"
-            >
-              <span>{{ key }}</span>
-              <span>{{ formatTraceDetailValue(value) }}</span>
-            </div>
-          </div>
           <div v-if="Array.isArray(step.children) && step.children.length" class="agent-trace-children">
             <div v-for="child in step.children" :key="child.id" class="agent-trace-child">
               <div class="agent-trace-head">
@@ -58,6 +51,19 @@ const uiStore = useUiStore();
               </div>
               <div class="agent-trace-summary">{{ child.summary }}</div>
             </div>
+          </div>
+          <div v-if="detailEntriesResolver(step).length" class="agent-trace-details">
+            <template v-if="detailsVisible">
+              <div class="rag-debug-mini">{{ uiStore.t("agentTraceDetailsLabel") }}</div>
+              <div
+                v-for="[key, value] in detailEntriesResolver(step)"
+                :key="`${step.id}_${key}`"
+                class="agent-trace-detail-row"
+              >
+                <span>{{ key }}</span>
+                <span>{{ formatTraceDetailValue(value) }}</span>
+              </div>
+            </template>
           </div>
         </template>
       </div>
@@ -68,10 +74,10 @@ const uiStore = useUiStore();
 <style scoped>
 .agent-trace-panel {
   margin-top: 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.02);
+  padding: 12px 14px;
+  border: 1px solid rgba(47, 107, 255, 0.12);
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(244, 249, 255, 0.96), rgba(255, 255, 255, 0.94));
 }
 
 .agent-trace-title {
@@ -84,15 +90,13 @@ const uiStore = useUiStore();
 
 .agent-trace-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .agent-trace-step,
 .agent-trace-child {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 8px;
-  background: rgba(0, 0, 0, 0.08);
+  padding-left: 14px;
+  border-left: 2px solid rgba(47, 107, 255, 0.18);
 }
 
 .agent-trace-head {
@@ -104,14 +108,15 @@ const uiStore = useUiStore();
 
 .agent-trace-status {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--accent);
   text-transform: uppercase;
+  font-weight: 700;
 }
 
 .agent-trace-summary {
   margin-top: 4px;
   font-size: 13px;
-  color: var(--text);
+  color: var(--text-channel);
   white-space: pre-wrap;
   word-break: break-word;
 }

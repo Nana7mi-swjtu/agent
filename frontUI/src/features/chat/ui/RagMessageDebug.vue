@@ -6,6 +6,10 @@ defineProps({
     type: Object,
     default: null,
   },
+  detailed: {
+    type: Boolean,
+    default: false,
+  },
   condensed: {
     type: Boolean,
     default: false,
@@ -49,7 +53,7 @@ const uiStore = useUiStore();
             <div class="rag-debug-mini">latency={{ debugPayload?.latencyMs ?? "-" }}ms</div>
           </div>
         </div>
-        <details class="rag-debug-section">
+        <details v-if="detailed" class="rag-debug-section">
           <summary>{{ uiStore.t("ragDebugLabelRetrievalRaw") }}</summary>
           <ul class="rag-debug-list">
             <li
@@ -62,7 +66,7 @@ const uiStore = useUiStore();
             </li>
           </ul>
         </details>
-        <details class="rag-debug-section">
+        <details v-if="detailed" class="rag-debug-section">
           <summary>{{ uiStore.t("ragDebugLabelRerankAfter") }}</summary>
           <ul class="rag-debug-list">
             <li
@@ -87,10 +91,10 @@ const uiStore = useUiStore();
 
 .rag-debug-section {
   margin-top: 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: 1px solid rgba(47, 107, 255, 0.12);
+  border-radius: 16px;
   padding: 8px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(47, 107, 255, 0.04);
 }
 
 .rag-debug-section > summary {
