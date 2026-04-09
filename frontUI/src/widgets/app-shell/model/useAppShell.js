@@ -2,6 +2,7 @@ import { computed } from "vue";
 import { useRouter } from "vue-router";
 import { storeToRefs } from "pinia";
 
+import { logoutAction } from "@/features/auth/model/actions";
 import { createChatSessionAction, deleteChatSessionAction, openChatSessionAction } from "@/features/chat/model/actions";
 import { selectWorkspaceRoleAndCreateSessionAction } from "@/features/workspace-context/model/actions";
 import { useAuthStore } from "@/stores/auth";
@@ -58,8 +59,12 @@ export const useAppShell = () => {
   const goBankruptcy = () => router.push("/bankruptcy-analysis");
   const goProfile = () => router.push("/profile");
   const logout = async () => {
-    await authStore.logout();
-    router.push("/login");
+    await logoutAction({
+      authStore,
+      workspaceStore,
+      chatStore,
+      router,
+    });
   };
 
   return {

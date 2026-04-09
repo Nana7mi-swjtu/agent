@@ -1,4 +1,5 @@
 import { getWorkspaceContext, patchWorkspaceContext } from "@/services/workspace";
+import { createChatSessionAction } from "@/features/chat/model/actions";
 
 export const loadWorkspaceContextAction = async ({ workspaceStore }) => {
   const result = await getWorkspaceContext();
@@ -37,9 +38,12 @@ export const selectWorkspaceRoleAndCreateSessionAction = async ({
     return result;
   }
 
-  chatStore.createSession(roleKey, uiStore.getRoleDisplayName, workspaceStore.workspaceId);
-  if (router.currentRoute.value.path !== "/chat") {
-    router.push("/chat");
-  }
+  createChatSessionAction({
+    chatStore,
+    uiStore,
+    workspaceStore,
+    router,
+    roleKey: workspaceStore.selectedRole || roleKey,
+  });
   return result;
 };
