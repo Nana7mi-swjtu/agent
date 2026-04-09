@@ -1,11 +1,11 @@
 import { computed, ref } from "vue";
 import { storeToRefs } from "pinia";
 
-import { postWorkspaceChat } from "@/services/workspace";
-import { useChatStore } from "@/stores/chat";
-import { useUiStore } from "@/stores/ui";
-import { useWorkspaceStore } from "@/stores/workspace";
+import { useChatStore } from "@/entities/chat/model/store";
+import { postWorkspaceChat } from "@/entities/workspace/api";
 import { formatMessageTime } from "@/shared/lib/time";
+import { useUiStore } from "@/shared/model/ui-store";
+import { useWorkspaceStore } from "@/entities/workspace/model/store";
 
 export const useChatMessaging = () => {
   const uiStore = useUiStore();

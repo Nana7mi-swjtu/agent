@@ -1,8 +1,8 @@
 <script setup>
 import AgentTracePanel from "@/features/chat/ui/AgentTracePanel.vue";
 import RagMessageDebug from "@/features/chat/ui/RagMessageDebug.vue";
-import { useUiStore } from "@/stores/ui";
-import { getMessageRagDebug, getMessageTraceSteps } from "@/shared/lib/chatMessage";
+import { getMessageRagDebug, getMessageTraceSteps } from "@/entities/chat/lib/message";
+import { useUiStore } from "@/shared/model/ui-store";
 
 const props = defineProps({
   message: {

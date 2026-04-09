@@ -1,6 +1,6 @@
 <script setup>
-import { useUiStore } from "@/stores/ui";
-import { formatTraceDetailValue } from "@/shared/lib/chatMessage";
+import { formatTraceDetailValue } from "@/entities/chat/lib/message";
+import { useUiStore } from "@/shared/model/ui-store";
 
 defineProps({
   steps: {

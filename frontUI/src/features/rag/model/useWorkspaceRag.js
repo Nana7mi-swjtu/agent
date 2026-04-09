@@ -9,9 +9,9 @@ import {
   enqueueRagIndex,
   getRagDebugSnapshot,
   reindexRagDocument,
-} from "@/services/rag";
-import { useUiStore } from "@/stores/ui";
-import { useWorkspaceStore } from "@/stores/workspace";
+} from "@/features/rag/api";
+import { useUiStore } from "@/shared/model/ui-store";
+import { useWorkspaceStore } from "@/entities/workspace/model/store";
 
 const SUPPORTED_RAG_EXTENSIONS = [".pdf", ".docx", ".md", ".txt"];
 

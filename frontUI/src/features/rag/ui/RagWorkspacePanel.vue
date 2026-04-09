@@ -1,6 +1,6 @@
 <script setup>
-import { useUiStore } from "@/stores/ui";
-import { canDeleteRagDocument, getRagDocumentActionType } from "@/shared/lib/rag";
+import { canDeleteRagDocument, getRagDocumentActionType } from "@/features/rag/lib/document";
+import { useUiStore } from "@/shared/model/ui-store";
 
 const props = defineProps({
   channelName: {
