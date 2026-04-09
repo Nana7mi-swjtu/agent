@@ -1,6 +1,9 @@
 import { storeToRefs } from "pinia";
 
-import { patchWorkspaceContext, getWorkspaceContext } from "@/services/workspace";
+import {
+  loadWorkspaceContextAction,
+  selectWorkspaceRoleAction,
+} from "@/features/workspace-context/model/actions";
 import { useUiStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
 
@@ -9,27 +12,9 @@ export const useWorkspaceContext = () => {
   const workspaceStore = useWorkspaceStore();
   const { selectedRole } = storeToRefs(workspaceStore);
 
-  const loadContext = async () => {
-    const result = await getWorkspaceContext();
-    if (!result.ok) {
-      workspaceStore.setContextReady();
-      return result;
-    }
-    workspaceStore.applyContext(result.data?.data || {});
-    return result;
-  };
+  const loadContext = async () => loadWorkspaceContextAction({ workspaceStore });
 
-  const selectRole = async (roleKey) => {
-    const result = await patchWorkspaceContext(roleKey);
-    if (!result.ok) {
-      return {
-        ok: false,
-        error: result.data?.error || uiStore.t("roleSwitchFailed"),
-      };
-    }
-    workspaceStore.applyContext(result.data?.data || {});
-    return { ok: true };
-  };
+  const selectRole = async (roleKey) => selectWorkspaceRoleAction({ roleKey, workspaceStore, uiStore });
 
   return {
     selectedRole,
