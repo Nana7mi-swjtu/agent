@@ -1,8 +1,7 @@
 <script setup>
-
-import { useRegisterForm } from "@/composables/useRegisterForm";
-import PublicAuthLayout from "@/layouts/PublicAuthLayout.vue";
-import { useUiStore } from "@/stores/ui";
+import { useRegisterForm } from "@/features/auth/model/useRegisterForm";
+import { useUiStore } from "@/shared/model/ui-store";
+import PublicAuthLayout from "@/widgets/auth-shell/ui/PublicAuthLayout.vue";
 
 const uiStore = useUiStore();
 const { form, error, cooldown, sendCode, verifyCode } = useRegisterForm();

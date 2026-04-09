@@ -1,5 +1,5 @@
 <script setup>
-import { useUiStore } from "@/stores/ui";
+import { useUiStore } from "@/shared/model/ui-store";
 
 const uiStore = useUiStore();
 </script>

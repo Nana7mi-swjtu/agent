@@ -1,9 +1,9 @@
 <script setup>
 import { useRoute, useRouter } from "vue-router";
 
-import { useLoginForm } from "@/composables/useLoginForm";
-import PublicAuthLayout from "@/layouts/PublicAuthLayout.vue";
-import { useUiStore } from "@/stores/ui";
+import { useLoginForm } from "@/features/auth/model/useLoginForm";
+import { useUiStore } from "@/shared/model/ui-store";
+import PublicAuthLayout from "@/widgets/auth-shell/ui/PublicAuthLayout.vue";
 
 const router = useRouter();
 const route = useRoute();

@@ -3,11 +3,11 @@ import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { storeToRefs } from "pinia";
 
-import ContentSection from "@/components/shared/ContentSection.vue";
-import FeedbackMessage from "@/components/shared/FeedbackMessage.vue";
-import { useWorkspaceContext } from "@/composables/useWorkspaceContext";
-import { useUiStore } from "@/stores/ui";
-import { useWorkspaceStore } from "@/stores/workspace";
+import { useWorkspaceContext } from "@/features/workspace-context/model/useWorkspaceContext";
+import { useWorkspaceStore } from "@/entities/workspace/model/store";
+import ContentSection from "@/shared/ui/ContentSection.vue";
+import FeedbackMessage from "@/shared/ui/FeedbackMessage.vue";
+import { useUiStore } from "@/shared/model/ui-store";
 
 const router = useRouter();
 const uiStore = useUiStore();

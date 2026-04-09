@@ -3,12 +3,12 @@ import { onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { storeToRefs } from "pinia";
 
+import { useWorkspaceStore } from "@/entities/workspace/model/store";
 import { useChatWorkspace } from "@/features/chat/model/useChatWorkspace";
 import ChatComposer from "@/features/chat/ui/ChatComposer.vue";
 import ChatFeed from "@/features/chat/ui/ChatFeed.vue";
 import RagWorkspacePanel from "@/features/rag/ui/RagWorkspacePanel.vue";
-import { useWorkspaceStore } from "@/stores/workspace";
-import { useUiStore } from "@/stores/ui";
+import { useUiStore } from "@/shared/model/ui-store";
 
 const router = useRouter();
 const uiStore = useUiStore();

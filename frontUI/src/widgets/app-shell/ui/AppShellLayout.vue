@@ -2,10 +2,10 @@
 import { onMounted } from "vue";
 import { RouterView } from "vue-router";
 
-import { useUiStore } from "@/stores/ui";
 import { useAppShell } from "@/widgets/app-shell/model/useAppShell";
 import AppServerBar from "@/widgets/app-shell/ui/AppServerBar.vue";
 import AppSidebar from "@/widgets/app-shell/ui/AppSidebar.vue";
+import { useUiStore } from "@/shared/model/ui-store";
 
 const uiStore = useUiStore();
 const {

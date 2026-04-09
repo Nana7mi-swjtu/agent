@@ -1,8 +1,7 @@
 <script setup>
-
-import { useForgotPasswordForm } from "@/composables/useForgotPasswordForm";
-import PublicAuthLayout from "@/layouts/PublicAuthLayout.vue";
-import { useUiStore } from "@/stores/ui";
+import { useForgotPasswordForm } from "@/features/auth/model/useForgotPasswordForm";
+import { useUiStore } from "@/shared/model/ui-store";
+import PublicAuthLayout from "@/widgets/auth-shell/ui/PublicAuthLayout.vue";
 
 const uiStore = useUiStore();
 const { form, error, cooldown, sendCode, resetPassword } = useForgotPasswordForm();

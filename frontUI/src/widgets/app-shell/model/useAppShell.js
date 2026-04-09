@@ -2,13 +2,13 @@ import { computed } from "vue";
 import { useRouter } from "vue-router";
 import { storeToRefs } from "pinia";
 
+import { useAuthStore } from "@/entities/auth/model/store";
+import { useChatStore } from "@/entities/chat/model/store";
+import { useWorkspaceStore } from "@/entities/workspace/model/store";
 import { logoutAction } from "@/features/auth/model/actions";
 import { createChatSessionAction, deleteChatSessionAction, openChatSessionAction } from "@/features/chat/model/actions";
 import { selectWorkspaceRoleAndCreateSessionAction } from "@/features/workspace-context/model/actions";
-import { useAuthStore } from "@/stores/auth";
-import { useChatStore } from "@/stores/chat";
-import { useUiStore } from "@/stores/ui";
-import { useWorkspaceStore } from "@/stores/workspace";
+import { useUiStore } from "@/shared/model/ui-store";
 
 export const useAppShell = () => {
   const router = useRouter();
