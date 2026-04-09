@@ -1,7 +1,7 @@
 <script setup>
 import ContentSection from "@/shared/ui/ContentSection.vue";
-import { useUiStore } from "@/stores/ui";
 import BankruptcyWorkspace from "@/widgets/bankruptcy-workspace/ui/BankruptcyWorkspace.vue";
+import { useUiStore } from "@/shared/model/ui-store";
 
 const uiStore = useUiStore();
 </script>

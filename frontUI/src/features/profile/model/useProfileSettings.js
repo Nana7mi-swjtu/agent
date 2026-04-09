@@ -1,11 +1,11 @@
 import { computed, reactive, ref } from "vue";
 import { storeToRefs } from "pinia";
 
-import { useAuthStore } from "@/stores/auth";
-import { useProfileStore } from "@/stores/profile";
-import { useUiStore } from "@/stores/ui";
-import { useWorkspaceStore } from "@/stores/workspace";
+import { useAuthStore } from "@/entities/auth/model/store";
+import { useProfileStore } from "@/entities/profile/model/store";
+import { useWorkspaceStore } from "@/entities/workspace/model/store";
 import { loadProfileSettingsAction } from "@/features/profile/model/actions";
+import { useUiStore } from "@/shared/model/ui-store";
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const NICKNAME_RE = /^[\w\u4e00-\u9fff\-\s]{2,32}$/;

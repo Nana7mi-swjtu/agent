@@ -1,5 +1,5 @@
-import { getUserProfile, patchUserPreferences, updateUserProfile } from "@/services/user";
-import { getWorkspaceContext, patchWorkspaceContext } from "@/services/workspace";
+import { getUserProfile, patchUserPreferences, updateUserProfile } from "@/entities/profile/api";
+import { getWorkspaceContext, patchWorkspaceContext } from "@/entities/workspace/api";
 
 export const loadProfileSettingsAction = async ({
   profileStore,

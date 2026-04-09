@@ -1,4 +1,4 @@
-import { getWorkspaceContext, patchWorkspaceContext } from "@/services/workspace";
+import { getWorkspaceContext, patchWorkspaceContext } from "@/entities/workspace/api";
 import { createChatSessionAction } from "@/features/chat/model/actions";
 
 export const loadWorkspaceContextAction = async ({ workspaceStore }) => {

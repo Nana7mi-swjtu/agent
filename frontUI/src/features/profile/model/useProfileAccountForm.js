@@ -1,4 +1,4 @@
-import { compressImage } from "@/utils/image";
+import { compressImage } from "@/shared/lib/image";
 import { saveProfileAccountAction } from "@/features/profile/model/actions";
 
 export const useProfileAccountForm = (settings) => {

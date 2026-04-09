@@ -1,9 +1,9 @@
 import { computed, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 
-import { useBankruptcyStore } from "@/stores/bankruptcy";
-import { useUiStore } from "@/stores/ui";
-import { useWorkspaceStore } from "@/stores/workspace";
+import { useBankruptcyStore } from "@/entities/bankruptcy/model/store";
+import { useWorkspaceStore } from "@/entities/workspace/model/store";
+import { useUiStore } from "@/shared/model/ui-store";
 
 export const useBankruptcyWorkspace = () => {
   const uiStore = useUiStore();
