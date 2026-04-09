@@ -7,7 +7,7 @@ const uiStore = useUiStore();
 </script>
 
 <template>
-  <ContentSection :title="uiStore.t('profile')" subtitle="Account, avatar and role preferences.">
+  <ContentSection :title="uiStore.t('profile')" :subtitle="uiStore.t('profilePageSubtitle')">
     <ProfileSettingsWorkspace />
   </ContentSection>
 </template>
