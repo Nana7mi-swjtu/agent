@@ -17,6 +17,7 @@ _mcp_graph = build_mcp_graph()
 
 _KNOWLEDGE_HINTS = (
     "根据",
+    "文件",
     "文档",
     "资料",
     "source",
@@ -107,7 +108,8 @@ def plan_route_node(state: AgentState):
             "missing_fields": ["user_message"],
         }
 
-    needs_search = _planner_prefers_search(user_message, rag_enabled=rag_enabled, web_enabled=web_enabled)
+    heuristic_needs_search = _planner_prefers_search(user_message, rag_enabled=rag_enabled, web_enabled=web_enabled)
+    needs_search = heuristic_needs_search
     needs_mcp = _planner_prefers_mcp(user_message, mcp_enabled=mcp_enabled)
     needs_clarification = False
     clarification_question = ""
@@ -135,7 +137,9 @@ def plan_route_node(state: AgentState):
                     },
                 ]
             )
-            needs_search = bool(response.needs_search) and bool(rag_enabled or web_enabled)
+            # The model can broaden tool usage, but should not disable deterministic
+            # evidence lookup when the request is clearly asking about uploaded knowledge.
+            needs_search = heuristic_needs_search or (bool(response.needs_search) and bool(rag_enabled or web_enabled))
             needs_mcp = bool(response.needs_mcp) and mcp_enabled
             needs_clarification = bool(response.needs_clarification)
             clarification_question = str(response.clarification_question).strip()

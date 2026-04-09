@@ -63,6 +63,17 @@ class SearchPlanOutput(BaseModel):
     use_web: bool = Field(default=False)
 
 
+def _normalize_strategy(strategy: str, *, use_rag: bool, use_web: bool, fallback: str) -> str:
+    base = strategy if strategy in {"private_only", "public_only", "private_first", "hybrid"} else fallback
+    if use_rag and use_web:
+        return "hybrid"
+    if use_rag:
+        return base if base in {"private_only", "private_first", "hybrid"} else "private_first"
+    if use_web:
+        return "public_only"
+    return base
+
+
 def _preferred_strategy(state: SearchState) -> str:
     value = str(state.get("preferred_strategy", "")).strip().lower()
     if value in {"private_only", "public_only", "private_first", "hybrid"}:
@@ -81,15 +92,18 @@ def _search_plan_node(state: SearchState):
     knowledge_like = any(token in query for token in _KNOWLEDGE_HINTS)
     freshness_like = any(token in query for token in _FRESHNESS_HINTS)
 
-    use_rag = rag_enabled and strategy in {"private_only", "private_first", "hybrid"}
+    heuristic_use_rag = rag_enabled and strategy in {"private_only", "private_first", "hybrid"}
     if rag_enabled and knowledge_like:
-        use_rag = True
+        heuristic_use_rag = True
 
-    use_web = strategy in {"public_only", "hybrid"}
-    if strategy == "private_first" and not use_rag:
-        use_web = True
+    heuristic_use_web = strategy in {"public_only", "hybrid"}
+    if strategy == "private_first" and not heuristic_use_rag:
+        heuristic_use_web = True
     if freshness_like:
-        use_web = True
+        heuristic_use_web = True
+
+    use_rag = heuristic_use_rag
+    use_web = heuristic_use_web
 
     llm = state.get("llm")
     if hasattr(llm, "with_structured_output"):
@@ -117,10 +131,13 @@ def _search_plan_node(state: SearchState):
             strategy = str(response.strategy).strip().lower() or strategy
             if strategy not in {"private_only", "public_only", "private_first", "hybrid"}:
                 strategy = _preferred_strategy(state)
-            use_rag = bool(response.use_rag) and rag_enabled
-            use_web = bool(response.use_web)
+            # The model may expand evidence sources, but it should not disable
+            # deterministic private retrieval when private knowledge is available.
+            use_rag = heuristic_use_rag or (bool(response.use_rag) and rag_enabled)
+            use_web = heuristic_use_web or bool(response.use_web)
         except Exception:
             pass
+    strategy = _normalize_strategy(strategy, use_rag=bool(use_rag), use_web=bool(use_web), fallback=_preferred_strategy(state))
 
     return {
         "strategy": strategy,

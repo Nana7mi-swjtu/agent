@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from werkzeug.security import generate_password_hash
 
+from app.agent.graph.search import _search_plan_node
 from app.db import get_session
 from app.rag.errors import RAGConfigurationError, RAGContractError
 from app.rag.fileloaders import load_source_document
@@ -573,6 +574,16 @@ def test_rag_graph_decision_and_citation_contract():
     )
     assert decision["needs_search"] is True
 
+    file_decision = plan_route_node(
+        {
+            "user_message": "文件里现在全球科技股的情况怎么样",
+            "rag_enabled": True,
+            "web_enabled": True,
+            "mcp_enabled": False,
+        }
+    )
+    assert file_decision["needs_search"] is True
+
     with pytest.raises(RAGContractError):
         answer_with_citations_node(
             {
@@ -942,3 +953,27 @@ def test_openai_semantic_provider_aligns_verbatim_segment_with_offsets(monkeypat
     assert segment.summary is None
     assert segment.metadata["block_index"] == 0
     assert source_text[segment.metadata["offset_start"] : segment.metadata["offset_end"]] == segment.text
+
+
+def test_search_plan_keeps_rag_when_private_retrieval_is_heuristically_required():
+    class _StructuredLLM:
+        def invoke(self, messages):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(strategy="public_only", use_rag=False, use_web=False)
+
+    class _LLM:
+        def with_structured_output(self, schema):
+            return _StructuredLLM()
+
+    result = _search_plan_node(
+        {
+            "llm": _LLM(),
+            "query": "根据文档说明结论",
+            "rag_enabled": True,
+            "preferred_strategy": "private_first",
+        }
+    )
+
+    assert result["use_rag"] is True
+    assert result["strategy"] in {"private_first", "private_only", "hybrid"}
