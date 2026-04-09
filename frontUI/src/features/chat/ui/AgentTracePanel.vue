@@ -1,8 +1,10 @@
 <script setup>
+import { computed } from "vue";
+
 import { formatTraceDetailValue } from "@/entities/chat/lib/message";
 import { useUiStore } from "@/shared/model/ui-store";
 
-defineProps({
+const props = defineProps({
   steps: {
     type: Array,
     default: () => [],
@@ -30,18 +32,38 @@ defineProps({
 });
 
 const uiStore = useUiStore();
+const defaultOpenStepIds = computed(() => new Set(["search_subagent", "mcp_subagent", "compose_answer", "citations"]));
+
+const isStepInitiallyOpen = (step) => defaultOpenStepIds.value.has(String(step?.id || "").trim());
 </script>
 
 <template>
   <div class="agent-trace-panel">
     <div class="agent-trace-title">{{ uiStore.t("agentTracePanelTitle") }}</div>
     <div class="agent-trace-list">
-      <div v-for="step in steps" :key="step.id" class="agent-trace-step">
-        <div class="agent-trace-head">
-          <strong>{{ titleResolver(step) }}</strong>
-          <span class="agent-trace-status">{{ statusResolver(step) }}</span>
-        </div>
-        <div class="agent-trace-summary">{{ step.summary }}</div>
+      <component
+        :is="summaryOnly ? 'div' : 'details'"
+        v-for="step in steps"
+        :key="step.id"
+        class="agent-trace-step"
+        :open="summaryOnly ? undefined : isStepInitiallyOpen(step)"
+      >
+        <summary v-if="!summaryOnly" class="agent-trace-summary-toggle">
+          <div class="agent-trace-head">
+            <strong>{{ titleResolver(step) }}</strong>
+            <span class="agent-trace-status">{{ statusResolver(step) }}</span>
+          </div>
+          <div class="agent-trace-summary">{{ step.summary }}</div>
+          <span class="agent-trace-disclosure">{{ uiStore.t("agentTraceExpand") }}</span>
+          <span class="agent-trace-disclosure agent-trace-disclosure-open">{{ uiStore.t("agentTraceCollapse") }}</span>
+        </summary>
+        <template v-else>
+          <div class="agent-trace-head">
+            <strong>{{ titleResolver(step) }}</strong>
+            <span class="agent-trace-status">{{ statusResolver(step) }}</span>
+          </div>
+          <div class="agent-trace-summary">{{ step.summary }}</div>
+        </template>
         <template v-if="!summaryOnly">
           <div v-if="Array.isArray(step.children) && step.children.length" class="agent-trace-children">
             <div v-for="child in step.children" :key="child.id" class="agent-trace-child">
@@ -66,7 +88,7 @@ const uiStore = useUiStore();
             </template>
           </div>
         </template>
-      </div>
+      </component>
     </div>
   </div>
 </template>
@@ -77,7 +99,7 @@ const uiStore = useUiStore();
   padding: 12px 14px;
   border: 1px solid rgba(47, 107, 255, 0.12);
   border-radius: 20px;
-  background: linear-gradient(180deg, rgba(244, 249, 255, 0.96), rgba(255, 255, 255, 0.94));
+  background: var(--surface-panel-muted);
 }
 
 .agent-trace-title {
@@ -97,6 +119,23 @@ const uiStore = useUiStore();
 .agent-trace-child {
   padding-left: 14px;
   border-left: 2px solid rgba(47, 107, 255, 0.18);
+}
+
+.agent-trace-step {
+  padding-bottom: 2px;
+}
+
+.agent-trace-step[open] {
+  padding-bottom: 0;
+}
+
+.agent-trace-summary-toggle {
+  list-style: none;
+  cursor: pointer;
+}
+
+.agent-trace-summary-toggle::-webkit-details-marker {
+  display: none;
 }
 
 .agent-trace-head {
@@ -119,6 +158,32 @@ const uiStore = useUiStore();
   color: var(--text-channel);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.agent-trace-disclosure {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 8px;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(47, 107, 255, 0.12);
+  background: var(--surface-panel-subtle);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.agent-trace-disclosure-open {
+  display: none;
+}
+
+.agent-trace-step[open] > .agent-trace-summary-toggle .agent-trace-disclosure {
+  display: none;
+}
+
+.agent-trace-step[open] > .agent-trace-summary-toggle .agent-trace-disclosure-open {
+  display: inline-flex;
 }
 
 .agent-trace-details {

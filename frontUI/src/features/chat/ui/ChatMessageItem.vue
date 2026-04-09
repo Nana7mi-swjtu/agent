@@ -3,6 +3,7 @@ import AgentTracePanel from "@/features/chat/ui/AgentTracePanel.vue";
 import RagMessageDebug from "@/features/chat/ui/RagMessageDebug.vue";
 import { getMessageRagDebug, getMessageTraceSteps } from "@/entities/chat/lib/message";
 import { useUiStore } from "@/shared/model/ui-store";
+import MarkdownContent from "@/shared/ui/MarkdownContent.vue";
 
 const props = defineProps({
   message: {
@@ -67,6 +68,8 @@ const citationLabel = (citation) => {
   if (citation.section) labels.push(String(citation.section));
   return labels.join(" · ");
 };
+
+const isPendingAgent = (message) => message?.from === "agent" && Boolean(message?.pending);
 </script>
 
 <template>
@@ -80,9 +83,20 @@ const citationLabel = (citation) => {
           <span class="msg-author">{{ message.from === "user" ? "You" : "Agent Studio" }}</span>
           <span class="msg-timestamp">{{ displayTime(message.time) }}</span>
         </div>
-        <div class="msg-content">{{ message.text }}</div>
+        <div v-if="isPendingAgent(message)" class="msg-pending-card">
+          <div class="msg-pending-line">
+            <span class="msg-pending-dots" aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span></span>
+            </span>
+            <strong>{{ message.pendingStage || uiStore.t("assistantWorking") }}</strong>
+          </div>
+          <p>{{ uiStore.t("assistantWorkingHint") }}</p>
+        </div>
+        <MarkdownContent v-else :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
         <div v-if="message.from === 'agent' && message.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
-        <div v-if="message.from === 'agent' && message.citations?.length" class="agent-citations-panel">
+        <div v-if="message.from === 'agent' && !message.pending && message.citations?.length" class="agent-citations-panel">
           <div class="agent-citations-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
           <ul class="agent-citations-list">
             <li v-for="(citation, citationIdx) in message.citations" :key="`citation_${citationIdx}`" class="agent-citation-item">
@@ -90,11 +104,11 @@ const citationLabel = (citation) => {
             </li>
           </ul>
         </div>
-        <div v-else-if="showGroundingMeta(message) && !message.noEvidence" class="rag-debug-mini">
+        <div v-else-if="showGroundingMeta(message) && !message.noEvidence && !message.pending" class="rag-debug-mini">
           {{ uiStore.t("agentTraceNoCitations") }}
         </div>
         <AgentTracePanel
-          v-if="agentTraceEnabled && message.from === 'agent' && traceStepsForMessage(message).length"
+          v-if="agentTraceEnabled && message.from === 'agent' && !message.pending && traceStepsForMessage(message).length"
           :steps="traceStepsForMessage(message)"
           :details-visible="traceDetailsVisible"
           :title-resolver="traceTitle"
@@ -102,7 +116,7 @@ const citationLabel = (citation) => {
           :detail-entries-resolver="traceDetailsEntries"
         />
         <RagMessageDebug
-          v-if="ragDebugEnabled && message.from === 'agent'"
+          v-if="ragDebugEnabled && message.from === 'agent' && !message.pending"
           :debug-payload="ragDebugForMessage(message)"
           :detailed="ragDebugDetailsVisible"
         />
@@ -111,7 +125,7 @@ const citationLabel = (citation) => {
     <template v-else>
       <div class="msg-avatar is-empty"></div>
       <div class="msg-body">
-        <div class="msg-content">{{ message.text }}</div>
+        <MarkdownContent :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
         <div v-if="message.from === 'agent' && message.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
         <div v-if="message.from === 'agent' && message.citations?.length" class="agent-citations-panel">
           <div class="agent-citations-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
@@ -213,11 +227,56 @@ const citationLabel = (citation) => {
 }
 
 .msg-content {
-  font-size: 15px;
-  line-height: 1.7;
+  margin-top: 0;
+}
+
+.msg-pending-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 14px 16px;
+  border: 1px solid rgba(47, 107, 255, 0.12);
+  border-radius: 18px;
+  background: var(--surface-panel-subtle);
+}
+
+.msg-pending-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.msg-pending-line strong {
   color: var(--text);
-  white-space: pre-wrap;
-  word-break: break-word;
+  font-size: 14px;
+}
+
+.msg-pending-card p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.msg-pending-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.msg-pending-dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  animation: pendingPulse 1.2s ease-in-out infinite;
+}
+
+.msg-pending-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.msg-pending-dots span:nth-child(3) {
+  animation-delay: 0.3s;
 }
 
 .rag-debug-mini {
@@ -254,5 +313,19 @@ const citationLabel = (citation) => {
   border-radius: 999px;
   padding: 7px 10px;
   background: rgba(47, 107, 255, 0.05);
+}
+
+@keyframes pendingPulse {
+  0%,
+  80%,
+  100% {
+    transform: scale(0.72);
+    opacity: 0.45;
+  }
+
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 </style>

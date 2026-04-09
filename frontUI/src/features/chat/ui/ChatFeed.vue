@@ -49,7 +49,10 @@ defineProps({
 });
 
 const isGroupedMessage = (index, messageList) =>
-  index > 0 && messageList[index - 1]?.from === messageList[index]?.from;
+  index > 0
+  && !messageList[index - 1]?.pending
+  && !messageList[index]?.pending
+  && messageList[index - 1]?.from === messageList[index]?.from;
 </script>
 
 <template>
@@ -61,7 +64,7 @@ const isGroupedMessage = (index, messageList) =>
 
     <ChatMessageItem
       v-for="(message, index) in activeSession?.messages || []"
-      :key="index"
+      :key="message.id || index"
       :message="message"
       :is-grouped="isGroupedMessage(index, activeSession.messages)"
       :display-time="displayTime"
