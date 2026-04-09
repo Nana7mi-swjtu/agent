@@ -113,7 +113,7 @@ defineEmits(["select-record", "delete-record"]);
   padding: 14px;
   border: 1px solid rgba(47, 107, 255, 0.08);
   border-radius: 18px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(244, 249, 255, 0.92));
+  background: var(--surface-panel-muted);
   color: var(--text);
   cursor: pointer;
   transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;

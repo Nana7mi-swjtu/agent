@@ -202,7 +202,7 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
   padding: 22px 20px;
   border: 1px solid var(--line);
   border-radius: 30px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(243, 248, 255, 0.95));
+  background: var(--surface-panel-strong);
   box-shadow: var(--shadow-sm);
 }
 
@@ -279,7 +279,7 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
 .rag-strategy-select select {
   border: 1px solid var(--line);
   min-height: 42px;
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--surface-panel-elevated);
   color: var(--text);
   border-radius: 14px;
   padding: 0 12px;
@@ -333,7 +333,7 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
   border: 1px solid var(--line);
   border-radius: 22px;
   padding: 14px;
-  background: rgba(255, 255, 255, 0.82);
+  background: var(--surface-panel-subtle);
 }
 
 .rag-docs-title {
@@ -428,7 +428,7 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
   border: 1px solid var(--line);
   border-radius: 20px;
   padding: 12px 14px;
-  background: rgba(244, 248, 255, 0.86);
+  background: var(--surface-panel-muted);
 }
 
 .rag-debug-panel > summary {
@@ -465,7 +465,7 @@ const isDocumentBusy = (document) => Number(props.ragActionDocumentId) === Numbe
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 8px;
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--surface-panel-elevated);
 }
 
 .rag-debug-section > summary {

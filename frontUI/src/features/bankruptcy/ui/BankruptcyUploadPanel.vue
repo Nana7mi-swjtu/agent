@@ -129,7 +129,7 @@ defineEmits(["update:enterpriseName", "select-file", "submit"]);
   padding: 10px 12px;
   border-radius: 14px;
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--surface-panel-elevated);
   color: var(--text);
   outline: none;
 }

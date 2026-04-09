@@ -18,6 +18,10 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  sendLabel: {
+    type: String,
+    default: "Send",
+  },
 });
 
 const emit = defineEmits(["update:modelValue", "submit"]);
@@ -69,7 +73,7 @@ watch(
         @input="onInput"
         @keydown="onKeydown"
       />
-      <button class="dc-composer-send" :disabled="sending" @click="emit('submit')">Send</button>
+      <button class="dc-composer-send" :disabled="sending" @click="emit('submit')">{{ sendLabel }}</button>
     </div>
     <div v-if="error" class="msg-err">{{ error }}</div>
   </div>
@@ -88,10 +92,10 @@ watch(
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 24px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(238, 245, 255, 0.96));
+  background: var(--surface-panel);
   align-items: flex-end;
   min-height: 72px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  box-shadow: inset 0 1px 0 var(--surface-highlight);
 }
 
 .dc-composer-inner textarea {

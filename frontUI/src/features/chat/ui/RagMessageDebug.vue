@@ -94,7 +94,7 @@ const uiStore = useUiStore();
   border: 1px solid rgba(47, 107, 255, 0.12);
   border-radius: 16px;
   padding: 8px;
-  background: rgba(47, 107, 255, 0.04);
+  background: var(--surface-panel-subtle);
 }
 
 .rag-debug-section > summary {

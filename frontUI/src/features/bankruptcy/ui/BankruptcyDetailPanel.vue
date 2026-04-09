@@ -222,7 +222,7 @@ defineEmits(["analyze-selected", "delete-record"]);
   padding: 16px;
   border-radius: 18px;
   border: 1px solid rgba(47, 107, 255, 0.08);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(243, 248, 255, 0.92));
+  background: var(--surface-panel);
 }
 
 .bankruptcy-meta-item span,
@@ -290,7 +290,7 @@ defineEmits(["analyze-selected", "delete-record"]);
   margin-top: 12px;
   border-radius: 20px;
   overflow: hidden;
-  background: #fff;
+  background: var(--surface-panel-elevated);
   padding: 12px;
   box-shadow: var(--shadow-sm);
 }

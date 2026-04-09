@@ -130,6 +130,7 @@ const traceDetailsEntries = (step) =>
         :sending="sending"
         :error="chatError"
         :placeholder="uiStore.t('inputPlaceholder')"
+        :send-label="uiStore.t('send')"
         @submit="sendMessage"
       />
     </section>
@@ -179,7 +180,7 @@ const traceDetailsEntries = (step) =>
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 30px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 249, 255, 0.95));
+  background: var(--surface-panel-strong);
   box-shadow: var(--shadow-sm);
 }
 
@@ -192,7 +193,7 @@ const traceDetailsEntries = (step) =>
   border-bottom: 1px solid var(--line);
   background:
     radial-gradient(circle at top right, rgba(111, 162, 255, 0.14), transparent 28%),
-    linear-gradient(180deg, rgba(248, 251, 255, 0.98), rgba(243, 248, 255, 0.9));
+    var(--surface-panel);
 }
 
 .workbench-heading h1 {
@@ -236,7 +237,7 @@ const traceDetailsEntries = (step) =>
   padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.84);
+  background: var(--surface-panel-soft);
   color: var(--text-channel);
   font-size: 12px;
   font-weight: 700;

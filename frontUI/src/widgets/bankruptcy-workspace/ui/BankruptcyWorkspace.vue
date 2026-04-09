@@ -113,7 +113,7 @@ const {
   padding: 14px 16px;
   border: 1px solid rgba(47, 107, 255, 0.14);
   border-radius: 22px;
-  background: linear-gradient(180deg, rgba(244, 249, 255, 0.94), rgba(255, 255, 255, 0.92));
+  background: var(--surface-panel-muted);
   box-shadow: var(--shadow-sm);
 }
 
