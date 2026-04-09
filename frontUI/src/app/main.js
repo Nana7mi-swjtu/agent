@@ -3,7 +3,10 @@ import { createPinia } from "pinia";
 
 import App from "@/App.vue";
 import router from "@/app/router";
+import { handleUnauthorizedAction } from "@/features/auth/model/actions";
+import { useChatStore } from "@/stores/chat";
 import { useAuthStore } from "@/stores/auth";
+import { useWorkspaceStore } from "@/stores/workspace";
 import { setUnauthorizedHandler } from "@/shared/api/client";
 import "@/shared/styles/tokens.css";
 import "@/shared/styles/base.css";
@@ -14,14 +17,14 @@ const pinia = createPinia();
 
 setUnauthorizedHandler(() => {
   const authStore = useAuthStore(pinia);
-  authStore.clearSession();
-  const currentRoute = router.currentRoute.value;
-  if (currentRoute.meta?.public) {
-    return;
-  }
-
-  const redirect = currentRoute.fullPath || "/app";
-  router.replace({ path: "/login", query: { redirect } });
+  const workspaceStore = useWorkspaceStore(pinia);
+  const chatStore = useChatStore(pinia);
+  handleUnauthorizedAction({
+    authStore,
+    workspaceStore,
+    chatStore,
+    router,
+  });
 });
 
 app.use(pinia);

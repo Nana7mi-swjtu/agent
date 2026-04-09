@@ -87,10 +87,14 @@ export const useChatStore = defineStore("chat", () => {
     error.value = String(value || "");
   };
 
-  const clearState = () => {
+  const clearRuntimeState = () => {
     sending.value = false;
     error.value = "";
     activeSessionId.value = sessions.value[0]?.id || "";
+  };
+
+  const clearState = () => {
+    clearRuntimeState();
   };
 
   const normalizePersistedSessions = () => {
@@ -122,6 +126,7 @@ export const useChatStore = defineStore("chat", () => {
     deleteSession,
     setSending,
     setError,
+    clearRuntimeState,
     clearState,
     normalizePersistedSessions,
   };

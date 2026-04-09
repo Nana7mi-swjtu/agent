@@ -1,8 +1,8 @@
 import { createRouter, createWebHashHistory } from "vue-router";
 
+import { bootstrapAuthenticatedAppAction } from "@/features/auth/model/actions";
 import { PUBLIC_ROUTES } from "@/shared/config/routes";
 import AppShellLayout from "@/layouts/AppShellLayout.vue";
-import { getWorkspaceContext } from "@/services/workspace";
 import { useAuthStore } from "@/stores/auth";
 import { useWorkspaceStore } from "@/stores/workspace";
 import ForgotPasswordView from "@/views/auth/ForgotPasswordView.vue";
@@ -39,9 +39,7 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   const authStore = useAuthStore();
   const workspaceStore = useWorkspaceStore();
-  if (!authStore.ready) {
-    await authStore.bootstrapSession();
-  }
+  await bootstrapAuthenticatedAppAction({ authStore, workspaceStore });
 
   if (PUBLIC_ROUTES.has(to.path)) {
     if (authStore.authenticated) {
@@ -52,15 +50,6 @@ router.beforeEach(async (to) => {
 
   if (!authStore.authenticated) {
     return { path: "/login", query: { redirect: to.fullPath } };
-  }
-
-  if (!workspaceStore.ready) {
-    const result = await getWorkspaceContext();
-    if (result.ok) {
-      workspaceStore.applyContext(result.data?.data || {});
-    } else {
-      workspaceStore.setContextReady();
-    }
   }
 
   return true;

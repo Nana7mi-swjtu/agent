@@ -3,8 +3,6 @@ import { computed, ref } from "vue";
 
 import { clearCsrfToken, setCsrfToken } from "@/services/api/csrf";
 import { apiRequest } from "@/services/api/client";
-import { useChatStore } from "@/stores/chat";
-import { useWorkspaceStore } from "@/stores/workspace";
 import { getUserProfile } from "@/services/user";
 
 export const useAuthStore = defineStore("auth", () => {
@@ -14,27 +12,36 @@ export const useAuthStore = defineStore("auth", () => {
 
   const userId = computed(() => user.value?.id ?? null);
 
-  const bootstrapSession = async () => {
+  const applyAuthenticatedSession = (nextUser, csrfToken = "") => {
+    authenticated.value = true;
+    user.value = nextUser || null;
+    if (typeof csrfToken === "string") {
+      setCsrfToken(csrfToken);
+    }
+    ready.value = true;
+  };
+
+  const clearSessionState = () => {
+    authenticated.value = false;
+    user.value = null;
+    ready.value = true;
+    clearCsrfToken();
+  };
+
+  const restoreSession = async () => {
     const sessionResult = await apiRequest("/auth/session");
     if (!sessionResult.ok) {
-      clearSession();
-      ready.value = true;
+      clearSessionState();
       return false;
     }
 
     const meResult = await apiRequest("/auth/me");
     if (!meResult.ok) {
-      clearSession();
-      ready.value = true;
+      clearSessionState();
       return false;
     }
 
-    authenticated.value = true;
-    user.value = meResult.data?.user || null;
-    if (typeof meResult.data?.csrfToken === "string") {
-      setCsrfToken(meResult.data.csrfToken);
-    }
-    ready.value = true;
+    applyAuthenticatedSession(meResult.data?.user || null, meResult.data?.csrfToken || "");
     return true;
   };
 
@@ -44,12 +51,7 @@ export const useAuthStore = defineStore("auth", () => {
       return result;
     }
 
-    authenticated.value = true;
-    user.value = result.data?.user || null;
-    if (typeof result.data?.csrfToken === "string") {
-      setCsrfToken(result.data.csrfToken);
-    }
-    ready.value = true;
+    applyAuthenticatedSession(result.data?.user || null, result.data?.csrfToken || "");
     return result;
   };
 
@@ -69,20 +71,20 @@ export const useAuthStore = defineStore("auth", () => {
     return result;
   };
 
-  const logout = async () => {
-    await apiRequest("/auth/logout", { method: "POST" });
-    clearSession();
+  const requestLogout = async () => {
+    return apiRequest("/auth/logout", { method: "POST" });
   };
 
+  const bootstrapSession = async () => restoreSession();
+
   const clearSession = () => {
-    const chatStore = useChatStore();
-    const workspaceStore = useWorkspaceStore();
-    authenticated.value = false;
-    user.value = null;
-    ready.value = true;
-    chatStore.clearState();
-    workspaceStore.clearWorkspaceState();
-    clearCsrfToken();
+    clearSessionState();
+  };
+
+  const logout = async () => {
+    const result = await requestLogout();
+    clearSessionState();
+    return result;
   };
 
   return {
@@ -90,6 +92,10 @@ export const useAuthStore = defineStore("auth", () => {
     authenticated,
     user,
     userId,
+    applyAuthenticatedSession,
+    clearSessionState,
+    restoreSession,
+    requestLogout,
     bootstrapSession,
     login,
     logout,
