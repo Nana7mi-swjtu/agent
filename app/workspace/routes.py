@@ -222,7 +222,6 @@ def workspace_chat():
                 "graph": result.get("graph", {}),
                 "graphMeta": result.get("graphMeta", {}),
                 **({"trace": result.get("trace", {})} if trace_enabled and isinstance(result.get("trace"), dict) else {}),
-                **({"trace": result.get("trace", {})} if trace_enabled and isinstance(result.get("trace"), dict) else {}),
                 **({"debug": result.get("debug", {})} if debug_enabled else {}),
             },
         }

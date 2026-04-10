@@ -54,7 +54,9 @@ def _direct_kg_payload(
 
     query_text = str(user_message or "").strip()
     if not query_text:
-        query_text = f"查询{str(entity or '').strip()}的{str(graph_intent or '').strip()}".strip()
+        entity_text = str(entity or "").strip()
+        intent_text = str(graph_intent or "").strip()
+        query_text = f"query {entity_text} {intent_text}".strip()
     if not query_text:
         raise AgentServiceError("empty knowledge graph query")
 
