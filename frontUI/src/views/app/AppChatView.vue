@@ -34,7 +34,7 @@ const { ready } = storeToRefs(workspaceStore);
   uploadDocument,
   loadRagDebugSnapshot,
   send,
-  } = useChatSession();
+} = useChatSession();
 
 const sendMessage = async () => {
   const result = await send();

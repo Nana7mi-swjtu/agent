@@ -18,4 +18,6 @@ class AgentState(TypedDict):
     rag_citations: list[dict]
     rag_no_evidence: bool
     rag_debug: dict[str, Any]
+    graph_data: dict[str, Any]
+    graph_meta: dict[str, Any]
     reply: str

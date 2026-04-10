@@ -7,6 +7,8 @@ from sqlalchemy import select
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.agent import services as agent_services
+from app.agent.graph.nodes import chat_agent_node
+from app.agent.tools import AgentToolSpec
 from app.agent.services import AgentServiceError
 from app.models import User
 
@@ -240,7 +242,13 @@ def test_workspace_chat_requires_role(client, db_session, monkeypatch):
 
     monkeypatch.setattr(
         "app.workspace.routes.generate_reply_payload",
-        lambda **kwargs: {"reply": "agent generated response", "citations": [], "noEvidence": False},
+        lambda **kwargs: {
+            "reply": "agent generated response",
+            "citations": [],
+            "noEvidence": False,
+            "graph": {},
+            "graphMeta": {},
+        },
     )
     response = client.post("/api/workspace/chat", json={"message": "请分析风险"}, headers=headers)
     assert response.status_code == 200
@@ -283,6 +291,73 @@ def test_workspace_chat_with_configured_agent_provider(client, app, db_session, 
     assert "systemPrompt" in payload["data"]
     assert payload["data"]["reply"] == "agent provider reply"
     assert "citations" in payload["data"]
+
+
+def test_chat_agent_node_invokes_knowledge_graph_before_llm(app, monkeypatch):
+    calls = []
+
+    class _FakeLLM:
+        def invoke(self, messages):
+            calls.append(("llm", [str(message.content) for message in messages]))
+
+            class _Response:
+                content = "final reply"
+
+            return _Response()
+
+    def _kg_invoke(**kwargs):
+        calls.append(("kg", kwargs))
+        return {
+            "ok": True,
+            "summary": "graph summary",
+            "graph": {
+                "nodes": [{"id": "n1", "label": "Entity A", "type": "entity"}],
+                "edges": [],
+            },
+            "meta": {"source": "knowledge_graph", "cypher": "MATCH (n) RETURN n"},
+        }
+
+    def _fake_get_agent_tools(*, context, factories=None):
+        return [
+            AgentToolSpec(
+                name="knowledge_graph_query",
+                description="graph",
+                invoke=_kg_invoke,
+                args_schema={"type": "object"},
+                category="knowledge_graph",
+            )
+        ]
+
+    monkeypatch.setattr("app.agent.graph.nodes.get_agent_tools", _fake_get_agent_tools)
+
+    with app.app_context():
+        result = chat_agent_node(
+            {
+                "llm": _FakeLLM(),
+                "prompt_template": "Role: {role}\nSystem: {system_prompt}",
+                "role": "regulator",
+                "system_prompt": "analysis prompt",
+                "user_message": "hello world",
+                "user_id": 1,
+                "workspace_id": "ws-1",
+                "rag_enabled": False,
+                "rag_debug_enabled": False,
+                "rag_decision": "skip",
+                "rag_chunks": [],
+                "rag_citations": [],
+                "rag_no_evidence": False,
+                "rag_debug": {},
+                "graph_data": {},
+                "graph_meta": {},
+                "reply": "",
+            }
+        )
+
+    assert calls[0][0] == "kg"
+    assert calls[1][0] == "llm"
+    assert result["reply"] == "final reply"
+    assert result["graph_data"]["nodes"][0]["label"] == "Entity A"
+    assert result["graph_meta"]["source"] == "knowledge_graph"
 
 
 def test_workspace_chat_includes_semantic_segment_context(client, app, db_session, monkeypatch):

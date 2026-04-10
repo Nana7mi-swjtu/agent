@@ -1,7 +1,7 @@
 import { computed, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 
-import { postWorkspaceChat } from "@/services/workspace";
+import { postWorkspaceChat, postWorkspaceChatWithContext } from "@/services/workspace";
 import {
   listRagDocuments,
   uploadRagDocument,
@@ -191,27 +191,33 @@ export const useChatSession = () => {
     await onWorkspaceScopeChanged();
   });
 
-  const send = async () => {
+  const _sendInternal = async ({ text, entity = "", intent = "", keepInput = false }) => {
     error.value = "";
     if (!selectedRole.value) {
       error.value = uiStore.t("noRole");
       return { ok: false, noRole: true };
     }
 
-    const text = String(input.value || "").trim();
-    if (!text) {
+    const normalizedText = String(text || "").trim();
+    if (!normalizedText) {
       return { ok: false, empty: true };
     }
 
     const current = chatStore.ensureSession(selectedRole.value, uiStore.getRoleDisplayName, workspaceId.value);
     chatStore.setSessionScope({ workspaceId: workspaceId.value, role: selectedRole.value });
-    chatStore.appendMessage({ from: "user", text, time: new Date().toISOString() });
+    chatStore.appendMessage({ from: "user", text: normalizedText, time: new Date().toISOString() });
     if (current.messages.length === 1) {
-      current.title = text.slice(0, 20) || current.title;
+      current.title = normalizedText.slice(0, 20) || current.title;
     }
 
     sending.value = true;
-    const result = await postWorkspaceChat(text, workspaceId.value, current.conversationId);
+    const result = await postWorkspaceChatWithContext({
+      message: normalizedText,
+      workspaceId: workspaceId.value,
+      conversationId: current.conversationId,
+      entity,
+      intent,
+    });
     sending.value = false;
 
     if (!result.ok) {
@@ -229,10 +235,15 @@ export const useChatSession = () => {
     });
     workspaceStore.systemPrompt = result.data?.data?.systemPrompt || workspaceStore.systemPrompt;
 
-    if (!result.empty) {
+    if (!result.empty && !keepInput) {
       input.value = "";
     }
     return result;
+  };
+
+  const send = async () => {
+    const text = String(input.value || "").trim();
+    return _sendInternal({ text });
   };
 
   return {

@@ -737,6 +737,71 @@
         white-space: pre-wrap;
         word-break: break-word;
       }
+      .kg-card {
+        margin-top: 10px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--bg-overlay);
+        padding: 10px;
+      }
+      .kg-card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+      .kg-card-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text);
+      }
+      .kg-card-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        font-size: 11px;
+        color: var(--text-muted);
+      }
+      .kg-canvas {
+        width: 100%;
+        min-height: 260px;
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(0, 0, 0, 0.05));
+      }
+      .kg-edge {
+        stroke: var(--line);
+        stroke-width: 1.2;
+        opacity: 0.85;
+      }
+      .kg-node {
+        cursor: pointer;
+      }
+      .kg-node-circle {
+        fill: var(--accent);
+        opacity: 0.92;
+        stroke: rgba(255, 255, 255, 0.45);
+        stroke-width: 1;
+      }
+      .kg-node:hover .kg-node-circle {
+        fill: var(--accent-2);
+      }
+      .kg-node-label {
+        font-size: 11px;
+        fill: var(--text);
+        pointer-events: none;
+      }
+      .kg-empty,
+      .kg-cypher,
+      .kg-fallback {
+        font-size: 12px;
+        color: var(--text-muted);
+      }
+      .kg-cypher,
+      .kg-fallback {
+        margin-top: 8px;
+      }
       /* timestamps for grouped messages */
       .msg-timestamp-sibling {
         display: none;

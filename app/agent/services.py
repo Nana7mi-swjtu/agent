@@ -86,6 +86,8 @@ def generate_reply_payload(
     user_id: int = 0,
     workspace_id: str = "default",
     rag_debug_enabled: bool = False,
+    entity: str = "",
+    intent: str = "",
 ) -> dict[str, Any]:
     try:
         runtime = _get_runtime()
@@ -99,11 +101,15 @@ def generate_reply_payload(
             "workspace_id": workspace_id,
             "rag_enabled": bool(current_app.config.get("RAG_ENABLED", False)),
             "rag_debug_enabled": bool(rag_debug_enabled),
+            "entity": str(entity or "").strip(),
+            "intent": str(intent or "").strip(),
             "rag_decision": "skip",
             "rag_chunks": [],
             "rag_citations": [],
             "rag_no_evidence": False,
             "rag_debug": {},
+            "graph_data": {},
+            "graph_meta": {},
             "reply": "",
         }
         output = runtime["graph"].invoke(state)
@@ -115,6 +121,12 @@ def generate_reply_payload(
         debug_payload = output.get("rag_debug", {})
         if not isinstance(debug_payload, dict):
             debug_payload = {}
+        graph_payload = output.get("graph_data", {})
+        if not isinstance(graph_payload, dict):
+            graph_payload = {}
+        graph_meta_payload = output.get("graph_meta", {})
+        if not isinstance(graph_meta_payload, dict):
+            graph_meta_payload = {}
     except AgentServiceError:
         raise
     except Exception as exc:
@@ -123,7 +135,14 @@ def generate_reply_payload(
 
     if not reply:
         raise AgentServiceError("empty agent reply")
-    return {"reply": reply, "citations": citations, "noEvidence": no_evidence, "debug": debug_payload}
+    return {
+        "reply": reply,
+        "citations": citations,
+        "noEvidence": no_evidence,
+        "debug": debug_payload,
+        "graph": graph_payload,
+        "graphMeta": graph_meta_payload,
+    }
 
 
 def generate_reply(*, role: str, system_prompt: str, user_message: str) -> str:

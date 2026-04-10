@@ -26,7 +26,6 @@ _KNOWLEDGE_HINTS = (
     "spec",
 )
 
-
 def _extract_segment_context(chunk: dict) -> tuple[str, str] | None:
     semantic_segment = chunk.get("semantic_segment")
     if isinstance(semantic_segment, dict):
@@ -41,6 +40,15 @@ def _extract_segment_context(chunk: dict) -> tuple[str, str] | None:
         if seg_id and seg_text:
             return seg_id, seg_text
     return None
+def _build_kg_query(state: AgentState) -> str:
+    entity = str(state.get("entity", "") or "").strip()
+    intent = str(state.get("intent", "") or "").strip()
+    user_message = str(state.get("user_message", "") or "").strip()
+    if entity and intent:
+        return f"查询{entity}的{intent}"
+    if entity:
+        return f"查询{entity}相关知识图谱"
+    return user_message
 
 
 def decide_rag_node(state: AgentState):
@@ -181,13 +189,47 @@ def chat_agent_node(state: AgentState):
         rag_debug_enabled=bool(state.get("rag_debug_enabled", False)),
     )
 
-    if not bool(current_app.config.get("AGENT_AUTO_TOOL_SELECTION_ENABLED", True)) or not hasattr(llm, "bind_tools"):
-        response = llm.invoke(messages)
-        return {"reply": str(getattr(response, "content", ""))}
-
     tool_specs = get_agent_tools(
         context=tool_context,
     )
+    tool_by_name = {item.name: item for item in tool_specs}
+
+    graph_data = state.get("graph_data", {})
+    if not isinstance(graph_data, dict):
+        graph_data = {}
+    graph_meta = state.get("graph_meta", {})
+    if not isinstance(graph_meta, dict):
+        graph_meta = {}
+
+    kg_tool = tool_by_name.get("knowledge_graph_query")
+    if kg_tool is not None:
+        kg_query = _build_kg_query(state)
+        kg_result = kg_tool.invoke(query=kg_query, entity=state.get("entity", ""), intent=state.get("intent", ""))
+        if isinstance(kg_result, dict) and kg_result.get("ok", True):
+            raw_graph = kg_result.get("graph", {})
+            if isinstance(raw_graph, dict):
+                nodes = raw_graph.get("nodes", [])
+                edges = raw_graph.get("edges", [])
+                graph_data = {
+                    "nodes": nodes if isinstance(nodes, list) else [],
+                    "edges": edges if isinstance(edges, list) else [],
+                }
+            raw_meta = kg_result.get("meta", {})
+            if isinstance(raw_meta, dict):
+                graph_meta = raw_meta
+            summary = str(kg_result.get("summary", "")).strip()
+            if summary:
+                messages.append(SystemMessage(content=f"知识图谱检索结果摘要：{summary}"))
+
+    if not bool(current_app.config.get("AGENT_AUTO_TOOL_SELECTION_ENABLED", True)) or not hasattr(llm, "bind_tools"):
+        response = llm.invoke(messages)
+        result = {"reply": str(getattr(response, "content", ""))}
+        if graph_data:
+            result["graph_data"] = graph_data
+        if graph_meta:
+            result["graph_meta"] = graph_meta
+        return result
+
     openai_tools = [
         {
             "type": "function",
@@ -201,9 +243,13 @@ def chat_agent_node(state: AgentState):
     ]
     if not openai_tools:
         response = llm.invoke(messages)
-        return {"reply": str(getattr(response, "content", ""))}
+        result = {"reply": str(getattr(response, "content", ""))}
+        if graph_data:
+            result["graph_data"] = graph_data
+        if graph_meta:
+            result["graph_meta"] = graph_meta
+        return result
 
-    tool_by_name = {item.name: item for item in tool_specs}
     auto_llm = llm.bind_tools(openai_tools)
     max_rounds = max(1, int(current_app.config.get("AGENT_TOOL_CALL_MAX_ROUNDS", 4)))
     collected_rag_chunks = list(chunks)
@@ -219,6 +265,10 @@ def chat_agent_node(state: AgentState):
             result = {"reply": str(getattr(response, "content", ""))}
             if collected_rag_chunks:
                 result["rag_chunks"] = collected_rag_chunks
+            if graph_data:
+                result["graph_data"] = graph_data
+            if graph_meta:
+                result["graph_meta"] = graph_meta
             if bool(state.get("rag_debug_enabled", False)):
                 result["rag_debug"] = merged_rag_debug
             return result
@@ -255,10 +305,22 @@ def chat_agent_node(state: AgentState):
                         debug_payload = tool_result.get("debug", {})
                         if isinstance(debug_payload, dict):
                             merged_rag_debug = debug_payload
+                if tool_spec.name == "knowledge_graph_query" and tool_result.get("ok", True):
+                    raw_graph = tool_result.get("graph", {})
+                    if isinstance(raw_graph, dict):
+                        nodes = raw_graph.get("nodes", [])
+                        edges = raw_graph.get("edges", [])
+                        graph_data = {
+                            "nodes": nodes if isinstance(nodes, list) else [],
+                            "edges": edges if isinstance(edges, list) else [],
+                        }
+                    raw_meta = tool_result.get("meta", {})
+                    if isinstance(raw_meta, dict):
+                        graph_meta = raw_meta
 
             messages.append(
                 ToolMessage(
-                    content=json.dumps(tool_result, ensure_ascii=False),
+                    content=json.dumps(tool_result, ensure_ascii=False, default=str),
                     tool_call_id=tool_call_id,
                 )
             )
@@ -267,6 +329,10 @@ def chat_agent_node(state: AgentState):
     result = {"reply": str(getattr(final_response, "content", ""))}
     if collected_rag_chunks:
         result["rag_chunks"] = collected_rag_chunks
+    if graph_data:
+        result["graph_data"] = graph_data
+    if graph_meta:
+        result["graph_meta"] = graph_meta
     if bool(state.get("rag_debug_enabled", False)):
         result["rag_debug"] = merged_rag_debug
     return result
