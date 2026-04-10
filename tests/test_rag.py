@@ -977,3 +977,43 @@ def test_search_plan_keeps_rag_when_private_retrieval_is_heuristically_required(
 
     assert result["use_rag"] is True
     assert result["strategy"] in {"private_first", "private_only", "hybrid"}
+
+
+def test_search_plan_avoids_rag_for_explicit_public_web_request():
+    class _StructuredLLM:
+        def invoke(self, messages):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(strategy="hybrid", use_rag=True, use_web=True)
+
+    class _LLM:
+        def with_structured_output(self, schema):
+            return _StructuredLLM()
+
+    result = _search_plan_node(
+        {
+            "llm": _LLM(),
+            "query": "帮我上网搜索一下京东方这个公司的情况",
+            "rag_enabled": True,
+            "preferred_strategy": "",
+        }
+    )
+
+    assert result["strategy"] == "public_only"
+    assert result["use_rag"] is False
+    assert result["use_web"] is True
+
+
+def test_search_plan_uses_hybrid_for_explicit_mixed_source_request():
+    result = _search_plan_node(
+        {
+            "llm": object(),
+            "query": "结合文档和网上信息总结京东方这个公司的情况",
+            "rag_enabled": True,
+            "preferred_strategy": "",
+        }
+    )
+
+    assert result["strategy"] == "hybrid"
+    assert result["use_rag"] is True
+    assert result["use_web"] is True

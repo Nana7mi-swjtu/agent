@@ -16,6 +16,20 @@ def test_plan_route_requests_clarification_for_vague_search():
     assert "具体主题" in result["clarification_question"]
 
 
+def test_plan_route_preserves_public_only_strategy_for_explicit_web_request():
+    result = plan_route_node(
+        {
+            "user_message": "帮我上网搜索一下京东方这个公司的情况",
+            "rag_enabled": True,
+            "web_enabled": True,
+            "mcp_enabled": False,
+        }
+    )
+    assert result["needs_search"] is True
+    assert result["needs_clarification"] is False
+    assert result["search_request"]["preferred_strategy"] == "public_only"
+
+
 def test_search_subagent_reports_missing_evidence(app):
     with app.app_context():
         result = search_subagent_node(
