@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pathlib import Path
 from datetime import timedelta
 
@@ -121,6 +121,7 @@ class Config:
     AGENT_MCP_SERVERS_JSON = os.getenv("AGENT_MCP_SERVERS_JSON", "").strip()
     AGENT_MCP_TIMEOUT_SECONDS = int(os.getenv("AGENT_MCP_TIMEOUT_SECONDS", "20"))
     AGENT_KNOWLEDGE_GRAPH_ENABLED = _bool_env("AGENT_KNOWLEDGE_GRAPH_ENABLED", False)
+    AGENT_KNOWLEDGE_GRAPH_DIRECT_ONLY = _bool_env("AGENT_KNOWLEDGE_GRAPH_DIRECT_ONLY", False)
     AGENT_TRACE_VISUALIZATION_ENABLED = _bool_env("AGENT_TRACE_VISUALIZATION_ENABLED", False)
     AGENT_TRACE_DEBUG_DETAILS_ENABLED = _bool_env("AGENT_TRACE_DEBUG_DETAILS_ENABLED", False)
 
@@ -187,5 +188,3 @@ class Config:
     RAG_CHROMADB_COLLECTION_PREFIX = os.getenv("RAG_CHROMADB_COLLECTION_PREFIX", "rag")
 
     AUTO_CREATE_DB = os.getenv("AUTO_CREATE_DB", "true").lower() == "true"
-
-
