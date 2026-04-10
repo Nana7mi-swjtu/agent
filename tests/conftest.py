@@ -29,10 +29,18 @@ def app(tmp_path):
     bankruptcy_upload_dir.mkdir(parents=True, exist_ok=True)
     bankruptcy_plot_dir = tmp_path / "bankruptcy_plots"
     bankruptcy_plot_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     config = {
         "DATABASE_URL": test_db_url,
         "AUTO_CREATE_DB": True,
         "TESTING": True,
+        "LOG_DIR": str(log_dir),
+        "LOG_LEVEL": "INFO",
+        "LOG_SERVICE_NAME": "agent-test",
+        "LOG_ENVIRONMENT": "test",
+        "LOG_MAX_BYTES": 1024 * 1024,
+        "LOG_BACKUP_COUNT": 2,
         "EMAIL_BACKEND": "memory",
         "SESSION_TYPE": "filesystem",
         "SESSION_FILE_DIR": str(session_dir),
