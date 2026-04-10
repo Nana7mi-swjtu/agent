@@ -10,6 +10,7 @@ from ...rag.schemas import RetrievalHit
 from ...rag.service import build_cited_response
 from .mcp import build_mcp_graph
 from .search import build_search_graph
+from .source_intent import has_explicit_public_web_intent, has_fresh_public_info_intent, has_mixed_source_intent
 from .state import AgentState
 
 _search_graph = build_search_graph()
@@ -79,8 +80,15 @@ def _planner_prefers_mcp(message: str, *, mcp_enabled: bool) -> bool:
 
 
 def _search_strategy(message: str, *, rag_enabled: bool, web_enabled: bool) -> str:
-    lowered = message.lower()
-    freshness = any(token in lowered for token in ("最新", "news", "today", "recent", "监管新闻", "web", "联网"))
+    if has_mixed_source_intent(message):
+        if rag_enabled and web_enabled:
+            return "hybrid"
+        if rag_enabled:
+            return "private_first"
+        return "public_only"
+    if has_explicit_public_web_intent(message):
+        return "public_only"
+    freshness = has_fresh_public_info_intent(message)
     if freshness and rag_enabled and web_enabled:
         return "hybrid"
     if freshness and web_enabled:

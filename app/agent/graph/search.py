@@ -6,6 +6,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from ..tools import AgentToolContext, get_agent_tools
+from .source_intent import has_explicit_public_web_intent, has_fresh_public_info_intent, has_mixed_source_intent
 
 _KNOWLEDGE_HINTS = (
     "根据",
@@ -26,11 +27,7 @@ _FRESHNESS_HINTS = (
     "news",
     "today",
     "recent",
-    "搜索",
-    "查找",
-    "联网",
-    "web",
-    "网页",
+    "最近",
     "监管新闻",
 )
 
@@ -79,8 +76,12 @@ def _preferred_strategy(state: SearchState) -> str:
     if value in {"private_only", "public_only", "private_first", "hybrid"}:
         return value
 
-    query = str(state.get("query", "")).lower()
-    if any(token in query for token in _FRESHNESS_HINTS):
+    query = str(state.get("query", ""))
+    if has_mixed_source_intent(query):
+        return "hybrid" if bool(state.get("rag_enabled", False)) else "public_only"
+    if has_explicit_public_web_intent(query):
+        return "public_only"
+    if has_fresh_public_info_intent(query):
         return "hybrid" if bool(state.get("rag_enabled", False)) else "public_only"
     return "private_first" if bool(state.get("rag_enabled", False)) else "public_only"
 
@@ -88,18 +89,26 @@ def _preferred_strategy(state: SearchState) -> str:
 def _search_plan_node(state: SearchState):
     strategy = _preferred_strategy(state)
     rag_enabled = bool(state.get("rag_enabled", False))
-    query = str(state.get("query", "")).lower()
+    query_text = str(state.get("query", ""))
+    query = query_text.lower()
+    explicit_public = has_explicit_public_web_intent(query_text)
+    mixed_source = has_mixed_source_intent(query_text)
     knowledge_like = any(token in query for token in _KNOWLEDGE_HINTS)
-    freshness_like = any(token in query for token in _FRESHNESS_HINTS)
+    freshness_like = has_fresh_public_info_intent(query_text)
 
     heuristic_use_rag = rag_enabled and strategy in {"private_only", "private_first", "hybrid"}
-    if rag_enabled and knowledge_like:
+    if rag_enabled and knowledge_like and not explicit_public:
         heuristic_use_rag = True
 
     heuristic_use_web = strategy in {"public_only", "hybrid"}
     if strategy == "private_first" and not heuristic_use_rag:
         heuristic_use_web = True
-    if freshness_like:
+    if freshness_like or explicit_public:
+        heuristic_use_web = True
+
+    if explicit_public and not mixed_source:
+        strategy = "public_only"
+        heuristic_use_rag = False
         heuristic_use_web = True
 
     use_rag = heuristic_use_rag
@@ -133,8 +142,13 @@ def _search_plan_node(state: SearchState):
                 strategy = _preferred_strategy(state)
             # The model may expand evidence sources, but it should not disable
             # deterministic private retrieval when private knowledge is available.
-            use_rag = heuristic_use_rag or (bool(response.use_rag) and rag_enabled)
-            use_web = heuristic_use_web or bool(response.use_web)
+            if explicit_public and not mixed_source:
+                strategy = "public_only"
+                use_rag = False
+                use_web = True
+            else:
+                use_rag = heuristic_use_rag or (bool(response.use_rag) and rag_enabled)
+                use_web = heuristic_use_web or bool(response.use_web)
         except Exception:
             pass
     strategy = _normalize_strategy(strategy, use_rag=bool(use_rag), use_web=bool(use_web), fallback=_preferred_strategy(state))
