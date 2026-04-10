@@ -10,6 +10,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from .graph import build_graph
+from .tools import AgentToolContext, get_agent_tools
 
 _runtime_lock = Lock()
 _runtime: dict[str, Any] | None = None
@@ -18,6 +19,92 @@ logger = logging.getLogger(__name__)
 
 class AgentServiceError(RuntimeError):
     pass
+
+
+def _should_run_direct_kg_query(*, user_message: str, entity: str, graph_intent: str) -> bool:
+    if not bool(current_app.config.get("AGENT_KNOWLEDGE_GRAPH_ENABLED", False)):
+        return False
+    if bool(current_app.config.get("AGENT_KNOWLEDGE_GRAPH_DIRECT_ONLY", False)):
+        return True
+    if str(entity or "").strip() or str(graph_intent or "").strip():
+        return True
+    lowered = str(user_message or "").strip().lower()
+    return "知识图谱" in lowered or "knowledge graph" in lowered
+
+
+def _direct_kg_payload(
+    *,
+    user_message: str,
+    user_id: int,
+    workspace_id: str,
+    entity: str,
+    graph_intent: str,
+    agent_trace_enabled: bool,
+    agent_trace_debug_details_enabled: bool,
+) -> dict[str, Any]:
+    tool_context = AgentToolContext(
+        user_id=user_id,
+        workspace_id=workspace_id,
+        rag_debug_enabled=False,
+    )
+    tools = get_agent_tools(context=tool_context, categories=("knowledge_graph",))
+    kg_tool = next((item for item in tools if item.name == "knowledge_graph_query"), None)
+    if kg_tool is None:
+        raise AgentServiceError("knowledge graph tool unavailable")
+
+    query_text = str(user_message or "").strip()
+    if not query_text:
+        query_text = f"查询{str(entity or '').strip()}的{str(graph_intent or '').strip()}".strip()
+    if not query_text:
+        raise AgentServiceError("empty knowledge graph query")
+
+    raw = kg_tool.invoke(query=query_text, entity=entity, intent=graph_intent)
+    if not isinstance(raw, dict) or not bool(raw.get("ok", False)):
+        raise AgentServiceError(str(raw.get("error", "knowledge graph query failed")) if isinstance(raw, dict) else "knowledge graph query failed")
+
+    summary = str(raw.get("summary", "")).strip() or "知识图谱查询完成。"
+    graph_payload = raw.get("graph", {})
+    if not isinstance(graph_payload, dict):
+        graph_payload = {}
+    graph_meta_payload = raw.get("meta", {})
+    if not isinstance(graph_meta_payload, dict):
+        graph_meta_payload = {}
+
+    payload: dict[str, Any] = {
+        "reply": summary,
+        "citations": [],
+        "noEvidence": False,
+        "debug": {
+            "knowledgeGraph": {
+                "query": query_text,
+                "status": "done",
+            }
+        },
+        "graph": graph_payload,
+        "graphMeta": graph_meta_payload,
+    }
+    if agent_trace_enabled:
+        trace_details = None
+        if agent_trace_debug_details_enabled:
+            trace_details = {
+                "query": query_text,
+                "entity": str(entity or "").strip(),
+                "graphIntent": str(graph_intent or "").strip(),
+                "nodeCount": len(graph_payload.get("nodes", [])) if isinstance(graph_payload.get("nodes", []), list) else 0,
+                "edgeCount": len(graph_payload.get("edges", [])) if isinstance(graph_payload.get("edges", []), list) else 0,
+            }
+        payload["trace"] = {
+            "steps": [
+                _trace_step(
+                    step_id="knowledge_graph_direct",
+                    step_type="tool",
+                    title="Knowledge Graph Query",
+                    summary="Executed knowledge graph query directly without planner routing.",
+                    details=trace_details,
+                )
+            ]
+        }
+    return payload
 
 
 def _trace_step(
@@ -328,6 +415,8 @@ def _agent_llm_config(agent_key: str) -> dict[str, Any]:
     }
 
 
+
+
 def _create_llm(agent_key: str) -> Any:
     config = _agent_llm_config(agent_key)
     if not config["model"] or not config["api_key"]:
@@ -347,6 +436,8 @@ def _create_llm(agent_key: str) -> Any:
         base_url=config["base_url"] or None,
         timeout=config["timeout"],
     )
+
+
 
 
 def _build_runtime() -> dict[str, Any]:
@@ -393,9 +484,30 @@ def generate_reply_payload(
     user_id: int = 0,
     workspace_id: str = "default",
     rag_debug_enabled: bool = False,
+    entity: str = "",
+    intent: str = "",
     agent_trace_enabled: bool = False,
     agent_trace_debug_details_enabled: bool = False,
 ) -> dict[str, Any]:
+    entity_text = str(entity or "").strip()
+    graph_intent_text = str(intent or "").strip()
+    if _should_run_direct_kg_query(user_message=user_message, entity=entity_text, graph_intent=graph_intent_text):
+        try:
+            return _direct_kg_payload(
+                user_message=user_message,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                entity=entity_text,
+                graph_intent=graph_intent_text,
+                agent_trace_enabled=agent_trace_enabled,
+                agent_trace_debug_details_enabled=agent_trace_debug_details_enabled,
+            )
+        except AgentServiceError:
+            raise
+        except Exception as exc:
+            logger.exception("Failed to execute direct knowledge graph query")
+            raise AgentServiceError("knowledge graph direct query failed") from exc
+
     try:
         runtime = _get_runtime()
         state = {
@@ -424,10 +536,15 @@ def generate_reply_payload(
             "web_enabled": bool(current_app.config.get("AGENT_WEBSEARCH_ENABLED", False)),
             "mcp_enabled": bool(current_app.config.get("AGENT_MCP_ENABLED", False)),
             "rag_debug_enabled": bool(rag_debug_enabled),
+            "entity": entity_text,
+            "graph_intent": graph_intent_text,
+            "rag_decision": "skip",
             "rag_chunks": [],
             "rag_citations": [],
             "rag_no_evidence": False,
             "rag_debug": {},
+            "graph_data": {},
+            "graph_meta": {},
             "debug": {},
             "reply": "",
         }
@@ -440,6 +557,12 @@ def generate_reply_payload(
         debug_payload = output.get("debug", {})
         if not isinstance(debug_payload, dict):
             debug_payload = {}
+        graph_payload = output.get("graph_data", {})
+        if not isinstance(graph_payload, dict):
+            graph_payload = {}
+        graph_meta_payload = output.get("graph_meta", {})
+        if not isinstance(graph_meta_payload, dict):
+            graph_meta_payload = {}
         trace_payload = (
             _build_trace_payload(output, include_details=bool(agent_trace_debug_details_enabled))
             if agent_trace_enabled
@@ -454,6 +577,8 @@ def generate_reply_payload(
     if not reply:
         raise AgentServiceError("empty agent reply")
     payload = {"reply": reply, "citations": citations, "noEvidence": no_evidence, "debug": debug_payload}
+    payload["graph"] = graph_payload
+    payload["graphMeta"] = graph_meta_payload
     if trace_payload:
         payload["trace"] = trace_payload
     return payload

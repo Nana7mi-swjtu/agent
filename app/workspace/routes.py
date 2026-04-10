@@ -163,10 +163,19 @@ def workspace_chat():
     if not message:
         return _json_error("message is required", 400)
     request_workspace_id = ""
+    entity = ""
+    intent = ""
+    clean_message = message
     if isinstance(payload, dict):
         raw_workspace_id = payload.get("workspaceId")
         if isinstance(raw_workspace_id, str):
             request_workspace_id = raw_workspace_id.strip()
+        raw_entity = payload.get("entity")
+        if isinstance(raw_entity, str):
+            entity = raw_entity.strip()
+        raw_intent = payload.get("intent")
+        if isinstance(raw_intent, str):
+            intent = raw_intent.strip()
 
     with session_scope() as db:
         user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
@@ -185,13 +194,16 @@ def workspace_chat():
         trace_enabled = bool(current_app.config.get("AGENT_TRACE_VISUALIZATION_ENABLED", False))
         trace_details_enabled = bool(current_app.config.get("AGENT_TRACE_DEBUG_DETAILS_ENABLED", False))
         try:
+            composed_message = message
             result = generate_reply_payload(
                 role=role,
                 system_prompt=preset["systemPrompt"],
-                user_message=message,
+                user_message=composed_message,
                 user_id=user_id,
                 workspace_id=request_workspace_id or _workspace_id(user.preferences),
                 rag_debug_enabled=debug_enabled,
+                entity=entity,
+                intent=intent,
                 agent_trace_enabled=trace_enabled,
                 agent_trace_debug_details_enabled=trace_details_enabled,
             )
@@ -207,6 +219,9 @@ def workspace_chat():
                 "reply": result["reply"],
                 "citations": result["citations"],
                 "noEvidence": result["noEvidence"],
+                "graph": result.get("graph", {}),
+                "graphMeta": result.get("graphMeta", {}),
+                **({"trace": result.get("trace", {})} if trace_enabled and isinstance(result.get("trace"), dict) else {}),
                 **({"trace": result.get("trace", {})} if trace_enabled and isinstance(result.get("trace"), dict) else {}),
                 **({"debug": result.get("debug", {})} if debug_enabled else {}),
             },

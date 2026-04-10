@@ -13,6 +13,8 @@ class AgentState(TypedDict):
     user_message: str
     user_id: int
     workspace_id: str
+    entity: str
+    graph_intent: str
     intent: str
     needs_search: bool
     needs_mcp: bool
@@ -33,5 +35,7 @@ class AgentState(TypedDict):
     rag_citations: list[dict]
     rag_no_evidence: bool
     rag_debug: dict[str, Any]
+    graph_data: dict[str, Any]
+    graph_meta: dict[str, Any]
     debug: dict[str, Any]
     reply: str

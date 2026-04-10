@@ -259,7 +259,13 @@ def test_workspace_chat_requires_role(client, db_session, monkeypatch):
 
     monkeypatch.setattr(
         "app.workspace.routes.generate_reply_payload",
-        lambda **kwargs: {"reply": "agent generated response", "citations": [], "noEvidence": False},
+        lambda **kwargs: {
+            "reply": "agent generated response",
+            "citations": [],
+            "noEvidence": False,
+            "graph": {},
+            "graphMeta": {},
+        },
     )
     response = client.post("/api/workspace/chat", json={"message": "请分析风险"}, headers=headers)
     assert response.status_code == 200

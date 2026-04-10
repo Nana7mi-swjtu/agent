@@ -63,6 +63,15 @@ def _extract_segment_context(chunk: dict) -> tuple[str, str] | None:
         if seg_id and seg_text:
             return seg_id, seg_text
     return None
+def _build_kg_query(state: AgentState) -> str:
+    entity = str(state.get("entity", "") or "").strip()
+    graph_intent = str(state.get("graph_intent", "") or "").strip() or str(state.get("intent", "") or "").strip()
+    user_message = str(state.get("user_message", "") or "").strip()
+    if entity and graph_intent:
+        return f"查询{entity}的{graph_intent}"
+    if entity:
+        return f"查询{entity}相关知识图谱"
+    return user_message
 
 
 def _planner_prefers_search(message: str, *, rag_enabled: bool, web_enabled: bool) -> bool:
@@ -410,6 +419,7 @@ def answer_with_citations_node(state: AgentState):
         debug_payload = {}
     if rag_debug:
         debug_payload["rag"] = rag_debug
+    result: dict[str, Any] = {
     return {
         "reply": payload.reply,
         "rag_citations": payload.citations,
@@ -417,3 +427,10 @@ def answer_with_citations_node(state: AgentState):
         "rag_debug": rag_debug,
         "debug": debug_payload,
     }
+    graph_data = state.get("graph_data", {})
+    if isinstance(graph_data, dict):
+        result["graph_data"] = graph_data
+    graph_meta = state.get("graph_meta", {})
+    if isinstance(graph_meta, dict):
+        result["graph_meta"] = graph_meta
+    return result
