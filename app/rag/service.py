@@ -11,6 +11,7 @@ from flask import current_app
 from sqlalchemy import func
 
 from ..db import session_scope
+from ..logging_utils import bind_log_context, run_with_log_context, snapshot_log_context
 from ..models import RagChunk, RagDocument, RagIndexJob
 from .assets import cleanup_artifact, create_derived_asset, create_original_asset, uploads_root
 from .errors import RAGAuthorizationError, RAGContractError, RAGValidationError
@@ -363,6 +364,7 @@ def enqueue_index_job(
     workspace = _workspace_from_request(workspace_id)
     plan = _chunking_plan_from_request(chunking)
     app = current_app._get_current_object()
+    context_snapshot = snapshot_log_context()
     with session_scope() as db:
         document = get_document_for_scope(db=db, document_id=document_id, user_id=user_id, workspace_id=workspace)
         if document.status == "indexing":
@@ -382,10 +384,37 @@ def enqueue_index_job(
             ),
         }
 
+    logger.info(
+        "RAG indexing job enqueued",
+        extra={
+            "event": "rag.index.enqueued",
+            "job_id": job_payload["jobId"],
+            "document_id": document_id,
+            "workspace_id": workspace,
+            "requested_chunk_strategy": plan.request.strategy,
+        },
+    )
     if bool(app.config.get("TESTING", False)):
-        _run_index_job(app, job_payload["jobId"], user_id, workspace, chunking)
+        run_with_log_context(
+            context_snapshot,
+            _run_index_job,
+            app,
+            job_payload["jobId"],
+            user_id,
+            workspace,
+            chunking,
+        )
     else:
-        _ensure_executor().submit(_run_index_job, app, job_payload["jobId"], user_id, workspace, chunking)
+        _ensure_executor().submit(
+            run_with_log_context,
+            context_snapshot,
+            _run_index_job,
+            app,
+            job_payload["jobId"],
+            user_id,
+            workspace,
+            chunking,
+        )
     return job_payload
 
 
@@ -457,8 +486,22 @@ def _run_index_job(
                 )
                 document_id = int(document.id)
                 source_name = document.source_name
+                bind_log_context(
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    job_id=job_id,
+                    document_id=document_id,
+                )
                 set_index_job_status(job=job, status="running")
                 set_document_status(document=document, status="indexing")
+                logger.info(
+                    "RAG indexing job started",
+                    extra={
+                        "event": "rag.index.started",
+                        "job_id": job_id,
+                        "document_id": document_id,
+                    },
+                )
 
             canonical_blocks = _load_or_build_canonical_blocks(
                 user_id=user_id,
@@ -543,8 +586,17 @@ def _run_index_job(
                     chunk_fallback_used=(chunking_applied.fallback_used if chunking_applied else False),
                     chunk_fallback_reason=(chunking_applied.fallback_reason if chunking_applied else None),
                     )
+                logger.info(
+                    "RAG indexing job persisted indexed state",
+                    extra={
+                        "event": "rag.index.persisted",
+                        "job_id": job_id,
+                        "document_id": document_id,
+                        "chunk_count": chunk_count,
+                    },
+                )
     except Exception as exc:
-        logger.exception("RAG indexing job failed", extra={"job_id": job_id})
+        logger.exception("RAG indexing job failed", extra={"event": "rag.index.failed", "job_id": job_id})
         with app.app_context():
             if document_id is not None:
                 try:
@@ -552,7 +604,7 @@ def _run_index_job(
                 except Exception:
                     logger.exception(
                         "Failed to clear document vectors after indexing failure",
-                        extra={"job_id": job_id, "document_id": document_id},
+                        extra={"event": "rag.index.cleanup_failed", "job_id": job_id, "document_id": document_id},
                     )
             with session_scope() as db:
                 try:
@@ -574,10 +626,16 @@ def _run_index_job(
                         chunks_count=chunk_count,
                     )
                 except Exception:
-                    logger.exception("Failed to persist indexing failure", extra={"job_id": job_id})
+                    logger.exception(
+                        "Failed to persist indexing failure",
+                        extra={"event": "rag.index.failure_persist_failed", "job_id": job_id},
+                    )
     finally:
         elapsed = int((datetime.utcnow() - started).total_seconds() * 1000)
-        logger.info("RAG indexing job finished", extra={"job_id": job_id, "duration_ms": elapsed})
+        logger.info(
+            "RAG indexing job finished",
+            extra={"event": "rag.index.finished", "job_id": job_id, "document_id": document_id, "duration_ms": elapsed},
+        )
 
 
 def get_job_status(*, user_id: int, workspace_id: str, job_id: int) -> dict:
@@ -695,6 +753,26 @@ def rag_search(
                 chunk_model=chunk_model,
                 failure_reason=failure_reason,
             )
+        logger.info(
+            "RAG search executed",
+            extra={
+                "event": "rag.search.executed",
+                "workspace_id": workspace,
+                "user_id": user_id,
+                "latency_ms": latency_ms,
+                "hit_count": len(hits),
+                "top_k": top_k,
+                "vector_provider": vector_store.provider_name,
+                "embedder_provider": embedder.provider_name,
+                "embedding_model": embedder.model_name,
+                "embedding_version": embedder.model_version,
+                "embedding_dimension": embedder.dimension,
+                "chunk_strategy": chunk_strategy,
+                "chunk_provider": chunk_provider,
+                "chunk_model": chunk_model,
+                "failure_reason": failure_reason,
+            },
+        )
     if include_debug:
         vector_norm = sum(value * value for value in query_vector) ** 0.5 if query_vector else 0.0
         debug_payload = {

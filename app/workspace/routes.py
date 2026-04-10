@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from ..agent.services import AgentServiceError, generate_reply_payload
 from ..db import session_scope
+from ..logging_utils import bind_log_context, log_audit_event
 from ..models import User
 
 
@@ -177,6 +178,15 @@ def workspace_chat():
         if not role:
             return _json_error("please select a role first", 400)
 
+        workspace_id = request_workspace_id or _workspace_id(user.preferences)
+        bind_log_context(user_id=user_id, workspace_id=workspace_id)
+        log_audit_event(
+            "workspace.chat.requested",
+            operation_status="requested",
+            resource_type="workspace",
+            resource_id=workspace_id,
+            role=role,
+        )
         preset = ROLE_PRESETS[role]
         debug_enabled = bool(
             current_app.config.get("RAG_DEBUG_VISUALIZATION_ENABLED", False)
@@ -190,15 +200,29 @@ def workspace_chat():
                 system_prompt=preset["systemPrompt"],
                 user_message=message,
                 user_id=user_id,
-                workspace_id=request_workspace_id or _workspace_id(user.preferences),
+                workspace_id=workspace_id,
                 rag_debug_enabled=debug_enabled,
                 agent_trace_enabled=trace_enabled,
                 agent_trace_debug_details_enabled=trace_details_enabled,
             )
         except AgentServiceError:
+            log_audit_event(
+                "workspace.chat.failed",
+                operation_status="failed",
+                resource_type="workspace",
+                resource_id=workspace_id,
+                role=role,
+            )
             logger.exception("Agent runtime failed for workspace chat")
             return _json_error("agent service unavailable", 502)
 
+        log_audit_event(
+            "workspace.chat.completed",
+            operation_status="succeeded",
+            resource_type="workspace",
+            resource_id=workspace_id,
+            role=role,
+        )
         return {
             "ok": True,
             "data": {
