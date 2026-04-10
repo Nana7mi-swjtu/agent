@@ -25,7 +25,7 @@ export const notifyUnauthorized = (status) => {
   }
 };
 
-export const apiRequest = async (path, options = {}) => {
+export const buildApiRequestOptions = (options = {}) => {
   const method = String(options.method || "GET").toUpperCase();
   const headers = new Headers(options.headers || {});
   const csrfToken = getCsrfToken();
@@ -40,23 +40,37 @@ export const apiRequest = async (path, options = {}) => {
     body = JSON.stringify(body);
   }
 
-  const response = await fetch(buildApiUrl(path), {
+  return {
     method,
     headers,
     body,
     credentials: "include",
-  });
+  };
+};
 
-  const data = await response.json().catch(() => ({}));
+export const handleApiResponseMeta = (response, data = {}) => {
   if (typeof data?.csrfToken === "string") {
     setCsrfToken(data.csrfToken);
   }
 
   notifyUnauthorized(response.status);
+};
+
+export const apiRequest = async (path, options = {}) => {
+  const response = await fetch(buildApiUrl(path), buildApiRequestOptions(options));
+
+  const data = await response.json().catch(() => ({}));
+  handleApiResponseMeta(response, data);
 
   return {
     ok: response.ok,
     status: response.status,
     data,
   };
+};
+
+export const streamApiRequest = async (path, options = {}) => {
+  const response = await fetch(buildApiUrl(path), buildApiRequestOptions(options));
+  handleApiResponseMeta(response);
+  return response;
 };

@@ -1,4 +1,4 @@
-import { apiRequest } from "@/shared/api/client";
+import { apiRequest, streamApiRequest } from "@/shared/api/client";
 
 export const getWorkspaceContext = () => apiRequest("/api/workspace/context");
 
@@ -10,6 +10,16 @@ export const patchWorkspaceContext = (role) =>
 
 export const postWorkspaceChat = (message, workspaceId, conversationId) =>
   apiRequest("/api/workspace/chat", {
+    method: "POST",
+    body: {
+      message,
+      workspaceId: workspaceId || "default",
+      conversationId: conversationId || "",
+    },
+  });
+
+export const postWorkspaceChatStream = (message, workspaceId, conversationId) =>
+  streamApiRequest("/api/workspace/chat/stream", {
     method: "POST",
     body: {
       message,

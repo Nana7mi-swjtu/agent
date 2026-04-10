@@ -22,6 +22,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   const agentTraceDebugDetailsEnabled = ref(
     parseBool(import.meta.env.VITE_AGENT_TRACE_DEBUG_DETAILS_ENABLED, false),
   );
+  const chatStreamingEnabled = ref(parseBool(import.meta.env.VITE_WORKSPACE_CHAT_STREAMING_ENABLED, false));
 
   const applyContext = (data = {}) => {
     roles.value = Array.isArray(data.roles) ? data.roles : [];
@@ -34,6 +35,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       data.agentTraceDebugDetailsEnabled,
       agentTraceDebugDetailsEnabled.value,
     );
+    chatStreamingEnabled.value = parseBool(data.chatStreamingEnabled, chatStreamingEnabled.value);
     ready.value = true;
   };
 
@@ -57,6 +59,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       import.meta.env.VITE_AGENT_TRACE_DEBUG_DETAILS_ENABLED,
       false,
     );
+    chatStreamingEnabled.value = parseBool(import.meta.env.VITE_WORKSPACE_CHAT_STREAMING_ENABLED, false);
   };
 
   return {
@@ -68,6 +71,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     ragDebugEnabled,
     agentTraceEnabled,
     agentTraceDebugDetailsEnabled,
+    chatStreamingEnabled,
     applyContext,
     setContextReady,
     setActiveSession,

@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from threading import Lock
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from flask import current_app
 from langchain_openai import ChatOpenAI
@@ -289,6 +290,99 @@ def _build_trace_payload(output: dict[str, Any], *, include_details: bool) -> di
     return {"steps": steps}
 
 
+def _canonical_web_url(value: str) -> str:
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return raw
+    if not parsed.scheme or not parsed.netloc:
+        return raw
+    path = parsed.path.rstrip("/") or "/"
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, parsed.query, ""))
+
+
+def _group_rag_sources(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for citation in citations:
+        if not isinstance(citation, dict):
+            continue
+        source = str(citation.get("source", "")).strip()
+        chunk_id = str(citation.get("chunk_id", "")).strip()
+        if not source:
+            continue
+        entry = grouped.setdefault(
+            source,
+            {
+                "id": f"rag:{source}",
+                "kind": "rag",
+                "title": source,
+                "source": source,
+                "pages": [],
+                "sections": [],
+                "chunkIds": [],
+                "citationCount": 0,
+            },
+        )
+        page = citation.get("page")
+        if isinstance(page, int) and page not in entry["pages"]:
+            entry["pages"].append(page)
+        section = str(citation.get("section", "")).strip()
+        if section and section not in entry["sections"]:
+            entry["sections"].append(section)
+        if chunk_id and chunk_id not in entry["chunkIds"]:
+            entry["chunkIds"].append(chunk_id)
+        entry["citationCount"] += 1
+
+    for entry in grouped.values():
+        entry["pages"].sort()
+        entry["sections"].sort()
+    return sorted(grouped.values(), key=lambda item: str(item.get("title", "")).lower())
+
+
+def _group_web_sources(search_result: dict[str, Any]) -> list[dict[str, Any]]:
+    evidence = search_result.get("evidence", [])
+    if not isinstance(evidence, list):
+        return []
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source_type", "")).strip().lower() != "web":
+            continue
+        metadata = item.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        canonical_url = _canonical_web_url(str(metadata.get("url") or item.get("source") or ""))
+        if not canonical_url:
+            continue
+        title = str(item.get("title", "")).strip() or canonical_url
+        parsed = urlsplit(canonical_url)
+        entry = grouped.setdefault(
+            canonical_url,
+            {
+                "id": f"web:{canonical_url}",
+                "kind": "web",
+                "title": title,
+                "source": canonical_url,
+                "url": canonical_url,
+                "domain": parsed.netloc.lower(),
+            },
+        )
+        if title and entry["title"] == canonical_url:
+            entry["title"] = title
+    return sorted(grouped.values(), key=lambda item: str(item.get("title", "")).lower())
+
+
+def _build_grouped_sources(output: dict[str, Any], citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    search_result = output.get("search_result", {})
+    if not isinstance(search_result, dict):
+        search_result = {}
+    return _group_rag_sources(citations) + _group_web_sources(search_result)
+
+
 def _load_chat_prompt() -> str:
     prompt_path = Path(__file__).resolve().parent / "prompts" / "chat.md"
     if prompt_path.exists():
@@ -436,6 +530,7 @@ def generate_reply_payload(
         citations = output.get("rag_citations", [])
         if not isinstance(citations, list):
             citations = []
+        sources = _build_grouped_sources(output, citations)
         no_evidence = bool(output.get("rag_no_evidence", False))
         debug_payload = output.get("debug", {})
         if not isinstance(debug_payload, dict):
@@ -453,7 +548,13 @@ def generate_reply_payload(
 
     if not reply:
         raise AgentServiceError("empty agent reply")
-    payload = {"reply": reply, "citations": citations, "noEvidence": no_evidence, "debug": debug_payload}
+    payload = {
+        "reply": reply,
+        "citations": citations,
+        "sources": sources,
+        "noEvidence": no_evidence,
+        "debug": debug_payload,
+    }
     if trace_payload:
         payload["trace"] = trace_payload
     return payload
