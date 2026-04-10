@@ -420,6 +420,7 @@ def answer_with_citations_node(state: AgentState):
     if rag_debug:
         debug_payload["rag"] = rag_debug
     result: dict[str, Any] = {
+    return {
         "reply": payload.reply,
         "rag_citations": payload.citations,
         "rag_no_evidence": bool(state.get("rag_no_evidence", False) or payload.no_evidence),
