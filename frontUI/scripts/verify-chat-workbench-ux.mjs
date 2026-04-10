@@ -33,6 +33,14 @@ assert.equal(serializedSession.messages.length, 1);
 assert.equal(serializedSession.messages[0].id, "m_user");
 assert.equal(serializedSession.messages[0].from, "user");
 
+const sourcedMessage = normalizeChatMessage({
+  from: "agent",
+  text: "answer",
+  sources: [{ id: "web:https://example.com", kind: "web", title: "Example", url: "https://example.com" }],
+});
+assert.equal(sourcedMessage.sources.length, 1);
+assert.equal(sourcedMessage.sources[0].kind, "web");
+
 const markdownLibSource = fs.readFileSync(path.resolve(__dirname, "../src/shared/lib/markdown.js"), "utf8");
 assert.match(markdownLibSource, /MarkdownIt/);
 assert.match(markdownLibSource, /DOMPurify/);
@@ -41,15 +49,22 @@ const messageItemSource = fs.readFileSync(path.resolve(__dirname, "../src/featur
 assert.match(messageItemSource, /MarkdownContent/);
 assert.match(messageItemSource, /assistantWorkingHint/);
 assert.match(messageItemSource, /msg-pending-card/);
+assert.match(messageItemSource, /agent-sources-panel/);
+
+const feedSource = fs.readFileSync(path.resolve(__dirname, "../src/features/chat/ui/ChatFeed.vue"), "utf8");
+assert.match(feedSource, /jumpToLatest/);
+assert.match(feedSource, /handleScroll/);
 
 const tracePanelSource = fs.readFileSync(path.resolve(__dirname, "../src/features/chat/ui/AgentTracePanel.vue"), "utf8");
-assert.match(tracePanelSource, /agentTraceExpand/);
-assert.match(tracePanelSource, /details/);
-assert.match(tracePanelSource, /isStepInitiallyOpen/);
+assert.match(tracePanelSource, /agentTraceFitView/);
+assert.match(tracePanelSource, /agent-trace-viewport/);
+assert.match(tracePanelSource, /beginNodeDrag/);
 
 const messagingSource = fs.readFileSync(path.resolve(__dirname, "../src/features/chat/model/useChatMessaging.js"), "utf8");
 assert.match(messagingSource, /input\.value = ""/);
 assert.match(messagingSource, /appendPendingAssistantMessage/);
+assert.match(messagingSource, /postWorkspaceChatStream/);
+assert.match(messagingSource, /chatStore\.patchMessage/);
 assert.match(messagingSource, /chatStore\.replaceMessage/);
 assert.match(messagingSource, /input\.value = text/);
 

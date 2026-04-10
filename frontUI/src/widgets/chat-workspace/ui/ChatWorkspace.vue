@@ -85,12 +85,28 @@ const traceTitleMap = {
   citations: "agentTraceStepCitations",
 };
 
+const traceStatusMap = {
+  done: "agentTraceStatusDone",
+  success: "agentTraceStatusDone",
+  completed: "agentTraceStatusDone",
+  running: "agentTraceStatusRunning",
+  in_progress: "agentTraceStatusRunning",
+  pending: "agentTraceStatusPending",
+  queued: "agentTraceStatusPending",
+  failed: "agentTraceStatusFailed",
+  error: "agentTraceStatusFailed",
+};
+
 const traceTitle = (step) => {
   const key = traceTitleMap[String(step?.id || "").trim()];
   return key ? uiStore.t(key) : step?.title || step?.id || "-";
 };
 
-const traceStatus = (step) => String(step?.status || "done").replaceAll("_", " ");
+const traceStatus = (step) => {
+  const rawStatus = String(step?.status || "done").trim().toLowerCase();
+  const key = traceStatusMap[rawStatus];
+  return key ? uiStore.t(key) : rawStatus.replaceAll("_", " ");
+};
 
 const traceDetailsEntries = (step) =>
   step?.details && typeof step.details === "object" ? Object.entries(step.details) : [];

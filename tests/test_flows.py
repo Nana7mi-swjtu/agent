@@ -242,6 +242,7 @@ def test_workspace_context_includes_trace_visualization_flags(client, app, db_se
     payload = context_response.get_json()["data"]
     assert payload["agentTraceVisualizationEnabled"] is True
     assert payload["agentTraceDebugDetailsEnabled"] is True
+    assert payload["chatStreamingEnabled"] is True
 
 
 def test_workspace_chat_requires_role(client, db_session, monkeypatch):
@@ -266,6 +267,128 @@ def test_workspace_chat_requires_role(client, db_session, monkeypatch):
     payload = response.get_json()
     assert payload["data"]["role"] == "regulator"
     assert payload["data"]["reply"] == "agent generated response"
+
+
+def test_workspace_chat_includes_grouped_sources(client, db_session, monkeypatch):
+    user = User(email="chat-sources@example.com", nickname="ChatSources", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    monkeypatch.setattr(
+        "app.workspace.routes.generate_reply_payload",
+        lambda **kwargs: {
+            "reply": "agent generated response",
+            "citations": [{"source": "annual-report.pdf", "chunk_id": "chunk-1", "page": 3, "section": "风险"}],
+            "sources": [
+                {
+                    "id": "rag:annual-report.pdf",
+                    "kind": "rag",
+                    "title": "annual-report.pdf",
+                    "source": "annual-report.pdf",
+                    "pages": [3],
+                    "sections": ["风险"],
+                    "chunkIds": ["chunk-1"],
+                    "citationCount": 1,
+                },
+                {
+                    "id": "web:https://example.com/boe",
+                    "kind": "web",
+                    "title": "京东方公司概况",
+                    "source": "https://example.com/boe",
+                    "url": "https://example.com/boe",
+                    "domain": "example.com",
+                },
+            ],
+            "noEvidence": False,
+        },
+    )
+
+    response = client.post("/api/workspace/chat", json={"message": "请总结"}, headers=headers)
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["sources"][0]["title"] == "annual-report.pdf"
+    assert payload["sources"][1]["url"] == "https://example.com/boe"
+
+
+def test_workspace_chat_stream_emits_deltas_and_final_metadata(client, app, db_session, monkeypatch):
+    user = User(email="chat-stream@example.com", nickname="ChatStream", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    app.config["AGENT_TRACE_VISUALIZATION_ENABLED"] = True
+    monkeypatch.setattr(
+        "app.workspace.routes.generate_reply_payload",
+        lambda **kwargs: {
+            "reply": "这是一个流式回复。",
+            "citations": [{"source": "annual-report.pdf", "chunk_id": "chunk-1", "page": 3, "section": "风险"}],
+            "sources": [
+                {
+                    "id": "rag:annual-report.pdf",
+                    "kind": "rag",
+                    "title": "annual-report.pdf",
+                    "source": "annual-report.pdf",
+                    "pages": [3],
+                    "sections": ["风险"],
+                    "chunkIds": ["chunk-1"],
+                    "citationCount": 1,
+                }
+            ],
+            "noEvidence": False,
+            "trace": {"steps": [{"id": "planner", "status": "done"}]},
+        },
+    )
+
+    response = client.post("/api/workspace/chat/stream", json={"message": "请总结"}, headers=headers, buffered=True)
+    assert response.status_code == 200
+
+    events = [json.loads(line) for line in response.get_data(as_text=True).splitlines() if line.strip()]
+    assert events[0]["type"] == "started"
+    assert any(event["type"] == "delta" for event in events)
+    meta = next(event for event in events if event["type"] == "meta")
+    assert meta["sources"][0]["title"] == "annual-report.pdf"
+    assert meta["trace"]["steps"][0]["id"] == "planner"
+    assert events[-1]["type"] == "done"
+
+
+def test_grouped_sources_deduplicate_documents_and_preserve_web_links():
+    citations = [
+        {"source": "annual-report.pdf", "chunk_id": "chunk-1", "page": 3, "section": "风险"},
+        {"source": "annual-report.pdf", "chunk_id": "chunk-2", "page": 4, "section": "经营"},
+    ]
+    output = {
+        "search_result": {
+            "evidence": [
+                {
+                    "source_type": "web",
+                    "source": "https://Example.com/boe#fragment",
+                    "title": "京东方公司概况",
+                    "metadata": {"url": "https://Example.com/boe#fragment"},
+                },
+                {
+                    "source_type": "web",
+                    "source": "https://example.com/boe",
+                    "title": "",
+                    "metadata": {"url": "https://example.com/boe"},
+                },
+            ]
+        }
+    }
+
+    sources = agent_services._build_grouped_sources(output, citations)
+    assert len(sources) == 2
+    assert sources[0]["title"] == "annual-report.pdf"
+    assert sources[0]["pages"] == [3, 4]
+    assert sources[1]["kind"] == "web"
+    assert sources[1]["title"] == "京东方公司概况"
+    assert sources[1]["url"] == "https://example.com/boe"
 
 
 def test_workspace_chat_omits_trace_when_visualization_disabled(client, app, db_session, monkeypatch):
