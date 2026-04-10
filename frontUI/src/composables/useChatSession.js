@@ -3,22 +3,32 @@ import { storeToRefs } from "pinia";
 
 import { postWorkspaceChat, postWorkspaceChatWithContext } from "@/services/workspace";
 import {
+  deleteRagDocument,
   listRagDocuments,
   uploadRagDocument,
   getRagIndexJob,
   enqueueRagIndex,
   getRagDebugSnapshot,
+  reindexRagDocument,
 } from "@/services/rag";
 import { useChatStore } from "@/stores/chat";
 import { useUiStore } from "@/stores/ui";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { formatMessageTime } from "@/utils/time";
 
+const SUPPORTED_RAG_EXTENSIONS = [".pdf", ".docx", ".md", ".txt"];
+
+const isSupportedRagFile = (file) => {
+  const name = String(file?.name || "").trim().toLowerCase();
+  return SUPPORTED_RAG_EXTENSIONS.some((extension) => name.endsWith(extension));
+};
+
 export const useChatSession = () => {
   const uiStore = useUiStore();
   const chatStore = useChatStore();
   const workspaceStore = useWorkspaceStore();
-  const { selectedRole, systemPrompt, workspaceId, ragDebugEnabled } = storeToRefs(workspaceStore);
+  const { selectedRole, systemPrompt, workspaceId, ragDebugEnabled, agentTraceEnabled } =
+    storeToRefs(workspaceStore);
   const { sessions, activeSessionId, sending, error, activeSession } = storeToRefs(chatStore);
   const input = ref("");
   const ragUploading = ref(false);
@@ -30,6 +40,7 @@ export const useChatSession = () => {
   const chunkingStrategy = ref("paragraph");
   const chunkingAppliedText = ref("");
   const activeJobId = ref(null);
+  const ragActionDocumentId = ref(null);
 
   const selectedRoleName = computed(() =>
     selectedRole.value ? uiStore.getRoleDisplayName(selectedRole.value) : "",
@@ -122,6 +133,11 @@ export const useChatSession = () => {
 
   const uploadDocument = async (file) => {
     ragError.value = "";
+    if (!isSupportedRagFile(file)) {
+      ragStageText.value = uiStore.t("ragUploadFailed");
+      ragError.value = uiStore.t("ragUnsupportedFormat");
+      return { ok: false };
+    }
     ragUploading.value = true;
     uploadPercent.value = 0;
     ragStageText.value = uiStore.t("ragUploadPreparing");
@@ -176,6 +192,53 @@ export const useChatSession = () => {
     return { ok: true };
   };
 
+  const startDocumentIndex = async (documentId) => {
+    ragError.value = "";
+    ragActionDocumentId.value = Number(documentId);
+    ragStageText.value = uiStore.t("ragIndexPending");
+
+    const indexResult = await reindexRagDocument(documentId, workspaceId.value, {
+      strategy: chunkingStrategy.value,
+    });
+    if (!indexResult.ok) {
+      ragError.value = indexResult.data?.error || uiStore.t("sendFailed");
+      ragStageText.value = uiStore.t("ragIndexFailed");
+      await loadDocuments();
+      ragActionDocumentId.value = null;
+      return { ok: false };
+    }
+
+    const jobId = indexResult.data?.data?.jobId;
+    if (typeof jobId === "number" && jobId > 0) {
+      await pollJobUntilDone(jobId);
+    } else {
+      await loadDocuments();
+      ragStageText.value = uiStore.t("ragIndexUnknown");
+    }
+    ragActionDocumentId.value = null;
+    return { ok: true };
+  };
+
+  const removeDocument = async (documentId) => {
+    ragError.value = "";
+    ragActionDocumentId.value = Number(documentId);
+    ragStageText.value = uiStore.t("ragDeleteRunning");
+
+    const result = await deleteRagDocument(documentId, workspaceId.value);
+    if (!result.ok) {
+      ragError.value = result.data?.error || uiStore.t("sendFailed");
+      ragStageText.value = uiStore.t("ragDeleteFailed");
+      await loadDocuments();
+      ragActionDocumentId.value = null;
+      return { ok: false };
+    }
+
+    await loadDocuments();
+    ragStageText.value = uiStore.t("ragDeleteDone");
+    ragActionDocumentId.value = null;
+    return { ok: true };
+  };
+
   const onWorkspaceScopeChanged = async () => {
     stopPollingJob();
     ragUploading.value = false;
@@ -184,6 +247,7 @@ export const useChatSession = () => {
     ragError.value = "";
     chunkingAppliedText.value = "";
     ragDebugSnapshot.value = null;
+    ragActionDocumentId.value = null;
     await loadDocuments();
   };
 
@@ -232,6 +296,7 @@ export const useChatSession = () => {
       citations: result.data?.data?.citations || [],
       noEvidence: Boolean(result.data?.data?.noEvidence),
       debug: result.data?.data?.debug || null,
+      trace: result.data?.data?.trace || null,
     });
     workspaceStore.systemPrompt = result.data?.data?.systemPrompt || workspaceStore.systemPrompt;
 
@@ -265,11 +330,15 @@ export const useChatSession = () => {
     ragError,
     ragDocuments,
     ragDebugEnabled,
+    agentTraceEnabled,
     ragDebugSnapshot,
     chunkingStrategy,
     chunkingAppliedText,
+    ragActionDocumentId,
     loadDocuments,
     uploadDocument,
+    startDocumentIndex,
+    removeDocument,
     loadRagDebugSnapshot,
     send,
     setActiveSession: chatStore.setActiveSession,

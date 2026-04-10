@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -52,11 +52,17 @@ class RagDocument(Base):
     file_extension: Mapped[str] = mapped_column(String(16), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
     storage_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    derived_text_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="uploaded", index=True)
     error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     embedding_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     embedding_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     embedding_dimension: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    loader_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    loader_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    extraction_method: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ocr_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ocr_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     chunk_strategy: Mapped[str | None] = mapped_column(String(32), nullable=True)
     chunk_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     chunk_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -71,6 +77,7 @@ class RagDocument(Base):
         nullable=False,
     )
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    derived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     chunks: Mapped[list["RagChunk"]] = relationship(
@@ -81,6 +88,36 @@ class RagDocument(Base):
         back_populates="document",
         cascade="all, delete-orphan",
     )
+
+
+class BankruptcyAnalysisRecord(Base):
+    __tablename__ = "bankruptcy_analysis_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_extension: Mapped[str] = mapped_column(String(16), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    enterprise_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="uploaded", index=True)
+    error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    plot_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    analyzed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class RagChunk(Base):

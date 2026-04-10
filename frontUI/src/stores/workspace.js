@@ -18,6 +18,10 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   const systemPrompt = ref("");
   const workspaceId = ref("default");
   const ragDebugEnabled = ref(parseBool(import.meta.env.VITE_RAG_DEBUG_VISUALIZATION_ENABLED, false));
+  const agentTraceEnabled = ref(parseBool(import.meta.env.VITE_AGENT_TRACE_VISUALIZATION_ENABLED, false));
+  const agentTraceDebugDetailsEnabled = ref(
+    parseBool(import.meta.env.VITE_AGENT_TRACE_DEBUG_DETAILS_ENABLED, false),
+  );
 
   const applyContext = (data = {}) => {
     roles.value = Array.isArray(data.roles) ? data.roles : [];
@@ -25,6 +29,11 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     systemPrompt.value = data.systemPrompt || "";
     workspaceId.value = String(data.workspaceId || "default");
     ragDebugEnabled.value = parseBool(data.ragDebugVisualizationEnabled, ragDebugEnabled.value);
+    agentTraceEnabled.value = parseBool(data.agentTraceVisualizationEnabled, agentTraceEnabled.value);
+    agentTraceDebugDetailsEnabled.value = parseBool(
+      data.agentTraceDebugDetailsEnabled,
+      agentTraceDebugDetailsEnabled.value,
+    );
     ready.value = true;
   };
 
@@ -43,6 +52,11 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     systemPrompt.value = "";
     workspaceId.value = "default";
     ragDebugEnabled.value = parseBool(import.meta.env.VITE_RAG_DEBUG_VISUALIZATION_ENABLED, false);
+    agentTraceEnabled.value = parseBool(import.meta.env.VITE_AGENT_TRACE_VISUALIZATION_ENABLED, false);
+    agentTraceDebugDetailsEnabled.value = parseBool(
+      import.meta.env.VITE_AGENT_TRACE_DEBUG_DETAILS_ENABLED,
+      false,
+    );
   };
 
   return {
@@ -52,6 +66,8 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     systemPrompt,
     workspaceId,
     ragDebugEnabled,
+    agentTraceEnabled,
+    agentTraceDebugDetailsEnabled,
     applyContext,
     setContextReady,
     setActiveSession,

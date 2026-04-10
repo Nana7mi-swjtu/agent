@@ -8,6 +8,7 @@ import { useWorkspaceStore } from "@/stores/workspace";
 import ForgotPasswordView from "@/views/auth/ForgotPasswordView.vue";
 import LoginView from "@/views/auth/LoginView.vue";
 import RegisterView from "@/views/auth/RegisterView.vue";
+import AppBankruptcyAnalysisView from "@/views/app/AppBankruptcyAnalysisView.vue";
 import AppHomeView from "@/views/app/AppHomeView.vue";
 import AppChatView from "@/views/app/AppChatView.vue";
 import AppProfileView from "@/views/app/AppProfileView.vue";
@@ -23,6 +24,7 @@ const routes = [
     children: [
       { path: "app", component: AppHomeView },
       { path: "chat", component: AppChatView },
+      { path: "bankruptcy-analysis", component: AppBankruptcyAnalysisView },
       { path: "profile", component: AppProfileView },
     ],
     meta: { public: false },

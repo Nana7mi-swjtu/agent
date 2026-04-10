@@ -4,33 +4,56 @@ from langgraph.graph import END, START, StateGraph
 
 from .nodes import (
     answer_with_citations_node,
-    chat_agent_node,
-    decide_rag_node,
-    rerank_node,
-    retrieve_node,
+    clarify_node,
+    compose_answer_node,
+    mcp_subagent_node,
+    plan_route_node,
+    route_after_mcp,
+    route_after_plan,
+    route_after_search,
+    search_subagent_node,
 )
 from .state import AgentState
 
 
 def build_graph():
     builder = StateGraph(AgentState)
-    builder.add_node("decide_rag", decide_rag_node)
-    builder.add_node("retrieve", retrieve_node)
-    builder.add_node("rerank", rerank_node)
-    builder.add_node("chat_agent", chat_agent_node)
+    builder.add_node("plan_route", plan_route_node)
+    builder.add_node("clarify", clarify_node)
+    builder.add_node("search_subagent", search_subagent_node)
+    builder.add_node("mcp_subagent", mcp_subagent_node)
+    builder.add_node("compose_answer", compose_answer_node)
     builder.add_node("answer_with_citations", answer_with_citations_node)
 
-    builder.add_edge(START, "decide_rag")
+    builder.add_edge(START, "plan_route")
     builder.add_conditional_edges(
-        "decide_rag",
-        lambda state: state.get("rag_decision", "skip"),
+        "plan_route",
+        route_after_plan,
         {
-            "retrieve": "retrieve",
-            "skip": "chat_agent",
+            "clarify": "clarify",
+            "search_subagent": "search_subagent",
+            "mcp_subagent": "mcp_subagent",
+            "compose_answer": "compose_answer",
         },
     )
-    builder.add_edge("retrieve", "rerank")
-    builder.add_edge("rerank", "chat_agent")
-    builder.add_edge("chat_agent", "answer_with_citations")
+    builder.add_conditional_edges(
+        "search_subagent",
+        route_after_search,
+        {
+            "clarify": "clarify",
+            "mcp_subagent": "mcp_subagent",
+            "compose_answer": "compose_answer",
+        },
+    )
+    builder.add_conditional_edges(
+        "mcp_subagent",
+        route_after_mcp,
+        {
+            "clarify": "clarify",
+            "compose_answer": "compose_answer",
+        },
+    )
+    builder.add_edge("clarify", END)
+    builder.add_edge("compose_answer", "answer_with_citations")
     builder.add_edge("answer_with_citations", END)
     return builder.compile()

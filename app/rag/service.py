@@ -6,15 +6,17 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from flask import current_app
 from sqlalchemy import func
 
 from ..db import session_scope
 from ..models import RagChunk, RagDocument, RagIndexJob
+from .assets import cleanup_artifact, create_derived_asset, create_original_asset, uploads_root
 from .errors import RAGAuthorizationError, RAGContractError, RAGValidationError
-from .pipeline.indexer import parse_and_chunk_document
+from .fileloaders import load_source_document
+from .fileloaders.canonical import parse_canonical_text
+from .pipeline.indexer import chunk_document_blocks
 from .pipeline.chunking import build_chunking_applied, resolve_chunking_plan
 from .providers.registry import (
     get_chunker,
@@ -28,8 +30,11 @@ from .repository import (
     create_document,
     create_index_job,
     create_query_log,
+    delete_document_chunks,
+    ensure_document_deletable,
     get_document_for_scope,
     get_index_job_for_scope,
+    list_documents_for_scope,
     replace_document_chunks,
     set_document_status,
     set_index_job_status,
@@ -47,12 +52,6 @@ def _ensure_executor() -> concurrent.futures.ThreadPoolExecutor:
             max_workers=max(1, int(current_app.config.get("RAG_INDEX_MAX_WORKERS", 2)))
         )
     return _executor
-
-
-def _rag_upload_dir() -> Path:
-    directory = Path(current_app.root_path).parent / str(current_app.config["RAG_UPLOAD_DIR"])
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
 
 
 def _allowed_extensions() -> set[str]:
@@ -173,6 +172,12 @@ def _document_payload(document: RagDocument, *, chunk_count: int) -> dict[str, A
         "embeddingModel": document.embedding_model,
         "embeddingVersion": document.embedding_version,
         "embeddingDimension": document.embedding_dimension,
+        "loaderType": document.loader_type,
+        "loaderVersion": document.loader_version,
+        "extractionMethod": document.extraction_method,
+        "ocrUsed": bool(document.ocr_used),
+        "ocrProvider": document.ocr_provider,
+        "derivedAt": document.derived_at.isoformat() if document.derived_at else None,
         "chunkCount": int(chunk_count),
         "chunkingApplied": {
             "requestedStrategy": document.chunk_strategy or "paragraph",
@@ -205,6 +210,88 @@ def _query_chunk_counts(*, db, user_id: int, workspace_id: str, document_ids: li
     return {int(document_id): int(count) for document_id, count in rows}
 
 
+def _clear_document_index_fields(document: RagDocument) -> None:
+    document.embedding_model = None
+    document.embedding_version = None
+    document.embedding_dimension = None
+    document.indexed_at = None
+
+
+def _delete_document_vectors(*, workspace_id: str, document_id: int) -> None:
+    vector_store = get_vector_store()
+    vector_store.delete_document_chunks(
+        workspace_id=workspace_id,
+        collection_name=_collection_name_for_workspace(workspace_id),
+        document_id=document_id,
+    )
+
+
+def _delete_document_file(document: RagDocument) -> None:
+    expected_root = uploads_root()
+    cleanup_artifact(document.storage_path, expected_root=expected_root)
+    cleanup_artifact(document.derived_text_path, expected_root=expected_root)
+
+
+def _read_canonical_blocks(document: RagDocument) -> list:
+    derived_path = Path(str(document.derived_text_path or "")).expanduser()
+    if not derived_path.exists():
+        raise RAGValidationError("canonical text asset is missing")
+    raw = derived_path.read_text(encoding="utf-8")
+    blocks = parse_canonical_text(raw)
+    if not blocks:
+        raise RAGValidationError("canonical text asset is empty")
+    return blocks
+
+
+def _persist_derived_document(*, user_id: int, workspace_id: str, document_id: int, loaded_document) -> list:
+    derived_path = create_derived_asset(user_id=user_id, workspace_id=workspace_id, document_id=document_id)
+    derived_path.write_text(str(loaded_document.derived_text or ""), encoding="utf-8")
+    with session_scope() as db:
+        document = get_document_for_scope(db=db, document_id=document_id, user_id=user_id, workspace_id=workspace_id)
+        document.derived_text_path = str(derived_path)
+        document.loader_type = loaded_document.loader_type
+        document.loader_version = loaded_document.loader_version
+        document.extraction_method = loaded_document.extraction_method
+        document.ocr_used = 1 if loaded_document.ocr_used else 0
+        document.ocr_provider = loaded_document.ocr_provider
+        document.derived_at = datetime.utcnow()
+    return loaded_document.blocks
+
+
+def _load_or_build_canonical_blocks(*, user_id: int, workspace_id: str, document_id: int) -> list:
+    with session_scope() as db:
+        document = get_document_for_scope(db=db, document_id=document_id, user_id=user_id, workspace_id=workspace_id)
+        source_name = document.source_name
+        file_extension = document.file_extension
+        storage_path = document.storage_path
+        has_derived = bool(str(document.derived_text_path or "").strip())
+
+    if has_derived:
+        with session_scope() as db:
+            document = get_document_for_scope(db=db, document_id=document_id, user_id=user_id, workspace_id=workspace_id)
+            try:
+                return _read_canonical_blocks(document)
+            except RAGValidationError:
+                logger.warning(
+                    "RAG canonical asset invalid; rebuilding from source",
+                    extra={"document_id": document_id, "workspace_id": workspace_id},
+                )
+
+    loaded_document = load_source_document(
+        path=Path(str(storage_path)),
+        extension=file_extension,
+        source_name=source_name,
+    )
+    if not loaded_document.blocks:
+        raise RAGValidationError("document produced no canonical text blocks")
+    return _persist_derived_document(
+        user_id=user_id,
+        workspace_id=workspace_id,
+        document_id=document_id,
+        loaded_document=loaded_document,
+    )
+
+
 def upload_document(*, user_id: int, workspace_id: str, file_storage, chunking: ChunkingRequest | None = None):
     workspace = _workspace_from_request(workspace_id)
     if not file_storage or not file_storage.filename:
@@ -219,8 +306,7 @@ def upload_document(*, user_id: int, workspace_id: str, file_storage, chunking: 
         raise RAGValidationError(f"unsupported format; allowed formats: {allowed}")
 
     plan = _chunking_plan_from_request(chunking)
-    stored_name = f"{uuid4().hex}.{extension}"
-    target_path = _rag_upload_dir() / stored_name
+    target_path = create_original_asset(user_id=user_id, workspace_id=workspace, original_name=original_name)
     file_storage.save(target_path)
 
     source_name = original_name
@@ -279,6 +365,8 @@ def enqueue_index_job(
     app = current_app._get_current_object()
     with session_scope() as db:
         document = get_document_for_scope(db=db, document_id=document_id, user_id=user_id, workspace_id=workspace)
+        if document.status == "indexing":
+            raise RAGValidationError("document is already indexing")
         set_document_status(document=document, status="indexing")
         document.chunk_strategy = plan.request.strategy
         job = create_index_job(db=db, document=document, requested_chunk_strategy=plan.request.strategy)
@@ -301,6 +389,51 @@ def enqueue_index_job(
     return job_payload
 
 
+def reindex_document(
+    *,
+    user_id: int,
+    workspace_id: str,
+    document_id: int,
+    chunking: ChunkingRequest | None = None,
+) -> dict:
+    return enqueue_index_job(
+        user_id=user_id,
+        workspace_id=workspace_id,
+        document_id=document_id,
+        chunking=chunking,
+    )
+
+
+def delete_document(*, user_id: int, workspace_id: str, document_id: int) -> dict:
+    workspace = _workspace_from_request(workspace_id)
+    with session_scope() as db:
+        document = get_document_for_scope(db=db, document_id=document_id, user_id=user_id, workspace_id=workspace)
+        ensure_document_deletable(document=document)
+        document_payload = {
+            "id": int(document.id),
+            "workspaceId": document.workspace_id,
+            "status": "deleted",
+            "sourceName": document.source_name,
+        }
+        delete_document_chunks(db=db, document=document)
+        _clear_document_index_fields(document)
+        set_document_status(document=document, status="deleted")
+
+    _delete_document_vectors(workspace_id=workspace, document_id=document_id)
+
+    with session_scope() as db:
+        document = get_document_for_scope(
+            db=db,
+            document_id=document_id,
+            user_id=user_id,
+            workspace_id=workspace,
+            include_deleted=True,
+        )
+        _delete_document_file(document)
+
+    return document_payload
+
+
 def _run_index_job(
     app,
     job_id: int,
@@ -311,6 +444,7 @@ def _run_index_job(
     started = datetime.utcnow()
     chunk_count = 0
     chunking_applied = None
+    document_id: int | None = None
     try:
         with app.app_context():
             with session_scope() as db:
@@ -321,19 +455,25 @@ def _run_index_job(
                     user_id=user_id,
                     workspace_id=workspace_id,
                 )
+                document_id = int(document.id)
+                source_name = document.source_name
                 set_index_job_status(job=job, status="running")
                 set_document_status(document=document, status="indexing")
 
+            canonical_blocks = _load_or_build_canonical_blocks(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                document_id=document_id,
+            )
             chunker = get_chunker()
             semantic_provider = get_semantic_chunking_provider()
             embedder = get_embedder()
             vector_store = get_vector_store()
             collection_name = _collection_name_for_workspace(workspace_id)
-            chunk_payloads, chunking_applied = parse_and_chunk_document(
-                file_path=document.storage_path,
-                extension=document.file_extension,
-                document_id=document.id,
-                source_name=document.source_name,
+            chunk_payloads, chunking_applied = chunk_document_blocks(
+                blocks=canonical_blocks,
+                document_id=document_id,
+                source_name=source_name,
                 chunker=chunker,
                 semantic_provider=semantic_provider,
                 chunking_request=chunking,
@@ -343,7 +483,7 @@ def _run_index_job(
             for payload in chunk_payloads:
                 payload.metadata["user_id"] = user_id
                 payload.metadata["workspace_id"] = workspace_id
-                payload.metadata["document_id"] = document.id
+                payload.metadata["document_id"] = document_id
                 if chunking_applied is not None:
                     payload.metadata["chunk_provider"] = chunking_applied.provider
                     payload.metadata["chunk_model"] = chunking_applied.model
@@ -352,6 +492,11 @@ def _run_index_job(
                 if len(vector) != embedder.dimension:
                     raise RAGValidationError("embedding dimension mismatch during indexing")
 
+            vector_store.delete_document_chunks(
+                workspace_id=workspace_id,
+                collection_name=collection_name,
+                document_id=document_id,
+            )
             vector_store.upsert_chunks(
                 workspace_id=workspace_id,
                 collection_name=collection_name,
@@ -397,10 +542,18 @@ def _run_index_job(
                     chunk_version=(chunking_applied.version if chunking_applied else None),
                     chunk_fallback_used=(chunking_applied.fallback_used if chunking_applied else False),
                     chunk_fallback_reason=(chunking_applied.fallback_reason if chunking_applied else None),
-                )
+                    )
     except Exception as exc:
         logger.exception("RAG indexing job failed", extra={"job_id": job_id})
         with app.app_context():
+            if document_id is not None:
+                try:
+                    _delete_document_vectors(workspace_id=workspace_id, document_id=document_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to clear document vectors after indexing failure",
+                        extra={"job_id": job_id, "document_id": document_id},
+                    )
             with session_scope() as db:
                 try:
                     job = get_index_job_for_scope(db=db, job_id=job_id, user_id=user_id, workspace_id=workspace_id)
@@ -410,6 +563,8 @@ def _run_index_job(
                         user_id=user_id,
                         workspace_id=workspace_id,
                     )
+                    delete_document_chunks(db=db, document=document)
+                    _clear_document_index_fields(document)
                     set_document_status(document=document, status="failed", error_message=str(exc))
                     set_index_job_status(
                         job=job,
@@ -602,12 +757,7 @@ def build_cited_response(*, base_reply: str, hits: list[RetrievalHit], knowledge
 def list_documents(*, user_id: int, workspace_id: str) -> list[dict]:
     workspace = _workspace_from_request(workspace_id)
     with session_scope() as db:
-        docs = (
-            db.query(RagDocument)
-            .filter(RagDocument.user_id == user_id, RagDocument.workspace_id == workspace)
-            .order_by(RagDocument.created_at.desc())
-            .all()
-        )
+        docs = list_documents_for_scope(db=db, user_id=user_id, workspace_id=workspace)
         document_ids = [int(doc.id) for doc in docs]
         chunk_count_map = _query_chunk_counts(db=db, user_id=user_id, workspace_id=workspace, document_ids=document_ids)
         return [_document_payload(doc, chunk_count=chunk_count_map.get(int(doc.id), 0)) for doc in docs]
@@ -617,13 +767,7 @@ def build_workspace_debug_snapshot(*, user_id: int, workspace_id: str, limit: in
     workspace = _workspace_from_request(workspace_id)
     safe_limit = max(1, min(int(limit), 50))
     with session_scope() as db:
-        documents = (
-            db.query(RagDocument)
-            .filter(RagDocument.user_id == user_id, RagDocument.workspace_id == workspace)
-            .order_by(RagDocument.created_at.desc())
-            .limit(safe_limit)
-            .all()
-        )
+        documents = list_documents_for_scope(db=db, user_id=user_id, workspace_id=workspace)[:safe_limit]
         document_ids = [int(doc.id) for doc in documents]
         chunk_count_map = _query_chunk_counts(db=db, user_id=user_id, workspace_id=workspace, document_ids=document_ids)
         document_payloads = [
