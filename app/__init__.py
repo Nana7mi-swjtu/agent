@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
+import time
+import uuid
 from pathlib import Path
 
-from flask import Flask, request, send_from_directory, session
+from flask import Flask, g, got_request_exception, request, send_from_directory, session
 from flask_cors import CORS
 from flask_session import Session
+from werkzeug.exceptions import HTTPException
 
 from .config import Config
 from .db import init_db
@@ -15,8 +18,10 @@ from .bankruptcy.routes import bankruptcy_bp
 from .rag.routes import rag_bp
 from .user.routes import user_bp
 from .workspace.routes import workspace_bp
+from .logging_utils import ACCESS_LOGGER_NAME, REQUEST_ID_HEADER, bind_log_context, clear_log_context, configure_logging
 
 logger = logging.getLogger(__name__)
+access_logger = logging.getLogger(ACCESS_LOGGER_NAME)
 
 
 def _normalize_cors_origins(raw_origins: object) -> tuple[str, ...]:
@@ -29,6 +34,64 @@ def _normalize_cors_origins(raw_origins: object) -> tuple[str, ...]:
     raise ValueError("CORS_ALLOWED_ORIGINS must be a comma-separated string or sequence of origins")
 
 
+def _request_id() -> str:
+    inbound = str(request.headers.get(REQUEST_ID_HEADER, "") or "").strip()
+    if inbound and len(inbound) <= 128:
+        return inbound
+    return str(uuid.uuid4())
+
+
+def _request_workspace_id() -> str | None:
+    raw = request.args.get("workspaceId")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    raw = request.form.get("workspaceId")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    if request.mimetype == "application/json":
+        payload = request.get_json(silent=True)
+        if isinstance(payload, dict):
+            workspace_id = payload.get("workspaceId")
+            if isinstance(workspace_id, str) and workspace_id.strip():
+                return workspace_id.strip()
+    return None
+
+
+def _current_request_user_id() -> int | None:
+    user_id = session.get("user_id")
+    if isinstance(user_id, int):
+        return user_id
+    return None
+
+
+def _bind_request_log_context() -> None:
+    bind_log_context(
+        request_id=getattr(g, "request_id", None),
+        user_id=_current_request_user_id(),
+        workspace_id=_request_workspace_id(),
+        remote_addr=(request.headers.get("X-Forwarded-For") or request.remote_addr or "").split(",")[0].strip() or None,
+        method=request.method,
+        path=request.path,
+    )
+
+
+def _emit_access_log(status_code: int, response_bytes: int | None = None) -> None:
+    _bind_request_log_context()
+    started_at = getattr(g, "request_started_at", None)
+    latency_ms = int((time.perf_counter() - started_at) * 1000) if isinstance(started_at, float) else 0
+    access_logger.info(
+        "HTTP request completed",
+        extra={
+            "event": "http.request.completed",
+            "status_code": int(status_code),
+            "latency_ms": latency_ms,
+            "response_bytes": response_bytes,
+            "user_agent": request.headers.get("User-Agent", ""),
+        },
+    )
+    g.access_logged = True
+
+
 def create_app(config_overrides: dict | None = None) -> Flask:
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     docs_dir = Path(__file__).resolve().parent.parent / "docs"
@@ -36,6 +99,7 @@ def create_app(config_overrides: dict | None = None) -> Flask:
     app.config.from_object(Config)
     if config_overrides:
         app.config.update(config_overrides)
+    app.extensions["logging"] = configure_logging(app.config, project_root=Path(__file__).resolve().parent.parent)
 
     ensure_database_exists(app.config["DATABASE_URL"])
 
@@ -85,6 +149,40 @@ def create_app(config_overrides: dict | None = None) -> Flask:
         )
 
     avatar_url = app.config["AVATAR_BASE_URL"].rstrip("/")
+
+    def _log_unhandled_exception(sender, exception, **extra):
+        _bind_request_log_context()
+        logger.error(
+            "Unhandled request exception",
+            exc_info=(type(exception), exception, exception.__traceback__),
+            extra={"event": "http.request.unhandled_exception", "status_code": 500},
+        )
+
+    got_request_exception.connect(_log_unhandled_exception, app, weak=False)
+
+    @app.before_request
+    def bind_request_logging_context():
+        g.request_id = _request_id()
+        g.request_started_at = time.perf_counter()
+        g.access_logged = False
+        _bind_request_log_context()
+
+    @app.after_request
+    def finalize_request_logging(response):
+        response.headers[REQUEST_ID_HEADER] = getattr(g, "request_id", "")
+        if not getattr(g, "access_logged", False):
+            response_bytes = response.calculate_content_length()
+            _emit_access_log(response.status_code, response_bytes)
+        return response
+
+    @app.teardown_request
+    def clear_request_logging_context(exc):
+        try:
+            if exc is not None and not getattr(g, "access_logged", False):
+                status_code = exc.code if isinstance(exc, HTTPException) else 500
+                _emit_access_log(status_code)
+        finally:
+            clear_log_context()
 
     @app.get(f"{avatar_url}/<path:filename>")
     def uploaded_avatar(filename: str):

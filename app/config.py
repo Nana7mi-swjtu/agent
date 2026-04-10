@@ -36,6 +36,12 @@ def _default_dev_origins_from_port(port: str) -> str:
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")
     DATABASE_URL = os.getenv("DATABASE_URL", "mysql+pymysql://root:123456@127.0.0.1:3306/app")
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+    LOG_DIR = os.getenv("LOG_DIR", "logs").strip()
+    LOG_MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", str(10 * 1024 * 1024)))
+    LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "5"))
+    LOG_SERVICE_NAME = os.getenv("LOG_SERVICE_NAME", "agent").strip()
+    LOG_ENVIRONMENT = os.getenv("LOG_ENVIRONMENT", os.getenv("APP_ENV", "development")).strip()
 
     SESSION_TYPE = os.getenv("SESSION_TYPE", "filesystem")
     SESSION_FILE_DIR = os.getenv("SESSION_FILE_DIR", "sessions")
