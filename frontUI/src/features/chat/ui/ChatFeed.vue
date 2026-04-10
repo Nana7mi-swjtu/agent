@@ -1,7 +1,9 @@
 <script setup>
+import { nextTick, onMounted, ref, watch } from "vue";
+
 import ChatMessageItem from "@/features/chat/ui/ChatMessageItem.vue";
 
-defineProps({
+const props = defineProps({
   activeSession: {
     type: Object,
     default: null,
@@ -53,10 +55,62 @@ const isGroupedMessage = (index, messageList) =>
   && !messageList[index - 1]?.pending
   && !messageList[index]?.pending
   && messageList[index - 1]?.from === messageList[index]?.from;
+
+const feedElement = ref(null);
+const autoFollow = ref(true);
+
+const isNearBottom = () => {
+  const element = feedElement.value;
+  if (!element) return true;
+  return element.scrollHeight - element.scrollTop - element.clientHeight < 72;
+};
+
+const scrollToBottom = async (force = false) => {
+  await nextTick();
+  const element = feedElement.value;
+  if (!element || (!force && !autoFollow.value)) return;
+  element.scrollTop = element.scrollHeight;
+};
+
+const handleScroll = () => {
+  autoFollow.value = isNearBottom();
+};
+
+const jumpToLatest = async () => {
+  autoFollow.value = true;
+  await scrollToBottom(true);
+};
+
+watch(
+  () => props.activeSession?.id,
+  async () => {
+    autoFollow.value = true;
+    await scrollToBottom(true);
+  },
+  { immediate: true },
+);
+
+watch(
+  () => props.activeSession?.messages?.length || 0,
+  async () => {
+    await scrollToBottom();
+  },
+);
+
+watch(
+  () => props.activeSession?.messages?.at(-1)?.text || "",
+  async () => {
+    await scrollToBottom();
+  },
+);
+
+onMounted(async () => {
+  await scrollToBottom(true);
+});
 </script>
 
 <template>
-  <div class="dc-feed">
+  <div ref="feedElement" class="dc-feed" @scroll="handleScroll">
     <div v-if="!activeSession || !activeSession.messages.length" class="feed-welcome">
       <h2># {{ channelName }}</h2>
       <p>{{ uiStore.t("inputPlaceholder") }}</p>
@@ -76,11 +130,21 @@ const isGroupedMessage = (index, messageList) =>
       :trace-status="traceStatus"
       :trace-details-entries="traceDetailsEntries"
     />
+
+    <button
+      v-if="activeSession?.messages?.length && !autoFollow"
+      type="button"
+      class="jump-latest-btn"
+      @click="jumpToLatest"
+    >
+      {{ uiStore.t("chatJumpLatest") }}
+    </button>
   </div>
 </template>
 
 <style scoped>
 .dc-feed {
+  position: relative;
   flex: 1;
   overflow-y: auto;
   padding: 18px 0 6px;
@@ -106,5 +170,23 @@ const isGroupedMessage = (index, messageList) =>
   margin: 0;
   color: var(--text-muted);
   font-size: 15px;
+}
+
+.jump-latest-btn {
+  position: sticky;
+  align-self: flex-end;
+  right: 24px;
+  bottom: 16px;
+  margin: auto 24px 12px auto;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid rgba(47, 107, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
 }
 </style>

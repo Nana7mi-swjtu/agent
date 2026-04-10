@@ -69,6 +69,16 @@ export const useChatStore = defineStore("chat", () => {
     return true;
   };
 
+  const patchMessage = (messageId, patch) => {
+    if (!activeSession.value) return false;
+    const targetId = String(messageId || "");
+    const message = activeSession.value.messages.find((item) => item.id === targetId);
+    if (!message) return false;
+    Object.assign(message, normalizeChatMessage({ ...message, ...patch, id: targetId }));
+    activeSession.value.updatedAt = new Date().toISOString();
+    return true;
+  };
+
   const removeMessage = (messageId) => {
     if (!activeSession.value) return false;
     const targetId = String(messageId || "");
@@ -162,6 +172,7 @@ export const useChatStore = defineStore("chat", () => {
     ensureSession,
     appendMessage,
     replaceMessage,
+    patchMessage,
     removeMessage,
     appendPendingAssistantMessage,
     setSessionScope,

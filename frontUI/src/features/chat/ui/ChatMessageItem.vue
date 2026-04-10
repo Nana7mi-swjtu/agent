@@ -1,7 +1,12 @@
 <script setup>
 import AgentTracePanel from "@/features/chat/ui/AgentTracePanel.vue";
 import RagMessageDebug from "@/features/chat/ui/RagMessageDebug.vue";
-import { getMessageRagDebug, getMessageTraceSteps } from "@/entities/chat/lib/message";
+import {
+  formatSourceMeta,
+  getMessageRagDebug,
+  getMessageSources,
+  getMessageTraceSteps,
+} from "@/entities/chat/lib/message";
 import { useUiStore } from "@/shared/model/ui-store";
 import MarkdownContent from "@/shared/ui/MarkdownContent.vue";
 
@@ -52,24 +57,19 @@ const uiStore = useUiStore();
 
 const ragDebugForMessage = (message) => getMessageRagDebug(message);
 const traceStepsForMessage = (message) => getMessageTraceSteps(message);
+const sourcesForMessage = (message) => getMessageSources(message);
 const showGroundingMeta = (message) =>
   message?.from === "agent" &&
   (
     Boolean(message?.noEvidence)
+    || sourcesForMessage(message).length > 0
     || (Array.isArray(message?.citations) && message.citations.length > 0)
     || traceStepsForMessage(message).length > 0
     || Boolean(ragDebugForMessage(message))
   );
 
-const citationLabel = (citation) => {
-  if (!citation || typeof citation !== "object") return "-";
-  const labels = [String(citation.source || "-")];
-  if (citation.page != null) labels.push(`p.${citation.page}`);
-  if (citation.section) labels.push(String(citation.section));
-  return labels.join(" · ");
-};
-
 const isPendingAgent = (message) => message?.from === "agent" && Boolean(message?.pending);
+const sourceMeta = (source) => formatSourceMeta(source);
 </script>
 
 <template>
@@ -96,13 +96,21 @@ const isPendingAgent = (message) => message?.from === "agent" && Boolean(message
         </div>
         <MarkdownContent v-else :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
         <div v-if="message.from === 'agent' && message.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
-        <div v-if="message.from === 'agent' && !message.pending && message.citations?.length" class="agent-citations-panel">
-          <div class="agent-citations-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
-          <ul class="agent-citations-list">
-            <li v-for="(citation, citationIdx) in message.citations" :key="`citation_${citationIdx}`" class="agent-citation-item">
-              {{ citationLabel(citation) }}
-            </li>
-          </ul>
+        <div v-if="message.from === 'agent' && !message.pending && sourcesForMessage(message).length" class="agent-sources-panel">
+          <div class="agent-sources-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
+          <div class="agent-sources-list">
+            <component
+              :is="source.kind === 'web' && source.url ? 'a' : 'div'"
+              v-for="(source, sourceIdx) in sourcesForMessage(message)"
+              :key="source.id || `${message.id}_source_${sourceIdx}`"
+              class="agent-source-item"
+              :class="{ 'is-web': source.kind === 'web' && source.url }"
+              v-bind="source.kind === 'web' && source.url ? { href: source.url, target: '_blank', rel: 'noreferrer noopener' } : {}"
+            >
+              <strong>{{ source.title || source.source || "-" }}</strong>
+              <span>{{ sourceMeta(source) }}</span>
+            </component>
+          </div>
         </div>
         <div v-else-if="showGroundingMeta(message) && !message.noEvidence && !message.pending" class="rag-debug-mini">
           {{ uiStore.t("agentTraceNoCitations") }}
@@ -127,13 +135,21 @@ const isPendingAgent = (message) => message?.from === "agent" && Boolean(message
       <div class="msg-body">
         <MarkdownContent :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
         <div v-if="message.from === 'agent' && message.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
-        <div v-if="message.from === 'agent' && message.citations?.length" class="agent-citations-panel">
-          <div class="agent-citations-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
-          <ul class="agent-citations-list">
-            <li v-for="(citation, citationIdx) in message.citations" :key="`grouped_citation_${citationIdx}`" class="agent-citation-item">
-              {{ citationLabel(citation) }}
-            </li>
-          </ul>
+        <div v-if="message.from === 'agent' && sourcesForMessage(message).length" class="agent-sources-panel">
+          <div class="agent-sources-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
+          <div class="agent-sources-list">
+            <component
+              :is="source.kind === 'web' && source.url ? 'a' : 'div'"
+              v-for="(source, sourceIdx) in sourcesForMessage(message)"
+              :key="source.id || `${message.id}_grouped_source_${sourceIdx}`"
+              class="agent-source-item"
+              :class="{ 'is-web': source.kind === 'web' && source.url }"
+              v-bind="source.kind === 'web' && source.url ? { href: source.url, target: '_blank', rel: 'noreferrer noopener' } : {}"
+            >
+              <strong>{{ source.title || source.source || "-" }}</strong>
+              <span>{{ sourceMeta(source) }}</span>
+            </component>
+          </div>
         </div>
         <div v-else-if="showGroundingMeta(message) && !message.noEvidence" class="rag-debug-mini">
           {{ uiStore.t("agentTraceNoCitations") }}
@@ -285,11 +301,11 @@ const isPendingAgent = (message) => message?.from === "agent" && Boolean(message
   color: var(--text-muted);
 }
 
-.agent-citations-panel {
+.agent-sources-panel {
   margin-top: 12px;
 }
 
-.agent-citations-title {
+.agent-sources-title {
   font-size: 12px;
   color: var(--text-muted);
   text-transform: uppercase;
@@ -297,22 +313,37 @@ const isPendingAgent = (message) => message?.from === "agent" && Boolean(message
   margin-bottom: 10px;
 }
 
-.agent-citations-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.agent-sources-list {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.agent-citation-item {
+.agent-source-item {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+  border: 1px solid rgba(47, 107, 255, 0.12);
+  border-radius: 16px;
+  padding: 10px 12px;
+  background: rgba(47, 107, 255, 0.05);
+  text-decoration: none;
+}
+
+.agent-source-item strong {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.agent-source-item span {
   font-size: 12px;
   color: var(--text-channel);
-  border: 1px solid rgba(47, 107, 255, 0.12);
-  border-radius: 999px;
-  padding: 7px 10px;
-  background: rgba(47, 107, 255, 0.05);
+}
+
+.agent-source-item.is-web:hover {
+  border-color: rgba(47, 107, 255, 0.3);
+  background: rgba(47, 107, 255, 0.1);
 }
 
 @keyframes pendingPulse {

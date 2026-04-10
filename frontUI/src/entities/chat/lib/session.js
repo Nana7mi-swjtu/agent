@@ -2,6 +2,7 @@ export const buildConversationId = () => `c_${Date.now()}_${Math.random().toStri
 export const buildMessageId = () => `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 const normalizeTrace = (raw) => (raw && typeof raw === "object" ? raw : null);
+const normalizeSources = (raw) => (Array.isArray(raw) ? raw.filter((item) => item && typeof item === "object") : []);
 
 export const normalizeChatMessage = (raw) => ({
   id: String(raw?.id || buildMessageId()),
@@ -9,6 +10,7 @@ export const normalizeChatMessage = (raw) => ({
   text: String(raw?.text || ""),
   time: typeof raw?.time === "string" ? raw.time : new Date().toISOString(),
   citations: Array.isArray(raw?.citations) ? raw.citations : [],
+  sources: normalizeSources(raw?.sources),
   noEvidence: Boolean(raw?.noEvidence),
   debug: raw?.debug && typeof raw.debug === "object" ? raw.debug : null,
   trace: normalizeTrace(raw?.trace),
@@ -22,6 +24,7 @@ export const serializeChatMessage = (message) => ({
   text: String(message?.text || ""),
   time: typeof message?.time === "string" ? message.time : new Date().toISOString(),
   citations: Array.isArray(message?.citations) ? message.citations : [],
+  sources: normalizeSources(message?.sources),
   noEvidence: Boolean(message?.noEvidence),
   debug: message?.debug && typeof message.debug === "object" ? message.debug : null,
   trace: normalizeTrace(message?.trace),
