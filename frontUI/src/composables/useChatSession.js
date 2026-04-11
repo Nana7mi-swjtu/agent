@@ -297,6 +297,8 @@ export const useChatSession = () => {
       noEvidence: Boolean(result.data?.data?.noEvidence),
       debug: result.data?.data?.debug || null,
       trace: result.data?.data?.trace || null,
+      graph: result.data?.data?.graph || null,
+      graphMeta: result.data?.data?.graphMeta || null,
     });
     workspaceStore.systemPrompt = result.data?.data?.systemPrompt || workspaceStore.systemPrompt;
 

@@ -8,6 +8,7 @@ import { useWorkspaceStore } from "@/stores/workspace";
 import { useUiStore } from "@/stores/ui";
 import { formatTraceDetailValue, getMessageRagDebug, getMessageTraceSteps } from "@/utils/chatMessage";
 import { canDeleteRagDocument, getRagDocumentActionType } from "@/utils/rag";
+import KnowledgeGraphCard from "@/components/chat/KnowledgeGraphCard.vue";
 
 const router = useRouter();
 const uiStore = useUiStore();
@@ -250,6 +251,7 @@ const citationLabel = (citation) => {
               <span class="msg-timestamp">{{ displayTime(msg.time) }}</span>
             </div>
             <div class="msg-content">{{ msg.text }}</div>
+            <KnowledgeGraphCard v-if="msg.from === 'agent' && msg.graph" :graph="msg.graph" :graphMeta="msg.graphMeta" />
             <div v-if="msg.from === 'agent' && msg.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
             <div v-if="msg.from === 'agent' && msg.citations?.length" class="agent-citations-panel">
               <div class="agent-citations-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
@@ -352,6 +354,7 @@ const citationLabel = (citation) => {
           <div class="msg-avatar is-empty"></div>
           <div class="msg-body">
             <div class="msg-content">{{ msg.text }}</div>
+            <KnowledgeGraphCard v-if="msg.from === 'agent' && msg.graph" :graph="msg.graph" :graphMeta="msg.graphMeta" />
             <div v-if="msg.from === 'agent' && msg.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
             <div v-if="msg.from === 'agent' && msg.citations?.length" class="agent-citations-panel">
               <div class="agent-citations-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
