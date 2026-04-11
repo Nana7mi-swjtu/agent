@@ -10,6 +10,8 @@ export const normalizeChatMessage = (raw) => ({
   noEvidence: Boolean(raw?.noEvidence),
   debug: raw?.debug && typeof raw.debug === "object" ? raw.debug : null,
   trace: normalizeTrace(raw?.trace),
+  graph: raw?.graph && typeof raw.graph === "object" ? raw.graph : null,
+  graphMeta: raw?.graphMeta && typeof raw.graphMeta === "object" ? raw.graphMeta : null,
 });
 
 export const normalizeChatSession = (raw) => ({

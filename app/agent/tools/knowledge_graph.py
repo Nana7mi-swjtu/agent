@@ -62,18 +62,20 @@ def _extract_nodes_and_edges(context: Any) -> dict[str, list[dict[str, Any]]]:
 
     source_keys = ("source", "src", "from", "start", "start_node", "head")
     target_keys = ("target", "dst", "to", "end", "end_node", "tail")
-    relation_keys = ("relationship", "relation", "type", "label")
+    relation_keys = ("relationship", "relation", "type", "label", "rel_type")
     entity_keys = (
         "name",
         "company",
         "industry",
         "entity",
         "node",
+        "title",
         "source_name",
         "target_name",
     )
 
     for row_index, row in enumerate(rows, start=1):
+        # 优先提取标准三元组 source-target-relationship
         src = next((row.get(key) for key in source_keys if key in row), None)
         dst = next((row.get(key) for key in target_keys if key in row), None)
         rel = next((row.get(key) for key in relation_keys if key in row), "related")
@@ -97,13 +99,32 @@ def _extract_nodes_and_edges(context: Any) -> dict[str, list[dict[str, Any]]]:
             )
             continue
 
+        extracted_nodes = False
         for key in entity_keys:
             value = row.get(key)
             text = str(value or "").strip()
             if not text:
                 continue
             node_id = _normalize_node_id(text, fallback_prefix=key, index=row_index)
-            add_node(node_id, text)
+            node_type = "entity"
+            if key == "company":
+                node_type = "corporation"
+            elif key == "industry":
+                node_type = "industry"
+            elif "type" in row:
+                node_type = str(row.get("type", "entity")).strip().lower() or "entity"
+            add_node(node_id, text, node_type)
+            extracted_nodes = True
+
+        # 兜底：如果字段名不在预期集合，但行里有可读字符串，也至少落一个节点
+        if not extracted_nodes and row:
+            fallback_label = next(
+                (str(v).strip() for v in row.values() if isinstance(v, str) and str(v).strip()),
+                "",
+            )
+            if fallback_label:
+                fallback_id = _normalize_node_id(fallback_label, fallback_prefix="row", index=row_index)
+                add_node(fallback_id, fallback_label)
 
     return {"nodes": list(node_map.values())[:80], "edges": edges[:160]}
 
