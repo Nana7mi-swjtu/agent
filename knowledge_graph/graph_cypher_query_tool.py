@@ -351,8 +351,6 @@ class GraphCypherQueryTool:
         raw: Optional[Dict[str, Any]] = None,
         error: Optional[Exception] = None,
     ) -> Dict[str, Any]:
-        # 降级回答不应长时间阻塞主流程，限制等待时长提升交互体验。
-        fallback_timeout_seconds = min(self.timeout_seconds, 15)
         enhanced_question = self._enhance_question(question, conversation_history)
         fallback_prompt = (
             "以下回答未使用知识图谱检索结果，仅基于大模型通用知识生成。"
@@ -363,12 +361,12 @@ class GraphCypherQueryTool:
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(self.llm.invoke, fallback_prompt)
-                llm_resp = future.result(timeout=fallback_timeout_seconds)
+                llm_resp = future.result(timeout=self.timeout_seconds)
             fallback_answer = _extract_llm_text(llm_resp)
         except concurrent.futures.TimeoutError:
             fallback_answer = (
-                f"图谱查询未命中且降级回答超时（{fallback_timeout_seconds}s）。"
-                "建议提供更具体的实体名称、行业关键词或关系类型后重试。"
+                f"图谱查询失败且降级回答超时（{self.timeout_seconds}s）。"
+                "请稍后重试，或提高 QUERY_TIMEOUT_SECONDS。"
             )
         except Exception as fallback_error:
             fallback_answer = f"图谱查询失败，降级回答也不可用：{fallback_error}"

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import logging
 import smtplib
 from email.message import EmailMessage
 
 from flask import current_app
+
+from .logging_utils import mask_email
+
+logger = logging.getLogger(__name__)
 
 
 class EmailSender:
@@ -14,8 +19,15 @@ class EmailSender:
 class ConsoleEmailSender(EmailSender):
     def send_code(self, to_email: str, code: str, purpose: str) -> None:
         subject = "验证码"
-        body = f"您的验证码是：{code}\n10分钟内有效，请勿泄露。"
-        print(f"[Email:{purpose}] To={to_email} Subject={subject}\n{body}")
+        logger.info(
+            "Prepared console verification email",
+            extra={
+                "event": "email.code.generated",
+                "purpose": purpose,
+                "email": mask_email(to_email),
+                "subject": subject,
+            },
+        )
 
 
 class InMemoryEmailSender(EmailSender):

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from ..db import session_scope
+from ..logging_utils import bind_log_context, log_audit_event, mask_email
 from ..email_service import get_email_sender
 from ..models import User
 from .security import login_required
@@ -67,6 +68,7 @@ def register_send_code():
 
     if not _is_valid_email(email):
         return _json_error("invalid email", 400)
+    bind_log_context(workspace_id="auth")
 
     min_len = current_app.config["MIN_PASSWORD_LENGTH"]
     if len(password) < min_len:
@@ -97,9 +99,23 @@ def register_send_code():
         try:
             get_email_sender().send_code(email, code, "register")
         except Exception:
+            log_audit_event(
+                "auth.register.code_send_failed",
+                operation_status="failed",
+                resource_type="auth",
+                resource_id=mask_email(email),
+                email=mask_email(email),
+            )
             logger.exception("Failed to send register code email")
             return _json_error("failed to send email, check SMTP settings", 500)
 
+    log_audit_event(
+        "auth.register.code_sent",
+        operation_status="succeeded",
+        resource_type="auth",
+        resource_id=mask_email(email),
+        email=mask_email(email),
+    )
     return {"ok": True, "cooldownSeconds": current_app.config["CODE_RESEND_COOLDOWN_SECONDS"]}
 
 
@@ -139,6 +155,13 @@ def register_verify_code():
         user = User(email=email, password_hash=record.password_hash)
         db.add(user)
 
+    log_audit_event(
+        "auth.register.completed",
+        operation_status="succeeded",
+        resource_type="user",
+        resource_id=mask_email(email),
+        email=mask_email(email),
+    )
     return {"ok": True, "redirect": "/login"}
 
 
@@ -151,10 +174,25 @@ def login():
     with session_scope() as db:
         user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
         if not user or not check_password_hash(user.password_hash, password):
+            log_audit_event(
+                "auth.login.failed",
+                operation_status="failed",
+                resource_type="auth",
+                resource_id=mask_email(email),
+                email=mask_email(email),
+            )
             return _json_error("email or password is incorrect", 401)
 
     session.permanent = bool(current_app.config.get("SESSION_PERMANENT", True))
     session["user_id"] = user.id
+    bind_log_context(user_id=user.id, workspace_id="auth")
+    log_audit_event(
+        "auth.login.succeeded",
+        operation_status="succeeded",
+        resource_type="user",
+        resource_id=user.id,
+        email=mask_email(email),
+    )
     csrf_token = _rotate_csrf_token()
     return {"ok": True, "user": _build_user_payload(user), "csrfToken": csrf_token}
 
@@ -175,6 +213,13 @@ def me():
 
 @auth_bp.post("/logout")
 def logout():
+    bind_log_context(user_id=session.get("user_id"), workspace_id="auth")
+    log_audit_event(
+        "auth.logout.succeeded",
+        operation_status="succeeded",
+        resource_type="auth",
+        resource_id=session.get("user_id"),
+    )
     session.clear()
     return {"ok": True}
 
@@ -194,6 +239,7 @@ def forgot_password_send_code():
 
     if not _is_valid_email(email):
         return _json_error("invalid email", 400)
+    bind_log_context(workspace_id="auth")
 
     with session_scope() as db:
         code, error, retry_after = issue_code(
@@ -213,9 +259,23 @@ def forgot_password_send_code():
         try:
             get_email_sender().send_code(email, code, "reset")
         except Exception:
+            log_audit_event(
+                "auth.password_reset.code_send_failed",
+                operation_status="failed",
+                resource_type="auth",
+                resource_id=mask_email(email),
+                email=mask_email(email),
+            )
             logger.exception("Failed to send reset code email")
             return _json_error("failed to send email, check SMTP settings", 500)
 
+    log_audit_event(
+        "auth.password_reset.code_sent",
+        operation_status="succeeded",
+        resource_type="auth",
+        resource_id=mask_email(email),
+        email=mask_email(email),
+    )
     return {"ok": True, "message": "if the email exists, a code was sent", "cooldownSeconds": current_app.config["CODE_RESEND_COOLDOWN_SECONDS"]}
 
 
@@ -260,4 +320,11 @@ def forgot_password_verify_code():
 
         user.password_hash = generate_password_hash(new_password)
 
+    log_audit_event(
+        "auth.password_reset.completed",
+        operation_status="succeeded",
+        resource_type="user",
+        resource_id=mask_email(email),
+        email=mask_email(email),
+    )
     return {"ok": True, "redirect": "/login"}

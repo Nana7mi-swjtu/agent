@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from threading import Lock
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from flask import current_app
 from langchain_openai import ChatOpenAI
@@ -145,6 +146,20 @@ def _source_counts(evidence: list[Any]) -> dict[str, int]:
     return counts
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        return default
+    try:
+        return int(text)
+    except ValueError:
+        return default
+
+
 def _planner_summary(output: dict[str, Any]) -> str:
     if bool(output.get("needs_clarification", False)):
         return "Requested clarification before continuing."
@@ -178,6 +193,35 @@ def _search_children(output: dict[str, Any], *, include_details: bool) -> list[d
         evidence = []
     counts = _source_counts(evidence)
     children: list[dict[str, Any]] = []
+
+    kg_count = counts.get("knowledge_graph", 0)
+    graph_meta = output.get("graph_meta", {})
+    if not isinstance(graph_meta, dict):
+        graph_meta = {}
+    graph_payload = output.get("graph_data", {})
+    if not isinstance(graph_payload, dict):
+        graph_payload = {}
+    kg_used = kg_count > 0 or bool(graph_meta) or bool(graph_payload)
+    if kg_used:
+        child_details = (
+            {
+                "evidenceCount": kg_count,
+                "contextSize": _safe_int(graph_meta.get("contextSize", 0)),
+                "nodeCount": len(graph_payload.get("nodes", [])) if isinstance(graph_payload.get("nodes"), list) else 0,
+                "edgeCount": len(graph_payload.get("edges", [])) if isinstance(graph_payload.get("edges"), list) else 0,
+            }
+            if include_details
+            else None
+        )
+        children.append(
+            _trace_step(
+                step_id="kg_lookup",
+                step_type="retrieval",
+                title="Knowledge Graph Lookup",
+                summary=f"Collected {kg_count or 0} knowledge graph evidence item(s).",
+                details=child_details,
+            )
+        )
 
     rag_count = counts.get("rag", 0)
     if rag_count or bool(output.get("rag_chunks")):
@@ -378,6 +422,114 @@ def _build_trace_payload(output: dict[str, Any], *, include_details: bool) -> di
     return {"steps": steps}
 
 
+def _canonical_web_url(value: str) -> str:
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return raw
+    if not parsed.scheme or not parsed.netloc:
+        return raw
+    path = parsed.path.rstrip("/") or "/"
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), path, parsed.query, ""))
+
+
+def _group_rag_sources(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for citation in citations:
+        if not isinstance(citation, dict):
+            continue
+        source = str(citation.get("source", "")).strip()
+        chunk_id = str(citation.get("chunk_id", "")).strip()
+        if not source:
+            continue
+        entry = grouped.setdefault(
+            source,
+            {
+                "id": f"rag:{source}",
+                "kind": "rag",
+                "title": source,
+                "source": source,
+                "pages": [],
+                "sections": [],
+                "chunkIds": [],
+                "citationCount": 0,
+            },
+        )
+        page = citation.get("page")
+        if isinstance(page, int) and page not in entry["pages"]:
+            entry["pages"].append(page)
+        section = str(citation.get("section", "")).strip()
+        if section and section not in entry["sections"]:
+            entry["sections"].append(section)
+        if chunk_id and chunk_id not in entry["chunkIds"]:
+            entry["chunkIds"].append(chunk_id)
+        entry["citationCount"] += 1
+
+    for entry in grouped.values():
+        entry["pages"].sort()
+        entry["sections"].sort()
+    return sorted(grouped.values(), key=lambda item: str(item.get("title", "")).lower())
+
+
+def _group_web_sources(search_result: dict[str, Any]) -> list[dict[str, Any]]:
+    evidence = search_result.get("evidence", [])
+    if not isinstance(evidence, list):
+        return []
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source_type", "")).strip().lower() != "web":
+            continue
+        metadata = item.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        canonical_url = _canonical_web_url(str(metadata.get("url") or item.get("source") or ""))
+        if not canonical_url:
+            continue
+        title = str(item.get("title", "")).strip() or canonical_url
+        parsed = urlsplit(canonical_url)
+        entry = grouped.setdefault(
+            canonical_url,
+            {
+                "id": f"web:{canonical_url}",
+                "kind": "web",
+                "title": title,
+                "source": canonical_url,
+                "url": canonical_url,
+                "domain": parsed.netloc.lower(),
+            },
+        )
+        if title and entry["title"] == canonical_url:
+            entry["title"] = title
+    return sorted(grouped.values(), key=lambda item: str(item.get("title", "")).lower())
+
+
+def _build_grouped_sources(output: dict[str, Any], citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    search_result = output.get("search_result", {})
+    if not isinstance(search_result, dict):
+        search_result = {}
+    graph_meta = output.get("graph_meta", {})
+    if not isinstance(graph_meta, dict):
+        graph_meta = {}
+    grouped: list[dict[str, Any]] = []
+    graph_payload = output.get("graph_data", {})
+    if isinstance(graph_payload, dict) and graph_payload:
+        grouped.append(
+            {
+                "id": "kg:knowledge_graph",
+                "kind": "knowledge_graph",
+                "title": "Knowledge Graph",
+                "source": str(graph_meta.get("source", "knowledge_graph") or "knowledge_graph"),
+                "contextSize": _safe_int(graph_meta.get("contextSize", 0)),
+            }
+        )
+    return grouped + _group_rag_sources(citations) + _group_web_sources(search_result)
+
+
 def _load_chat_prompt() -> str:
     prompt_path = Path(__file__).resolve().parent / "prompts" / "chat.md"
     if prompt_path.exists():
@@ -493,22 +645,9 @@ def generate_reply_payload(
 ) -> dict[str, Any]:
     entity_text = str(entity or "").strip()
     graph_intent_text = str(intent or "").strip()
-    if _should_run_direct_kg_query(user_message=user_message, entity=entity_text, graph_intent=graph_intent_text):
-        try:
-            return _direct_kg_payload(
-                user_message=user_message,
-                user_id=user_id,
-                workspace_id=workspace_id,
-                entity=entity_text,
-                graph_intent=graph_intent_text,
-                agent_trace_enabled=agent_trace_enabled,
-                agent_trace_debug_details_enabled=agent_trace_debug_details_enabled,
-            )
-        except AgentServiceError:
-            raise
-        except Exception as exc:
-            logger.exception("Failed to execute direct knowledge graph query")
-            raise AgentServiceError("knowledge graph direct query failed") from exc
+    effective_user_message = str(user_message or "").strip()
+    if not effective_user_message:
+        effective_user_message = f"{entity_text} {graph_intent_text}".strip()
 
     try:
         runtime = _get_runtime()
@@ -519,9 +658,11 @@ def generate_reply_payload(
             "prompt_template": runtime["prompt_template"],
             "role": role,
             "system_prompt": system_prompt,
-            "user_message": user_message,
+            "user_message": effective_user_message,
             "user_id": user_id,
             "workspace_id": workspace_id,
+            "entity": entity_text,
+            "graph_intent": graph_intent_text,
             "intent": "",
             "needs_search": False,
             "needs_mcp": False,
@@ -534,6 +675,7 @@ def generate_reply_payload(
             "mcp_result": {},
             "search_completed": False,
             "mcp_completed": False,
+            "kg_enabled": bool(current_app.config.get("AGENT_KNOWLEDGE_GRAPH_ENABLED", False)),
             "rag_enabled": bool(current_app.config.get("RAG_ENABLED", False)),
             "web_enabled": bool(current_app.config.get("AGENT_WEBSEARCH_ENABLED", False)),
             "mcp_enabled": bool(current_app.config.get("AGENT_MCP_ENABLED", False)),
@@ -555,6 +697,7 @@ def generate_reply_payload(
         citations = output.get("rag_citations", [])
         if not isinstance(citations, list):
             citations = []
+        sources = _build_grouped_sources(output, citations)
         no_evidence = bool(output.get("rag_no_evidence", False))
         debug_payload = output.get("debug", {})
         if not isinstance(debug_payload, dict):
@@ -578,9 +721,15 @@ def generate_reply_payload(
 
     if not reply:
         raise AgentServiceError("empty agent reply")
-    payload = {"reply": reply, "citations": citations, "noEvidence": no_evidence, "debug": debug_payload}
-    payload["graph"] = graph_payload
-    payload["graphMeta"] = graph_meta_payload
+    payload = {
+        "reply": reply,
+        "citations": citations,
+        "sources": sources,
+        "noEvidence": no_evidence,
+        "debug": debug_payload,
+        "graph": graph_payload,
+        "graphMeta": graph_meta_payload,
+    }
     if trace_payload:
         payload["trace"] = trace_payload
     return payload

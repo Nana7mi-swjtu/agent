@@ -5,6 +5,7 @@ import logging
 from flask import Blueprint, request, session
 
 from .errors import RAGAuthorizationError, RAGError, RAGValidationError
+from ..logging_utils import bind_log_context, log_audit_event
 from .service import (
     build_workspace_debug_snapshot,
     delete_document,
@@ -87,6 +88,7 @@ def get_documents():
         return _json_error("authentication required", 401)
 
     workspace_id = _workspace_id_from_request()
+    bind_log_context(user_id=user_id, workspace_id=workspace_id)
     try:
         documents = list_documents(user_id=user_id, workspace_id=workspace_id)
     except RAGValidationError as exc:
@@ -108,6 +110,7 @@ def debug_snapshot():
         return _json_error("rag debug visualization is disabled", 404)
 
     workspace_id = _workspace_id_from_request()
+    bind_log_context(user_id=user_id, workspace_id=workspace_id)
     try:
         data = build_workspace_debug_snapshot(user_id=user_id, workspace_id=workspace_id)
     except RAGValidationError as exc:
@@ -132,6 +135,7 @@ def read_chunk_embedding():
         return _json_error("rag debug visualization is disabled", 404)
 
     workspace_id = _workspace_id_from_request()
+    bind_log_context(user_id=user_id, workspace_id=workspace_id)
     chunk_id = str(request.args.get("chunkId", "")).strip()
     include_full_raw = str(request.args.get("full", "false")).strip().lower()
     include_full = include_full_raw in {"1", "true", "yes", "on"}
@@ -166,6 +170,7 @@ def upload():
         return _json_error("authentication required", 401)
 
     workspace_id = request.form.get("workspaceId", "").strip() or "default"
+    bind_log_context(user_id=user_id, workspace_id=workspace_id)
     chunking_raw = request.form.get("chunking")
     chunking_payload = None
     if chunking_raw:
@@ -188,9 +193,22 @@ def upload():
     except RAGValidationError as exc:
         return _json_error(str(exc), 400)
     except RAGError as exc:
+        log_audit_event(
+            "rag.document.upload_failed",
+            operation_status="failed",
+            resource_type="workspace",
+            resource_id=workspace_id,
+        )
         logger.exception("RAG upload failed")
         return _json_error(str(exc), 500)
 
+    log_audit_event(
+        "rag.document.uploaded",
+        operation_status="succeeded",
+        resource_type="document",
+        resource_id=data.get("id"),
+        workspace_id=workspace_id,
+    )
     return {"ok": True, "data": data}
 
 
@@ -208,6 +226,7 @@ def create_index():
         return _json_error("request body is required", 400)
     document_id = payload.get("documentId")
     workspace_id = str(payload.get("workspaceId", "default")).strip() or "default"
+    bind_log_context(user_id=user_id, workspace_id=workspace_id)
     chunking_payload = payload.get("chunking")
     if not isinstance(document_id, int) or document_id <= 0:
         return _json_error("documentId must be a positive integer", 400)
@@ -224,9 +243,22 @@ def create_index():
     except RAGValidationError as exc:
         return _json_error(str(exc), 400)
     except RAGError:
+        log_audit_event(
+            "rag.index.enqueue_failed",
+            operation_status="failed",
+            resource_type="document",
+            resource_id=document_id,
+        )
         logger.exception("RAG index enqueue failed")
         return _json_error("failed to enqueue index job", 500)
 
+    log_audit_event(
+        "rag.index.enqueued",
+        operation_status="succeeded",
+        resource_type="document",
+        resource_id=document_id,
+        job_id=data.get("jobId"),
+    )
     return {"ok": True, "data": data}
 
 
@@ -245,6 +277,7 @@ def create_document_reindex(document_id: int):
     if not isinstance(payload, dict):
         return _json_error("request body must be an object", 400)
     workspace_id = str(payload.get("workspaceId", "default")).strip() or "default"
+    bind_log_context(user_id=user_id, workspace_id=workspace_id)
     chunking_payload = payload.get("chunking")
 
     try:
@@ -259,9 +292,22 @@ def create_document_reindex(document_id: int):
     except RAGValidationError as exc:
         return _json_error(str(exc), 400)
     except RAGError:
+        log_audit_event(
+            "rag.document.reindex_failed",
+            operation_status="failed",
+            resource_type="document",
+            resource_id=document_id,
+        )
         logger.exception("RAG document reindex failed")
         return _json_error("failed to enqueue document reindex", 500)
 
+    log_audit_event(
+        "rag.document.reindex_enqueued",
+        operation_status="succeeded",
+        resource_type="document",
+        resource_id=document_id,
+        job_id=data.get("jobId"),
+    )
     return {"ok": True, "data": data}
 
 
@@ -275,6 +321,7 @@ def remove_document(document_id: int):
         return _json_error("authentication required", 401)
 
     workspace_id = _workspace_id_from_request()
+    bind_log_context(user_id=user_id, workspace_id=workspace_id)
     try:
         data = delete_document(user_id=user_id, workspace_id=workspace_id, document_id=document_id)
     except RAGAuthorizationError as exc:
@@ -282,9 +329,21 @@ def remove_document(document_id: int):
     except RAGValidationError as exc:
         return _json_error(str(exc), 400)
     except RAGError:
+        log_audit_event(
+            "rag.document.delete_failed",
+            operation_status="failed",
+            resource_type="document",
+            resource_id=document_id,
+        )
         logger.exception("RAG document delete failed")
         return _json_error("failed to delete document", 500)
 
+    log_audit_event(
+        "rag.document.deleted",
+        operation_status="succeeded",
+        resource_type="document",
+        resource_id=document_id,
+    )
     return {"ok": True, "data": data}
 
 
@@ -297,6 +356,7 @@ def read_job(job_id: int):
     if user_id is None:
         return _json_error("authentication required", 401)
     workspace_id = _workspace_id_from_request()
+    bind_log_context(user_id=user_id, workspace_id=workspace_id, job_id=job_id)
 
     try:
         data = get_job_status(user_id=user_id, workspace_id=workspace_id, job_id=job_id)
@@ -323,6 +383,7 @@ def search():
     top_k = payload.get("topK", 5)
     filters = payload.get("filters", {})
     workspace_id = str(payload.get("workspaceId", "default")).strip() or "default"
+    bind_log_context(user_id=user_id, workspace_id=workspace_id)
 
     if not isinstance(top_k, int):
         return _json_error("topK must be an integer", 400)
@@ -342,9 +403,23 @@ def search():
     except RAGValidationError as exc:
         return _json_error(str(exc), 400)
     except RAGError:
+        log_audit_event(
+            "rag.search.failed",
+            operation_status="failed",
+            resource_type="workspace",
+            resource_id=workspace_id,
+        )
         logger.exception("RAG search failed")
         return _json_error("rag search failed", 500)
 
+    log_audit_event(
+        "rag.search.executed",
+        operation_status="succeeded",
+        resource_type="workspace",
+        resource_id=workspace_id,
+        top_k=top_k,
+        hit_count=len(hits),
+    )
     return {
         "ok": True,
         "data": {

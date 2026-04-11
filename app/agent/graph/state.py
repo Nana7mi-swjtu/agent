@@ -27,6 +27,7 @@ class AgentState(TypedDict):
     mcp_result: dict[str, Any]
     search_completed: bool
     mcp_completed: bool
+    kg_enabled: bool
     rag_enabled: bool
     web_enabled: bool
     mcp_enabled: bool
