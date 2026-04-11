@@ -4,6 +4,7 @@ from collections.abc import Iterable
 
 from .base import AgentToolSpec, ToolFactory
 from .context import AgentToolContext
+from .knowledge_graph import create_knowledge_graph_tool
 from .mcp import create_mcp_tools
 from .rag import create_rag_search_tool
 from .websearch import create_web_search_tool
@@ -25,6 +26,7 @@ def get_agent_tools(
 ) -> list[AgentToolSpec]:
     tool_factories = tuple(factories) if factories is not None else (
         create_rag_search_tool,
+        create_knowledge_graph_tool,
         create_web_search_tool,
         create_mcp_tools,
     )

@@ -1,0 +1,38 @@
+Knowledge Graph Stats Report
+================================
+Source file: data/base_graph_enriched_tushare.json
+
+[1] Node Summary
+- Total nodes: 5807
+- Company nodes: 5470
+- Industry nodes: 337
+
+[2] Edge Summary
+- Total edges: 10366
+- OWNS_SHARES edges: 1464
+- GUARANTEES edges: 3432
+- belongs_to edges: 5470
+- same_controller=True edges: 166
+- same_controller=False edges: 4730
+
+[3] Risk Tag Summary
+- ST companies: 178 (3.25%)
+
+[4] Financial Field Completeness (Company Nodes)
+- roe: 5470 / 5470
+- net_profit_margin: 5371 / 5470
+- asset_turnover: 296 / 5470
+- equity_multiplier: 5439 / 5470
+- industry_name: 3166 / 5470
+
+[5] Top 10 Industries by company_count
+1. IT服务Ⅱ: 132
+2. 化学制药: 111
+3. 汽车零部件: 104
+4. 软件开发: 102
+5. 专用设备: 90
+6. 消费电子: 88
+7. 通用设备: 82
+8. 化学制品: 80
+9. 房地产开发: 69
+10. 中药Ⅱ: 69

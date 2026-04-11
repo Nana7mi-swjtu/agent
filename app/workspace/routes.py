@@ -129,6 +129,8 @@ def _chat_response_data(
         "citations": result["citations"],
         "sources": result.get("sources", []),
         "noEvidence": result["noEvidence"],
+        "graph": result.get("graph", {}),
+        "graphMeta": result.get("graphMeta", {}),
     }
     if trace_enabled and isinstance(result.get("trace"), dict):
         data["trace"] = result["trace"]
@@ -200,10 +202,18 @@ def workspace_chat():
     if not message:
         return _json_error("message is required", 400)
     request_workspace_id = ""
+    entity = ""
+    intent = ""
     if isinstance(payload, dict):
         raw_workspace_id = payload.get("workspaceId")
         if isinstance(raw_workspace_id, str):
             request_workspace_id = raw_workspace_id.strip()
+        raw_entity = payload.get("entity")
+        if isinstance(raw_entity, str):
+            entity = raw_entity.strip()
+        raw_intent = payload.get("intent")
+        if isinstance(raw_intent, str):
+            intent = raw_intent.strip()
 
     with session_scope() as db:
         user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
@@ -238,6 +248,8 @@ def workspace_chat():
                 user_id=user_id,
                 workspace_id=workspace_id,
                 rag_debug_enabled=debug_enabled,
+                entity=entity,
+                intent=intent,
                 agent_trace_enabled=trace_enabled,
                 agent_trace_debug_details_enabled=trace_details_enabled,
             )
@@ -283,10 +295,18 @@ def workspace_chat_stream():
     if not message:
         return _json_error("message is required", 400)
     request_workspace_id = ""
+    entity = ""
+    intent = ""
     if isinstance(payload, dict):
         raw_workspace_id = payload.get("workspaceId")
         if isinstance(raw_workspace_id, str):
             request_workspace_id = raw_workspace_id.strip()
+        raw_entity = payload.get("entity")
+        if isinstance(raw_entity, str):
+            entity = raw_entity.strip()
+        raw_intent = payload.get("intent")
+        if isinstance(raw_intent, str):
+            intent = raw_intent.strip()
 
     with session_scope() as db:
         user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
@@ -326,6 +346,8 @@ def workspace_chat_stream():
                 user_id=user_id,
                 workspace_id=workspace_id,
                 rag_debug_enabled=debug_enabled,
+                entity=entity,
+                intent=intent,
                 agent_trace_enabled=trace_enabled,
                 agent_trace_debug_details_enabled=trace_details_enabled,
             )
