@@ -12,6 +12,9 @@
     "verify:rag-lifecycle": "node ./scripts/verify-rag-lifecycle.mjs"
   },
   "dependencies": {
+    "dompurify": "^3.2.7",
+    "highlight.js": "^11.11.1",
+    "markdown-it": "^14.1.0",
     "pinia": "^3.0.3",
     "vue": "^3.5.29",
     "vue-router": "^4.5.1",

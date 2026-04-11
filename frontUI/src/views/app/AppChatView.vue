@@ -7,6 +7,7 @@ import { useChatSession } from "@/composables/useChatSession";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useUiStore } from "@/stores/ui";
 import { formatTraceDetailValue, getMessageRagDebug, getMessageTraceSteps } from "@/utils/chatMessage";
+import { renderMarkdown } from "@/utils/markdown";
 import { canDeleteRagDocument, getRagDocumentActionType } from "@/utils/rag";
 import KnowledgeGraphCard from "@/components/chat/KnowledgeGraphCard.vue";
 
@@ -107,6 +108,19 @@ const traceDetailsEntries = (step) =>
 
 const ragDebugForMessage = (msg) => getMessageRagDebug(msg);
 const traceStepsForMessage = (msg) => getMessageTraceSteps(msg);
+const hasRenderableGraph = (msg) => {
+  if (msg?.from !== "agent") return false;
+  const graph = msg?.graph;
+  const graphMeta = msg?.graphMeta;
+  if (!graph || typeof graph !== "object") return false;
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  if (nodes.length === 0 && edges.length === 0) return false;
+  if (!graphMeta || typeof graphMeta !== "object") return false;
+  const source = String(graphMeta.source || "").trim();
+  const contextSize = Number(graphMeta.contextSize || 0);
+  return source === "knowledge_graph" && contextSize > 0;
+};
 const showGroundingMeta = (msg) =>
   msg?.from === "agent" &&
   (
@@ -250,8 +264,8 @@ const citationLabel = (citation) => {
               <span class="msg-author">{{ msg.from === "user" ? "You" : "Agent Studio" }}</span>
               <span class="msg-timestamp">{{ displayTime(msg.time) }}</span>
             </div>
-            <div class="msg-content">{{ msg.text }}</div>
-            <KnowledgeGraphCard v-if="msg.from === 'agent' && msg.graph" :graph="msg.graph" :graphMeta="msg.graphMeta" />
+            <div class="msg-content markdown-body" v-html="renderMarkdown(msg.text)"></div>
+            <KnowledgeGraphCard v-if="hasRenderableGraph(msg)" :graph="msg.graph" :graphMeta="msg.graphMeta" />
             <div v-if="msg.from === 'agent' && msg.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
             <div v-if="msg.from === 'agent' && msg.citations?.length" class="agent-citations-panel">
               <div class="agent-citations-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
@@ -353,8 +367,8 @@ const citationLabel = (citation) => {
         <template v-else>
           <div class="msg-avatar is-empty"></div>
           <div class="msg-body">
-            <div class="msg-content">{{ msg.text }}</div>
-            <KnowledgeGraphCard v-if="msg.from === 'agent' && msg.graph" :graph="msg.graph" :graphMeta="msg.graphMeta" />
+            <div class="msg-content markdown-body" v-html="renderMarkdown(msg.text)"></div>
+            <KnowledgeGraphCard v-if="hasRenderableGraph(msg)" :graph="msg.graph" :graphMeta="msg.graphMeta" />
             <div v-if="msg.from === 'agent' && msg.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
             <div v-if="msg.from === 'agent' && msg.citations?.length" class="agent-citations-panel">
               <div class="agent-citations-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>

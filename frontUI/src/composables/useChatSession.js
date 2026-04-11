@@ -289,6 +289,16 @@ export const useChatSession = () => {
       return result;
     }
 
+    const rawGraph = result.data?.data?.graph;
+    const rawGraphMeta = result.data?.data?.graphMeta;
+    const graphNodes = Array.isArray(rawGraph?.nodes) ? rawGraph.nodes : [];
+    const graphEdges = Array.isArray(rawGraph?.edges) ? rawGraph.edges : [];
+    const graphSource = String(rawGraphMeta?.source || "").trim();
+    const graphContextSize = Number(rawGraphMeta?.contextSize || 0);
+    const hasGraphData = (graphNodes.length > 0 || graphEdges.length > 0)
+      && graphSource === "knowledge_graph"
+      && graphContextSize > 0;
+
     chatStore.appendMessage({
       from: "agent",
       text: result.data?.data?.reply || "",
@@ -297,8 +307,8 @@ export const useChatSession = () => {
       noEvidence: Boolean(result.data?.data?.noEvidence),
       debug: result.data?.data?.debug || null,
       trace: result.data?.data?.trace || null,
-      graph: result.data?.data?.graph || null,
-      graphMeta: result.data?.data?.graphMeta || null,
+      graph: hasGraphData ? rawGraph : null,
+      graphMeta: hasGraphData ? rawGraphMeta : null,
     });
     workspaceStore.systemPrompt = result.data?.data?.systemPrompt || workspaceStore.systemPrompt;
 
