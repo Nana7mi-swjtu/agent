@@ -272,6 +272,42 @@ def test_rag_delete_keeps_record_but_clears_active_assets(client, app, db_sessio
     assert derived_path.exists() is False
 
 
+def test_rag_search_ignores_orphaned_vectors_when_chunk_rows_are_deleted(client, app, db_session):
+    app.config["RAG_ENABLED"] = True
+    app.config["RAG_AUTO_INDEX_ON_UPLOAD"] = False
+    app.config["RAG_RETRIEVAL_SCORE_THRESHOLD"] = -10.0
+
+    user = _create_user(db_session, "rag-orphaned-vectors@example.com")
+    headers = _auth_headers(client, user.id)
+    upload_payload = _upload_text_document(client, headers, "ws-orphaned", "orphaned.txt", "这是一份会留下残余向量的测试文档。")
+    document_id = int(upload_payload["id"])
+
+    job_payload = _index_document(client, headers, "ws-orphaned", document_id)
+    job_id = int(job_payload["jobId"])
+    job_response = client.get(f"/api/rag/jobs/{job_id}?workspaceId=ws-orphaned", headers=headers)
+    assert job_response.status_code == 200
+    assert job_response.get_json()["data"]["status"] == "done"
+
+    search_before_delete = client.post(
+        "/api/rag/search",
+        json={"workspaceId": "ws-orphaned", "query": "残余向量测试", "topK": 5, "filters": {}},
+        headers=headers,
+    )
+    assert search_before_delete.status_code == 200
+    assert search_before_delete.get_json()["data"]["chunks"]
+
+    db_session.query(RagChunk).filter(RagChunk.document_id == document_id).delete()
+    db_session.commit()
+
+    search_after_delete = client.post(
+        "/api/rag/search",
+        json={"workspaceId": "ws-orphaned", "query": "残余向量测试", "topK": 5, "filters": {}},
+        headers=headers,
+    )
+    assert search_after_delete.status_code == 200
+    assert search_after_delete.get_json()["data"]["chunks"] == []
+
+
 def test_rag_delete_rejects_indexing_documents(client, app, db_session):
     app.config["RAG_ENABLED"] = True
     app.config["RAG_AUTO_INDEX_ON_UPLOAD"] = False
@@ -1017,3 +1053,22 @@ def test_search_plan_uses_hybrid_for_explicit_mixed_source_request():
     assert result["strategy"] == "hybrid"
     assert result["use_rag"] is True
     assert result["use_web"] is True
+
+
+def test_search_plan_uses_kg_only_for_explicit_graph_request():
+    result = _search_plan_node(
+        {
+            "llm": object(),
+            "query": "请查知识图谱",
+            "kg_enabled": True,
+            "rag_enabled": True,
+            "entity": "京东方",
+            "graph_intent": "股权关系",
+            "preferred_strategy": "private_first",
+        }
+    )
+
+    assert result["strategy"] == "private_only"
+    assert result["use_kg"] is True
+    assert result["use_rag"] is False
+    assert result["use_web"] is False
