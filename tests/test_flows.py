@@ -314,6 +314,123 @@ def test_workspace_chat_includes_grouped_sources(client, db_session, monkeypatch
     assert payload["sources"][1]["url"] == "https://example.com/boe"
 
 
+def test_generate_reply_payload_routes_knowledge_graph_through_search_subagent(app, monkeypatch):
+    class _FakeResponse:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _FakeChatOpenAI:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def invoke(self, messages):
+            return _FakeResponse("主 agent 总结了知识图谱结果")
+
+    app.config["AGENT_KNOWLEDGE_GRAPH_ENABLED"] = True
+    app.config["RAG_ENABLED"] = False
+    app.config["AGENT_WEBSEARCH_ENABLED"] = False
+    app.config["AGENT_MCP_ENABLED"] = False
+    app.config["AI_PROVIDER"] = "openai"
+    app.config["AI_MODEL"] = "test-model"
+    app.config["AI_API_KEY"] = "test-key"
+    app.config["AI_TIMEOUT_SECONDS"] = 10
+    app.config["AI_BASE_URL"] = ""
+    monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
+
+    def _fake_search_node(state):
+        return {
+            "search_completed": True,
+            "search_result": {
+                "status": "done",
+                "strategy": "private_only",
+                "summary": "知识图谱结果",
+                "sufficient": True,
+                "follow_up_question": "",
+                "evidence": [
+                    {
+                        "source_type": "knowledge_graph",
+                        "source": "knowledge_graph",
+                        "title": "Knowledge Graph",
+                        "snippet": "京东方和若干主体存在股权关系。",
+                        "score": 1.0,
+                        "metadata": {"contextSize": 1},
+                    }
+                ],
+                "web_result": {},
+            },
+            "graph_data": {
+                "nodes": [{"id": "boe", "label": "京东方", "type": "company"}],
+                "edges": [],
+            },
+            "graph_meta": {"source": "knowledge_graph", "contextSize": 1},
+            "rag_chunks": [],
+            "rag_debug": {},
+            "debug": {"search": {"status": "done"}},
+        }
+
+    monkeypatch.setattr("app.agent.graph.nodes.search_subagent_node", _fake_search_node)
+    monkeypatch.setattr("app.agent.graph.builder.search_subagent_node", _fake_search_node)
+    agent_services.reset_runtime_for_tests()
+
+    with app.app_context():
+        payload = agent_services.generate_reply_payload(
+            role="investor",
+            system_prompt="system",
+            user_message="",
+            user_id=7,
+            workspace_id="ws-kg",
+            entity="京东方",
+            intent="股权关系",
+            agent_trace_enabled=True,
+            agent_trace_debug_details_enabled=True,
+        )
+
+    assert payload["reply"] == "主 agent 总结了知识图谱结果"
+    assert payload["graph"]["nodes"][0]["label"] == "京东方"
+    assert payload["graphMeta"]["source"] == "knowledge_graph"
+    assert [step["id"] for step in payload["trace"]["steps"]] == ["planner", "search_subagent", "compose_answer", "citations"]
+
+
+def test_workspace_chat_passes_entity_and_intent_hints(client, db_session, monkeypatch):
+    user = User(email="chat-kg@example.com", nickname="ChatKg", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    captured_kwargs: dict[str, object] = {}
+
+    def _fake_generate_reply_payload(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "reply": "graph answer",
+            "citations": [],
+            "sources": [],
+            "noEvidence": False,
+            "graph": {
+                "nodes": [{"id": "boe", "label": "京东方", "type": "company"}],
+                "edges": [],
+            },
+            "graphMeta": {"source": "knowledge_graph", "contextSize": 1},
+        }
+
+    monkeypatch.setattr("app.workspace.routes.generate_reply_payload", _fake_generate_reply_payload)
+
+    response = client.post(
+        "/api/workspace/chat",
+        json={"message": "请查知识图谱", "entity": "京东方", "intent": "股权关系"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert captured_kwargs["entity"] == "京东方"
+    assert captured_kwargs["intent"] == "股权关系"
+    assert payload["graph"]["nodes"][0]["label"] == "京东方"
+    assert payload["graphMeta"]["contextSize"] == 1
+
+
 def test_workspace_chat_stream_emits_deltas_and_final_metadata(client, app, db_session, monkeypatch):
     user = User(email="chat-stream@example.com", nickname="ChatStream", password_hash=generate_password_hash("password123"))
     db_session.add(user)
@@ -343,6 +460,11 @@ def test_workspace_chat_stream_emits_deltas_and_final_metadata(client, app, db_s
             ],
             "noEvidence": False,
             "trace": {"steps": [{"id": "planner", "status": "done"}]},
+            "graph": {
+                "nodes": [{"id": "node-1", "label": "京东方", "type": "company"}],
+                "edges": [],
+            },
+            "graphMeta": {"source": "knowledge_graph", "contextSize": 1},
         },
     )
 
@@ -355,6 +477,8 @@ def test_workspace_chat_stream_emits_deltas_and_final_metadata(client, app, db_s
     meta = next(event for event in events if event["type"] == "meta")
     assert meta["sources"][0]["title"] == "annual-report.pdf"
     assert meta["trace"]["steps"][0]["id"] == "planner"
+    assert meta["graph"]["nodes"][0]["id"] == "node-1"
+    assert meta["graphMeta"]["source"] == "knowledge_graph"
     assert events[-1]["type"] == "done"
 
 

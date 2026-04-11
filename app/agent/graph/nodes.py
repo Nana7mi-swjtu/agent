@@ -35,6 +35,11 @@ _KNOWLEDGE_HINTS = (
     "news",
 )
 
+_GRAPH_HINTS = (
+    "知识图谱",
+    "knowledge graph",
+)
+
 _MCP_HINTS = (
     "mcp",
     "server",
@@ -102,6 +107,9 @@ def _search_strategy(message: str, *, rag_enabled: bool, web_enabled: bool) -> s
 
 def plan_route_node(state: AgentState):
     user_message = str(state.get("user_message", "")).strip()
+    entity = str(state.get("entity", "")).strip()
+    graph_intent = str(state.get("graph_intent", "")).strip()
+    kg_enabled = bool(state.get("kg_enabled", False))
     rag_enabled = bool(state.get("rag_enabled", False))
     web_enabled = bool(state.get("web_enabled", False))
     mcp_enabled = bool(state.get("mcp_enabled", False))
@@ -117,6 +125,8 @@ def plan_route_node(state: AgentState):
         }
 
     heuristic_needs_search = _planner_prefers_search(user_message, rag_enabled=rag_enabled, web_enabled=web_enabled)
+    if kg_enabled and (entity or graph_intent or any(token in user_message.lower() for token in _GRAPH_HINTS)):
+        heuristic_needs_search = True
     needs_search = heuristic_needs_search
     needs_mcp = _planner_prefers_mcp(user_message, mcp_enabled=mcp_enabled)
     needs_clarification = False
@@ -180,6 +190,8 @@ def plan_route_node(state: AgentState):
         "search_request": {
             "query": user_message,
             "preferred_strategy": _search_strategy(user_message, rag_enabled=rag_enabled, web_enabled=web_enabled),
+            "entity": entity,
+            "graph_intent": graph_intent,
         },
         "mcp_request": {"request": user_message},
         "search_result": {},
@@ -229,14 +241,21 @@ def search_subagent_node(state: AgentState):
             "query": str(request.get("query", state.get("user_message", ""))).strip(),
             "user_id": state["user_id"],
             "workspace_id": state["workspace_id"],
+            "kg_enabled": bool(state.get("kg_enabled", False)),
             "rag_enabled": bool(state.get("rag_enabled", False)),
             "rag_debug_enabled": bool(state.get("rag_debug_enabled", False)),
+            "entity": str(request.get("entity", state.get("entity", ""))).strip(),
+            "graph_intent": str(request.get("graph_intent", state.get("graph_intent", ""))).strip(),
             "preferred_strategy": str(request.get("preferred_strategy", "")),
+            "use_kg": False,
             "use_rag": False,
             "use_web": False,
+            "kg_result": {},
             "rag_result": {},
             "web_result": {},
             "evidence": [],
+            "graph_data": {},
+            "graph_meta": {},
             "rag_chunks": [],
             "rag_debug": {},
             "sufficient": False,
@@ -258,6 +277,8 @@ def search_subagent_node(state: AgentState):
     update: dict[str, Any] = {
         "search_result": search_result,
         "search_completed": True,
+        "graph_data": result.get("graph_data", {}) if isinstance(result.get("graph_data"), dict) else {},
+        "graph_meta": result.get("graph_meta", {}) if isinstance(result.get("graph_meta"), dict) else {},
         "rag_chunks": result.get("rag_chunks", []) if isinstance(result.get("rag_chunks"), list) else [],
         "rag_debug": result.get("rag_debug", {}) if isinstance(result.get("rag_debug"), dict) else {},
         "debug": {
@@ -320,6 +341,23 @@ def clarify_node(state: AgentState):
 
 def _build_system_content(state: AgentState) -> str:
     system_content = state["prompt_template"].format(role=state["role"], system_prompt=state["system_prompt"])
+    graph_meta = state.get("graph_meta", {})
+    if isinstance(graph_meta, dict) and graph_meta:
+        kg_lines: list[str] = []
+        source = str(graph_meta.get("source", "")).strip()
+        if source:
+            kg_lines.append(f"source={source}")
+        cypher = str(graph_meta.get("cypher", "")).strip()
+        if cypher:
+            kg_lines.append(f"cypher={cypher}")
+        fallback_reason = str(graph_meta.get("fallbackReason", "")).strip()
+        if fallback_reason:
+            kg_lines.append(f"fallback_reason={fallback_reason}")
+        context_size = graph_meta.get("contextSize")
+        if isinstance(context_size, int):
+            kg_lines.append(f"context_size={context_size}")
+        if kg_lines:
+            system_content = f"{system_content}\n\nKnowledge Graph metadata:\n" + "\n".join(kg_lines)
     search_result = state.get("search_result", {})
     if isinstance(search_result, dict) and search_result:
         summary = str(search_result.get("summary", "")).strip()
@@ -422,10 +460,17 @@ def answer_with_citations_node(state: AgentState):
         debug_payload = {}
     if rag_debug:
         debug_payload["rag"] = rag_debug
-    return {
+    result: dict[str, Any] = {
         "reply": payload.reply,
         "rag_citations": payload.citations,
         "rag_no_evidence": bool(state.get("rag_no_evidence", False) or payload.no_evidence),
         "rag_debug": rag_debug,
         "debug": debug_payload,
     }
+    graph_data = state.get("graph_data", {})
+    if isinstance(graph_data, dict):
+        result["graph_data"] = graph_data
+    graph_meta = state.get("graph_meta", {})
+    if isinstance(graph_meta, dict):
+        result["graph_meta"] = graph_meta
+    return result

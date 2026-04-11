@@ -57,6 +57,20 @@ def _source_counts(evidence: list[Any]) -> dict[str, int]:
     return counts
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        return default
+    try:
+        return int(text)
+    except ValueError:
+        return default
+
+
 def _planner_summary(output: dict[str, Any]) -> str:
     if bool(output.get("needs_clarification", False)):
         return "Requested clarification before continuing."
@@ -90,6 +104,35 @@ def _search_children(output: dict[str, Any], *, include_details: bool) -> list[d
         evidence = []
     counts = _source_counts(evidence)
     children: list[dict[str, Any]] = []
+
+    kg_count = counts.get("knowledge_graph", 0)
+    graph_meta = output.get("graph_meta", {})
+    if not isinstance(graph_meta, dict):
+        graph_meta = {}
+    graph_payload = output.get("graph_data", {})
+    if not isinstance(graph_payload, dict):
+        graph_payload = {}
+    kg_used = kg_count > 0 or bool(graph_meta) or bool(graph_payload)
+    if kg_used:
+        child_details = (
+            {
+                "evidenceCount": kg_count,
+                "contextSize": _safe_int(graph_meta.get("contextSize", 0)),
+                "nodeCount": len(graph_payload.get("nodes", [])) if isinstance(graph_payload.get("nodes"), list) else 0,
+                "edgeCount": len(graph_payload.get("edges", [])) if isinstance(graph_payload.get("edges"), list) else 0,
+            }
+            if include_details
+            else None
+        )
+        children.append(
+            _trace_step(
+                step_id="kg_lookup",
+                step_type="retrieval",
+                title="Knowledge Graph Lookup",
+                summary=f"Collected {kg_count or 0} knowledge graph evidence item(s).",
+                details=child_details,
+            )
+        )
 
     rag_count = counts.get("rag", 0)
     if rag_count or bool(output.get("rag_chunks")):
@@ -380,7 +423,22 @@ def _build_grouped_sources(output: dict[str, Any], citations: list[dict[str, Any
     search_result = output.get("search_result", {})
     if not isinstance(search_result, dict):
         search_result = {}
-    return _group_rag_sources(citations) + _group_web_sources(search_result)
+    graph_meta = output.get("graph_meta", {})
+    if not isinstance(graph_meta, dict):
+        graph_meta = {}
+    grouped: list[dict[str, Any]] = []
+    graph_payload = output.get("graph_data", {})
+    if isinstance(graph_payload, dict) and graph_payload:
+        grouped.append(
+            {
+                "id": "kg:knowledge_graph",
+                "kind": "knowledge_graph",
+                "title": "Knowledge Graph",
+                "source": str(graph_meta.get("source", "knowledge_graph") or "knowledge_graph"),
+                "contextSize": _safe_int(graph_meta.get("contextSize", 0)),
+            }
+        )
+    return grouped + _group_rag_sources(citations) + _group_web_sources(search_result)
 
 
 def _load_chat_prompt() -> str:
@@ -487,9 +545,17 @@ def generate_reply_payload(
     user_id: int = 0,
     workspace_id: str = "default",
     rag_debug_enabled: bool = False,
+    entity: str = "",
+    intent: str = "",
     agent_trace_enabled: bool = False,
     agent_trace_debug_details_enabled: bool = False,
 ) -> dict[str, Any]:
+    entity_text = str(entity or "").strip()
+    graph_intent_text = str(intent or "").strip()
+    effective_user_message = str(user_message or "").strip()
+    if not effective_user_message:
+        effective_user_message = f"{entity_text} {graph_intent_text}".strip()
+
     try:
         runtime = _get_runtime()
         state = {
@@ -499,9 +565,11 @@ def generate_reply_payload(
             "prompt_template": runtime["prompt_template"],
             "role": role,
             "system_prompt": system_prompt,
-            "user_message": user_message,
+            "user_message": effective_user_message,
             "user_id": user_id,
             "workspace_id": workspace_id,
+            "entity": entity_text,
+            "graph_intent": graph_intent_text,
             "intent": "",
             "needs_search": False,
             "needs_mcp": False,
@@ -514,6 +582,7 @@ def generate_reply_payload(
             "mcp_result": {},
             "search_completed": False,
             "mcp_completed": False,
+            "kg_enabled": bool(current_app.config.get("AGENT_KNOWLEDGE_GRAPH_ENABLED", False)),
             "rag_enabled": bool(current_app.config.get("RAG_ENABLED", False)),
             "web_enabled": bool(current_app.config.get("AGENT_WEBSEARCH_ENABLED", False)),
             "mcp_enabled": bool(current_app.config.get("AGENT_MCP_ENABLED", False)),
@@ -522,6 +591,8 @@ def generate_reply_payload(
             "rag_citations": [],
             "rag_no_evidence": False,
             "rag_debug": {},
+            "graph_data": {},
+            "graph_meta": {},
             "debug": {},
             "reply": "",
         }
@@ -535,6 +606,12 @@ def generate_reply_payload(
         debug_payload = output.get("debug", {})
         if not isinstance(debug_payload, dict):
             debug_payload = {}
+        graph_payload = output.get("graph_data", {})
+        if not isinstance(graph_payload, dict):
+            graph_payload = {}
+        graph_meta_payload = output.get("graph_meta", {})
+        if not isinstance(graph_meta_payload, dict):
+            graph_meta_payload = {}
         trace_payload = (
             _build_trace_payload(output, include_details=bool(agent_trace_debug_details_enabled))
             if agent_trace_enabled
@@ -554,6 +631,8 @@ def generate_reply_payload(
         "sources": sources,
         "noEvidence": no_evidence,
         "debug": debug_payload,
+        "graph": graph_payload,
+        "graphMeta": graph_meta_payload,
     }
     if trace_payload:
         payload["trace"] = trace_payload

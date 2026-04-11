@@ -37,14 +37,21 @@ class SearchState(TypedDict):
     query: str
     user_id: int
     workspace_id: str
+    kg_enabled: bool
     rag_enabled: bool
     rag_debug_enabled: bool
+    entity: str
+    graph_intent: str
     preferred_strategy: str
+    use_kg: bool
     use_rag: bool
     use_web: bool
+    kg_result: dict[str, Any]
     rag_result: dict[str, Any]
     web_result: dict[str, Any]
     evidence: list[dict[str, Any]]
+    graph_data: dict[str, Any]
+    graph_meta: dict[str, Any]
     rag_chunks: list[dict[str, Any]]
     rag_debug: dict[str, Any]
     sufficient: bool
@@ -56,6 +63,7 @@ class SearchState(TypedDict):
 
 class SearchPlanOutput(BaseModel):
     strategy: str = Field(default="private_first")
+    use_kg: bool = Field(default=False)
     use_rag: bool = Field(default=False)
     use_web: bool = Field(default=False)
 
@@ -88,14 +96,19 @@ def _preferred_strategy(state: SearchState) -> str:
 
 def _search_plan_node(state: SearchState):
     strategy = _preferred_strategy(state)
+    kg_enabled = bool(state.get("kg_enabled", False))
     rag_enabled = bool(state.get("rag_enabled", False))
+    entity = str(state.get("entity", "")).strip()
+    graph_intent = str(state.get("graph_intent", "")).strip()
     query_text = str(state.get("query", ""))
     query = query_text.lower()
     explicit_public = has_explicit_public_web_intent(query_text)
     mixed_source = has_mixed_source_intent(query_text)
     knowledge_like = any(token in query for token in _KNOWLEDGE_HINTS)
+    graph_like = "知识图谱" in query or "knowledge graph" in query
     freshness_like = has_fresh_public_info_intent(query_text)
 
+    heuristic_use_kg = kg_enabled and bool(entity or graph_intent or graph_like)
     heuristic_use_rag = rag_enabled and strategy in {"private_only", "private_first", "hybrid"}
     if rag_enabled and knowledge_like and not explicit_public:
         heuristic_use_rag = True
@@ -124,14 +137,17 @@ def _search_plan_node(state: SearchState):
                         "role": "system",
                         "content": (
                             "You route search requests. Decide strategy from: private_only, public_only, "
-                            "private_first, hybrid. Set use_rag/use_web based on the request and available sources."
+                            "private_first, hybrid. Set use_kg/use_rag/use_web based on the request and available sources."
                         ),
                     },
                     {
                         "role": "user",
                         "content": (
                             f"query={state.get('query', '')}\n"
+                            f"kg_enabled={kg_enabled}\n"
                             f"rag_enabled={rag_enabled}\n"
+                            f"entity={entity}\n"
+                            f"graph_intent={graph_intent}\n"
                             f"preferred_strategy={strategy}\n"
                         ),
                     },
@@ -144,9 +160,11 @@ def _search_plan_node(state: SearchState):
             # deterministic private retrieval when private knowledge is available.
             if explicit_public and not mixed_source:
                 strategy = "public_only"
+                heuristic_use_kg = False
                 use_rag = False
                 use_web = True
             else:
+                heuristic_use_kg = heuristic_use_kg or bool(response.use_kg)
                 use_rag = heuristic_use_rag or (bool(response.use_rag) and rag_enabled)
                 use_web = heuristic_use_web or bool(response.use_web)
         except Exception:
@@ -155,11 +173,15 @@ def _search_plan_node(state: SearchState):
 
     return {
         "strategy": strategy,
+        "use_kg": bool(heuristic_use_kg),
         "use_rag": bool(use_rag),
         "use_web": bool(use_web),
+        "kg_result": {},
         "rag_result": {},
         "web_result": {},
         "evidence": [],
+        "graph_data": {},
+        "graph_meta": {},
         "rag_chunks": [],
         "rag_debug": {},
         "sufficient": False,
@@ -170,6 +192,16 @@ def _search_plan_node(state: SearchState):
 
 
 def _route_after_plan(state: SearchState) -> str:
+    if state.get("use_kg", False):
+        return "kg_lookup"
+    if state.get("use_rag", False):
+        return "rag_lookup"
+    if state.get("use_web", False):
+        return "web_lookup"
+    return "merge_results"
+
+
+def _route_after_kg(state: SearchState) -> str:
     if state.get("use_rag", False):
         return "rag_lookup"
     if state.get("use_web", False):
@@ -181,6 +213,33 @@ def _route_after_rag(state: SearchState) -> str:
     if state.get("use_web", False):
         return "web_lookup"
     return "merge_results"
+
+
+def _kg_lookup_node(state: SearchState):
+    tool_context = AgentToolContext(
+        user_id=state["user_id"],
+        workspace_id=state["workspace_id"],
+        rag_debug_enabled=bool(state.get("rag_debug_enabled", False)),
+    )
+    tools = get_agent_tools(context=tool_context, categories=("knowledge_graph",))
+    kg_tool = next((item for item in tools if item.name == "knowledge_graph_query"), None)
+    if kg_tool is None:
+        return {"kg_result": {"ok": False, "error": "knowledge graph unavailable"}}
+
+    result = kg_tool.invoke(
+        query=state["query"],
+        entity=str(state.get("entity", "")).strip() or None,
+        intent=str(state.get("graph_intent", "")).strip() or None,
+    )
+    payload: dict[str, Any] = {"kg_result": result}
+    if isinstance(result, dict) and result.get("ok", False):
+        graph_data = result.get("graph", {})
+        graph_meta = result.get("meta", {})
+        if isinstance(graph_data, dict):
+            payload["graph_data"] = graph_data
+        if isinstance(graph_meta, dict):
+            payload["graph_meta"] = graph_meta
+    return payload
 
 
 def _rag_lookup_node(state: SearchState):
@@ -248,6 +307,25 @@ def _normalize_rag_evidence(chunks: list[dict[str, Any]]) -> list[dict[str, Any]
     return evidence
 
 
+def _normalize_kg_evidence(result: dict[str, Any], graph_meta: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(result, dict) or not result.get("ok", False):
+        return []
+    summary = str(result.get("summary", "")).strip()
+    if not summary and not graph_meta:
+        return []
+    metadata = dict(graph_meta) if isinstance(graph_meta, dict) else {}
+    return [
+        {
+            "source_type": "knowledge_graph",
+            "source": str(metadata.get("source", "knowledge_graph")),
+            "title": "Knowledge Graph",
+            "snippet": summary,
+            "score": 1.0,
+            "metadata": metadata,
+        }
+    ]
+
+
 def _normalize_web_evidence(result: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(result, dict) or not result.get("ok", False):
         return []
@@ -272,32 +350,52 @@ def _normalize_web_evidence(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _merge_results_node(state: SearchState):
+    kg_result = state.get("kg_result", {})
+    if not isinstance(kg_result, dict):
+        kg_result = {}
+    graph_meta = state.get("graph_meta", {})
+    if not isinstance(graph_meta, dict):
+        graph_meta = {}
+    kg_evidence = _normalize_kg_evidence(kg_result, graph_meta)
     rag_evidence = _normalize_rag_evidence(list(state.get("rag_chunks", [])))
     web_evidence = _normalize_web_evidence(state.get("web_result", {}))
-    evidence = sorted(rag_evidence + web_evidence, key=lambda item: float(item.get("score", 0.0)), reverse=True)
+    evidence = sorted(kg_evidence + rag_evidence + web_evidence, key=lambda item: float(item.get("score", 0.0)), reverse=True)
     if evidence:
         source_labels = sorted({str(item.get("source_type", "")) for item in evidence if str(item.get("source_type", "")).strip()})
-        return {
+        payload: dict[str, Any] = {
             "evidence": evidence,
             "sufficient": True,
             "status": "done",
             "summary": f"Collected {len(evidence)} evidence item(s) from {', '.join(source_labels)}.",
             "follow_up_question": "",
         }
+        graph_data = state.get("graph_data", {})
+        if isinstance(graph_data, dict) and graph_data:
+            payload["graph_data"] = graph_data
+        if graph_meta:
+            payload["graph_meta"] = graph_meta
+        return payload
 
     question = "未检索到可支持该问题的证据，请补充资料或换一种问法。"
-    return {
+    payload = {
         "evidence": [],
         "sufficient": False,
         "status": "need_input",
         "summary": "No supporting evidence was found.",
         "follow_up_question": question,
     }
+    graph_data = state.get("graph_data", {})
+    if isinstance(graph_data, dict) and graph_data:
+        payload["graph_data"] = graph_data
+    if graph_meta:
+        payload["graph_meta"] = graph_meta
+    return payload
 
 
 def build_search_graph():
     builder = StateGraph(SearchState)
     builder.add_node("search_plan", _search_plan_node)
+    builder.add_node("kg_lookup", _kg_lookup_node)
     builder.add_node("rag_lookup", _rag_lookup_node)
     builder.add_node("web_lookup", _web_lookup_node)
     builder.add_node("merge_results", _merge_results_node)
@@ -306,6 +404,16 @@ def build_search_graph():
     builder.add_conditional_edges(
         "search_plan",
         _route_after_plan,
+        {
+            "kg_lookup": "kg_lookup",
+            "rag_lookup": "rag_lookup",
+            "web_lookup": "web_lookup",
+            "merge_results": "merge_results",
+        },
+    )
+    builder.add_conditional_edges(
+        "kg_lookup",
+        _route_after_kg,
         {
             "rag_lookup": "rag_lookup",
             "web_lookup": "web_lookup",
