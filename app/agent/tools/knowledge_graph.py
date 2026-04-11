@@ -63,16 +63,36 @@ def _extract_nodes_and_edges(context: Any) -> dict[str, list[dict[str, Any]]]:
     source_keys = ("source", "src", "from", "start", "start_node", "head")
     target_keys = ("target", "dst", "to", "end", "end_node", "tail")
     relation_keys = ("relationship", "relation", "type", "label", "rel_type")
+    name_keys = ("name", "company", "company_name", "entity", "title", "c.name", "n.name")
+    code_keys = ("ts_code", "code", "stock_code", "ticker", "c.ts_code", "n.ts_code")
+    id_keys = ("id", "node_id", "entity_id", "c.id", "n.id")
+    type_keys = ("node_type", "type", "entity_type", "label")
     entity_keys = (
         "name",
         "company",
+        "company_name",
         "industry",
+        "industry_name",
         "entity",
         "node",
         "title",
         "source_name",
         "target_name",
     )
+
+    def _pick_text(row: dict[str, Any], keys: tuple[str, ...]) -> str:
+        for key in keys:
+            if key not in row:
+                continue
+            value = str(row.get(key, "")).strip()
+            if value:
+                return value
+        return ""
+
+    def _build_label(name: str, code: str) -> str:
+        if name and code:
+            return f"{name} ({code})"
+        return name or code
 
     for row_index, row in enumerate(rows, start=1):
         # 优先提取标准三元组 source-target-relationship
@@ -100,6 +120,17 @@ def _extract_nodes_and_edges(context: Any) -> dict[str, list[dict[str, Any]]]:
             continue
 
         extracted_nodes = False
+
+        primary_name = _pick_text(row, name_keys)
+        primary_code = _pick_text(row, code_keys)
+        primary_id = _pick_text(row, id_keys)
+        primary_type = _pick_text(row, type_keys).lower() or "entity"
+        if primary_name or primary_code:
+            node_id = _normalize_node_id(primary_code or primary_name or primary_id, fallback_prefix="node", index=row_index)
+            node_label = _build_label(primary_name, primary_code)
+            add_node(node_id, node_label, primary_type)
+            extracted_nodes = True
+
         for key in entity_keys:
             value = row.get(key)
             text = str(value or "").strip()

@@ -4,6 +4,14 @@
       <span class="kg-title">知识图谱</span>
       <span class="kg-stats">节点: {{ graphData.nodes.length }} | 边: {{ graphData.edges.length }}</span>
     </div>
+    <div class="kg-toolbar">
+      <button class="kg-btn" type="button" @click="zoomIn">放大 +</button>
+      <button class="kg-btn" type="button" @click="zoomOut">缩小 -</button>
+      <button class="kg-btn" type="button" @click="resetView">重置视图</button>
+      <button class="kg-btn" type="button" @click="toggleLockLayout">
+        {{ layoutLocked ? "解锁布局" : "锁定布局" }}
+      </button>
+    </div>
     <div ref="networkContainer" class="kg-canvas"></div>
     <div class="kg-meta" v-if="graphMeta && Object.keys(graphMeta).length > 0">
       <details>
@@ -62,6 +70,7 @@ const props = defineProps({
 });
 
 const networkContainer = ref(null);
+const layoutLocked = ref(false);
 let network = null;
 
 // 规范化图数据
@@ -181,6 +190,32 @@ const initNetwork = () => {
   });
 };
 
+const zoomIn = () => {
+  if (!network) return;
+  const scale = network.getScale();
+  network.moveTo({ scale: Math.min(scale * 1.2, 3), animation: { duration: 180 } });
+};
+
+const zoomOut = () => {
+  if (!network) return;
+  const scale = network.getScale();
+  network.moveTo({ scale: Math.max(scale * 0.85, 0.15), animation: { duration: 180 } });
+};
+
+const resetView = () => {
+  if (!network) return;
+  network.fit({ animation: { duration: 260 } });
+};
+
+const toggleLockLayout = () => {
+  if (!network) return;
+  layoutLocked.value = !layoutLocked.value;
+  network.setOptions({ physics: { enabled: !layoutLocked.value } });
+  if (!layoutLocked.value) {
+    network.stabilize(120);
+  }
+};
+
 // 更新网络图数据
 const updateNetwork = () => {
   if (!network) {
@@ -243,6 +278,29 @@ watch(() => graphData.value.nodes.length, () => {
   height: 420px;
   background: #fafbfc;
   border-bottom: 1px solid #e0e0e0;
+}
+
+.kg-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #f8fafc;
+  flex-wrap: wrap;
+}
+
+.kg-btn {
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #fff;
+  color: #2b2d31;
+  font-size: 12px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.kg-btn:hover {
+  background: #eef2f7;
 }
 
 /* 隐藏 vis.js 默认工具栏 */

@@ -2,17 +2,40 @@ export const buildConversationId = () => `c_${Date.now()}_${Math.random().toStri
 
 const normalizeTrace = (raw) => (raw && typeof raw === "object" ? raw : null);
 
-export const normalizeChatMessage = (raw) => ({
-  from: raw?.from === "agent" ? "agent" : "user",
-  text: String(raw?.text || ""),
-  time: typeof raw?.time === "string" ? raw.time : new Date().toISOString(),
-  citations: Array.isArray(raw?.citations) ? raw.citations : [],
-  noEvidence: Boolean(raw?.noEvidence),
-  debug: raw?.debug && typeof raw.debug === "object" ? raw.debug : null,
-  trace: normalizeTrace(raw?.trace),
-  graph: raw?.graph && typeof raw.graph === "object" ? raw.graph : null,
-  graphMeta: raw?.graphMeta && typeof raw.graphMeta === "object" ? raw.graphMeta : null,
-});
+const normalizeGraphPayload = (graph, graphMeta) => {
+  if (!graph || typeof graph !== "object") {
+    return { graph: null, graphMeta: null };
+  }
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  if (nodes.length === 0 && edges.length === 0) {
+    return { graph: null, graphMeta: null };
+  }
+  if (!graphMeta || typeof graphMeta !== "object") {
+    return { graph: null, graphMeta: null };
+  }
+  const source = String(graphMeta.source || "").trim();
+  const contextSize = Number(graphMeta.contextSize || 0);
+  if (source !== "knowledge_graph" || contextSize <= 0) {
+    return { graph: null, graphMeta: null };
+  }
+  return { graph, graphMeta };
+};
+
+export const normalizeChatMessage = (raw) => {
+  const normalizedGraph = normalizeGraphPayload(raw?.graph, raw?.graphMeta);
+  return {
+    from: raw?.from === "agent" ? "agent" : "user",
+    text: String(raw?.text || ""),
+    time: typeof raw?.time === "string" ? raw.time : new Date().toISOString(),
+    citations: Array.isArray(raw?.citations) ? raw.citations : [],
+    noEvidence: Boolean(raw?.noEvidence),
+    debug: raw?.debug && typeof raw.debug === "object" ? raw.debug : null,
+    trace: normalizeTrace(raw?.trace),
+    graph: normalizedGraph.graph,
+    graphMeta: normalizedGraph.graphMeta,
+  };
+};
 
 export const normalizeChatSession = (raw) => ({
   id: String(raw?.id || `s_${Date.now()}`),
