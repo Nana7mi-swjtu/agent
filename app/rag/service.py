@@ -211,6 +211,63 @@ def _query_chunk_counts(*, db, user_id: int, workspace_id: str, document_ids: li
     return {int(document_id): int(count) for document_id, count in rows}
 
 
+def _filter_retrievable_hits(
+    *,
+    user_id: int,
+    workspace_id: str,
+    hits: list[RetrievalHit],
+) -> tuple[list[RetrievalHit], dict[str, Any]]:
+    if not hits:
+        return [], {
+            "candidateCount": 0,
+            "keptCount": 0,
+            "removedCount": 0,
+            "removedChunkIds": [],
+        }
+
+    requested_chunk_ids: list[str] = []
+    seen_chunk_ids: set[str] = set()
+    for hit in hits:
+        chunk_id = str(hit.chunk_id or "").strip()
+        if not chunk_id or chunk_id in seen_chunk_ids:
+            continue
+        seen_chunk_ids.add(chunk_id)
+        requested_chunk_ids.append(chunk_id)
+
+    if not requested_chunk_ids:
+        return [], {
+            "candidateCount": len(hits),
+            "keptCount": 0,
+            "removedCount": len(hits),
+            "removedChunkIds": [],
+        }
+
+    with session_scope() as db:
+        rows = (
+            db.query(RagChunk.chunk_id)
+            .join(RagDocument, RagDocument.id == RagChunk.document_id)
+            .filter(
+                RagChunk.user_id == user_id,
+                RagChunk.workspace_id == workspace_id,
+                RagChunk.chunk_id.in_(requested_chunk_ids),
+                RagDocument.user_id == user_id,
+                RagDocument.workspace_id == workspace_id,
+                RagDocument.status == "indexed",
+            )
+            .all()
+        )
+
+    valid_chunk_ids = {str(chunk_id) for chunk_id, in rows}
+    filtered_hits = [hit for hit in hits if str(hit.chunk_id or "").strip() in valid_chunk_ids]
+    removed_chunk_ids = [str(hit.chunk_id or "").strip() for hit in hits if str(hit.chunk_id or "").strip() not in valid_chunk_ids]
+    return filtered_hits, {
+        "candidateCount": len(hits),
+        "keptCount": len(filtered_hits),
+        "removedCount": len(removed_chunk_ids),
+        "removedChunkIds": removed_chunk_ids[:20],
+    }
+
+
 def _clear_document_index_fields(document: RagDocument) -> None:
     document.embedding_model = None
     document.embedding_version = None
@@ -699,8 +756,16 @@ def rag_search(
     hits: list[RetrievalHit] = []
     raw_hits: list[RetrievalHit] = []
     threshold_hits: list[RetrievalHit] = []
+    consistency_hits: list[RetrievalHit] = []
     query_vector: list[float] = []
     threshold = float(current_app.config.get("RAG_RETRIEVAL_SCORE_THRESHOLD", 0.0))
+    candidate_top_k = max(top_k, min(top_k * 5, 50))
+    consistency_debug: dict[str, Any] = {
+        "candidateCount": 0,
+        "keptCount": 0,
+        "removedCount": 0,
+        "removedChunkIds": [],
+    }
     try:
         query_vector = embedder.embed_query(text)
         if len(query_vector) != embedder.dimension:
@@ -709,13 +774,20 @@ def rag_search(
             workspace_id=workspace,
             collection_name=_collection_name_for_workspace(workspace),
             query_vector=query_vector,
-            top_k=top_k,
+            top_k=candidate_top_k,
             filters=scoped_filters,
         )
         threshold_hits = [hit for hit in raw_hits if hit.score >= threshold]
-        hits = threshold_hits
+        consistency_hits, consistency_debug = _filter_retrievable_hits(
+            user_id=user_id,
+            workspace_id=workspace,
+            hits=threshold_hits,
+        )
+        hits = consistency_hits
         if reranker:
             hits = reranker.rerank(query=text, hits=hits, top_k=top_k)
+        else:
+            hits = hits[:top_k]
     except Exception as exc:
         failure_reason = str(exc)
         raise
@@ -778,6 +850,7 @@ def rag_search(
         debug_payload = {
             "query": text,
             "topK": top_k,
+            "candidateTopK": candidate_top_k,
             "latencyMs": latency_ms,
             "filters": scoped_filters,
             "vector": {
@@ -793,14 +866,17 @@ def rag_search(
                 "threshold": threshold,
                 "rawCount": len(raw_hits),
                 "afterThresholdCount": len(threshold_hits),
+                "afterConsistencyCount": len(consistency_hits),
                 "rawHits": [_hit_debug_payload(hit) for hit in raw_hits],
                 "afterThresholdHits": [_hit_debug_payload(hit) for hit in threshold_hits],
+                "afterConsistencyHits": [_hit_debug_payload(hit) for hit in consistency_hits],
+                "consistencyFilter": consistency_debug,
             },
             "rerank": {
                 "enabled": bool(reranker),
                 "provider": str(getattr(reranker, "provider_name", "")) if reranker else "",
                 "model": str(getattr(reranker, "model_name", "")) if reranker else "",
-                "before": [_hit_debug_payload(hit) for hit in threshold_hits],
+                "before": [_hit_debug_payload(hit) for hit in consistency_hits],
                 "after": [_hit_debug_payload(hit) for hit in hits],
             },
         }

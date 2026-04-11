@@ -6,7 +6,12 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from ..tools import AgentToolContext, get_agent_tools
-from .source_intent import has_explicit_public_web_intent, has_fresh_public_info_intent, has_mixed_source_intent
+from .source_intent import (
+    has_explicit_public_web_intent,
+    has_fresh_public_info_intent,
+    has_mixed_source_intent,
+    has_private_knowledge_intent,
+)
 
 _KNOWLEDGE_HINTS = (
     "根据",
@@ -94,6 +99,26 @@ def _preferred_strategy(state: SearchState) -> str:
     return "private_first" if bool(state.get("rag_enabled", False)) else "public_only"
 
 
+def _is_explicit_kg_only_request(
+    *,
+    query_text: str,
+    kg_enabled: bool,
+    entity: str,
+    graph_intent: str,
+) -> bool:
+    if not kg_enabled:
+        return False
+    lowered = query_text.lower()
+    graph_like = "知识图谱" in lowered or "knowledge graph" in lowered
+    if not (str(entity or "").strip() or str(graph_intent or "").strip() or graph_like):
+        return False
+    if has_explicit_public_web_intent(query_text) or has_mixed_source_intent(query_text):
+        return False
+    if has_private_knowledge_intent(query_text):
+        return False
+    return not any(token in lowered for token in _KNOWLEDGE_HINTS)
+
+
 def _search_plan_node(state: SearchState):
     strategy = _preferred_strategy(state)
     kg_enabled = bool(state.get("kg_enabled", False))
@@ -107,6 +132,12 @@ def _search_plan_node(state: SearchState):
     knowledge_like = any(token in query for token in _KNOWLEDGE_HINTS)
     graph_like = "知识图谱" in query or "knowledge graph" in query
     freshness_like = has_fresh_public_info_intent(query_text)
+    explicit_kg_only = _is_explicit_kg_only_request(
+        query_text=query_text,
+        kg_enabled=kg_enabled,
+        entity=entity,
+        graph_intent=graph_intent,
+    )
 
     heuristic_use_kg = kg_enabled and bool(entity or graph_intent or graph_like)
     heuristic_use_rag = rag_enabled and strategy in {"private_only", "private_first", "hybrid"}
@@ -123,6 +154,10 @@ def _search_plan_node(state: SearchState):
         strategy = "public_only"
         heuristic_use_rag = False
         heuristic_use_web = True
+    elif explicit_kg_only:
+        strategy = "private_only"
+        heuristic_use_rag = False
+        heuristic_use_web = False
 
     use_rag = heuristic_use_rag
     use_web = heuristic_use_web
@@ -163,6 +198,11 @@ def _search_plan_node(state: SearchState):
                 heuristic_use_kg = False
                 use_rag = False
                 use_web = True
+            elif explicit_kg_only:
+                strategy = "private_only"
+                heuristic_use_kg = True
+                use_rag = False
+                use_web = False
             else:
                 heuristic_use_kg = heuristic_use_kg or bool(response.use_kg)
                 use_rag = heuristic_use_rag or (bool(response.use_rag) and rag_enabled)
