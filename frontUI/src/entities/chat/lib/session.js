@@ -3,6 +3,14 @@ export const buildMessageId = () => `m_${Date.now()}_${Math.random().toString(36
 
 const normalizeTrace = (raw) => (raw && typeof raw === "object" ? raw : null);
 const normalizeSources = (raw) => (Array.isArray(raw) ? raw.filter((item) => item && typeof item === "object") : []);
+const normalizeGraph = (raw) => {
+  if (!raw || typeof raw !== "object") return null;
+  const nodes = Array.isArray(raw.nodes) ? raw.nodes.filter((item) => item && typeof item === "object") : [];
+  const edges = Array.isArray(raw.edges) ? raw.edges.filter((item) => item && typeof item === "object") : [];
+  if (!nodes.length && !edges.length) return null;
+  return { nodes, edges };
+};
+const normalizeGraphMeta = (raw) => (raw && typeof raw === "object" ? raw : null);
 
 export const normalizeChatMessage = (raw) => ({
   id: String(raw?.id || buildMessageId()),
@@ -14,6 +22,8 @@ export const normalizeChatMessage = (raw) => ({
   noEvidence: Boolean(raw?.noEvidence),
   debug: raw?.debug && typeof raw.debug === "object" ? raw.debug : null,
   trace: normalizeTrace(raw?.trace),
+  graph: normalizeGraph(raw?.graph),
+  graphMeta: normalizeGraphMeta(raw?.graphMeta),
   pending: Boolean(raw?.pending),
   pendingStage: typeof raw?.pendingStage === "string" ? raw.pendingStage : "",
 });
@@ -28,6 +38,8 @@ export const serializeChatMessage = (message) => ({
   noEvidence: Boolean(message?.noEvidence),
   debug: message?.debug && typeof message.debug === "object" ? message.debug : null,
   trace: normalizeTrace(message?.trace),
+  graph: normalizeGraph(message?.graph),
+  graphMeta: normalizeGraphMeta(message?.graphMeta),
 });
 
 export const normalizeChatSession = (raw) => ({

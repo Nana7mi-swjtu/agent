@@ -1,5 +1,6 @@
 <script setup>
 import AgentTracePanel from "@/features/chat/ui/AgentTracePanel.vue";
+import KnowledgeGraphPanel from "@/features/chat/ui/KnowledgeGraphPanel.vue";
 import RagMessageDebug from "@/features/chat/ui/RagMessageDebug.vue";
 import {
   formatSourceMeta,
@@ -70,6 +71,16 @@ const showGroundingMeta = (message) =>
 
 const isPendingAgent = (message) => message?.from === "agent" && Boolean(message?.pending);
 const sourceMeta = (source) => formatSourceMeta(source);
+const graphForMessage = (message) => {
+  const graph = message?.graph;
+  if (!graph || typeof graph !== "object") return null;
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  if (!nodes.length && !edges.length) return null;
+  return { nodes, edges };
+};
+const graphMetaForMessage = (message) =>
+  message?.graphMeta && typeof message.graphMeta === "object" ? message.graphMeta : {};
 </script>
 
 <template>
@@ -95,6 +106,11 @@ const sourceMeta = (source) => formatSourceMeta(source);
           <p>{{ uiStore.t("assistantWorkingHint") }}</p>
         </div>
         <MarkdownContent v-else :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
+        <KnowledgeGraphPanel
+          v-if="message.from === 'agent' && !message.pending && graphForMessage(message)"
+          :graph="graphForMessage(message)"
+          :graph-meta="graphMetaForMessage(message)"
+        />
         <div v-if="message.from === 'agent' && message.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
         <div v-if="message.from === 'agent' && !message.pending && sourcesForMessage(message).length" class="agent-sources-panel">
           <div class="agent-sources-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
@@ -134,6 +150,12 @@ const sourceMeta = (source) => formatSourceMeta(source);
       <div class="msg-avatar is-empty"></div>
       <div class="msg-body">
         <MarkdownContent :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
+        <KnowledgeGraphPanel
+          v-if="message.from === 'agent' && !message.pending && graphForMessage(message)"
+          :graph="graphForMessage(message)"
+          :graph-meta="graphMetaForMessage(message)"
+          compact
+        />
         <div v-if="message.from === 'agent' && message.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
         <div v-if="message.from === 'agent' && sourcesForMessage(message).length" class="agent-sources-panel">
           <div class="agent-sources-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>

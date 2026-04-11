@@ -41,15 +41,46 @@ const sourcedMessage = normalizeChatMessage({
 assert.equal(sourcedMessage.sources.length, 1);
 assert.equal(sourcedMessage.sources[0].kind, "web");
 
+const graphedMessage = normalizeChatMessage({
+  from: "agent",
+  text: "graph answer",
+  graph: {
+    nodes: [{ id: "node-1", label: "京东方", type: "company" }],
+    edges: [],
+  },
+  graphMeta: {
+    source: "knowledge_graph",
+    contextSize: 1,
+  },
+});
+assert.equal(graphedMessage.graph.nodes[0].label, "京东方");
+assert.equal(graphedMessage.graphMeta.source, "knowledge_graph");
+
+const graphSession = normalizeChatSession({
+  id: "s_graph",
+  conversationId: "c_graph",
+  workspaceId: "default",
+  role: "investor",
+  title: "graph",
+  messages: [graphedMessage],
+});
+assert.equal(serializeChatSession(graphSession).messages[0].graphMeta.contextSize, 1);
+
 const markdownLibSource = fs.readFileSync(path.resolve(__dirname, "../src/shared/lib/markdown.js"), "utf8");
 assert.match(markdownLibSource, /MarkdownIt/);
 assert.match(markdownLibSource, /DOMPurify/);
 
 const messageItemSource = fs.readFileSync(path.resolve(__dirname, "../src/features/chat/ui/ChatMessageItem.vue"), "utf8");
 assert.match(messageItemSource, /MarkdownContent/);
+assert.match(messageItemSource, /KnowledgeGraphPanel/);
 assert.match(messageItemSource, /assistantWorkingHint/);
 assert.match(messageItemSource, /msg-pending-card/);
 assert.match(messageItemSource, /agent-sources-panel/);
+
+const knowledgeGraphSource = fs.readFileSync(path.resolve(__dirname, "../src/features/chat/ui/KnowledgeGraphPanel.vue"), "utf8");
+assert.match(knowledgeGraphSource, /kg-viewport/);
+assert.match(knowledgeGraphSource, /适配视图/);
+assert.match(knowledgeGraphSource, /graphMeta/);
 
 const feedSource = fs.readFileSync(path.resolve(__dirname, "../src/features/chat/ui/ChatFeed.vue"), "utf8");
 assert.match(feedSource, /jumpToLatest/);

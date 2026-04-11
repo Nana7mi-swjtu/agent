@@ -8,22 +8,26 @@ export const patchWorkspaceContext = (role) =>
     body: { role },
   });
 
-export const postWorkspaceChat = (message, workspaceId, conversationId) =>
+export const postWorkspaceChat = (message, workspaceId, conversationId, options = {}) =>
   apiRequest("/api/workspace/chat", {
     method: "POST",
     body: {
       message,
       workspaceId: workspaceId || "default",
       conversationId: conversationId || "",
+      entity: typeof options.entity === "string" ? options.entity : "",
+      intent: typeof options.intent === "string" ? options.intent : "",
     },
   });
 
-export const postWorkspaceChatStream = (message, workspaceId, conversationId) =>
+export const postWorkspaceChatStream = (message, workspaceId, conversationId, options = {}) =>
   streamApiRequest("/api/workspace/chat/stream", {
     method: "POST",
     body: {
       message,
       workspaceId: workspaceId || "default",
       conversationId: conversationId || "",
+      entity: typeof options.entity === "string" ? options.entity : "",
+      intent: typeof options.intent === "string" ? options.intent : "",
     },
   });

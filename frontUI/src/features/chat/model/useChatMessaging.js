@@ -76,6 +76,8 @@ export const useChatMessaging = () => {
       noEvidence: Boolean(payload.noEvidence),
       debug: payload.debug || null,
       trace: payload.trace || null,
+      graph: payload.graph || null,
+      graphMeta: payload.graphMeta || null,
       pending: false,
     });
     workspaceStore.systemPrompt = payload.systemPrompt || workspaceStore.systemPrompt;
@@ -99,6 +101,8 @@ export const useChatMessaging = () => {
       noEvidence: false,
       debug: null,
       trace: null,
+      graph: null,
+      graphMeta: null,
       systemPrompt: "",
     };
     let streamError = "";
@@ -126,6 +130,8 @@ export const useChatMessaging = () => {
         finalPayload.noEvidence = Boolean(event.noEvidence);
         finalPayload.debug = event.debug && typeof event.debug === "object" ? event.debug : null;
         finalPayload.trace = event.trace && typeof event.trace === "object" ? event.trace : null;
+        finalPayload.graph = event.graph && typeof event.graph === "object" ? event.graph : null;
+        finalPayload.graphMeta = event.graphMeta && typeof event.graphMeta === "object" ? event.graphMeta : null;
         finalPayload.systemPrompt = String(event.systemPrompt || "");
         return;
       }
