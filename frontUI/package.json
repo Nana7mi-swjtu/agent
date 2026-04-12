@@ -7,14 +7,14 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview",
+    "verify:chat-workbench-ux": "node ./scripts/verify-chat-workbench-ux.mjs",
     "verify:agent-trace": "node ./scripts/verify-agent-trace.mjs",
     "verify:bankruptcy-analysis": "node ./scripts/verify-bankruptcy-analysis.mjs",
     "verify:rag-lifecycle": "node ./scripts/verify-rag-lifecycle.mjs"
   },
   "dependencies": {
-    "dompurify": "^3.2.7",
-    "highlight.js": "^11.11.1",
-    "markdown-it": "^14.1.0",
+    "dompurify": "^3.3.3",
+    "markdown-it": "^14.1.1",
     "pinia": "^3.0.3",
     "vue": "^3.5.29",
     "vue-router": "^4.5.1",

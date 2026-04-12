@@ -4,6 +4,7 @@ import logging
 
 from flask import Blueprint, current_app, request, send_file, session
 
+from ..logging_utils import bind_log_context, log_audit_event
 from .errors import (
     BankruptcyAuthorizationError,
     BankruptcyConfigurationError,
@@ -52,6 +53,7 @@ def predict():
         return _json_error("authentication required", 401)
 
     workspace_id = str(request.form.get("workspaceId", "default")).strip() or "default"
+    bind_log_context(user_id=user_id, workspace_id=workspace_id)
     enterprise_name = str(request.form.get("enterpriseName", "")).strip()
     file_storage = request.files.get("file")
 
@@ -65,12 +67,30 @@ def predict():
     except BankruptcyValidationError as exc:
         return _json_error(str(exc), 400)
     except BankruptcyConfigurationError as exc:
+        log_audit_event(
+            "bankruptcy.predict.failed",
+            operation_status="failed",
+            resource_type="workspace",
+            resource_id=workspace_id,
+        )
         logger.exception("Bankruptcy runtime is unavailable")
         return _json_error(str(exc), 503)
     except Exception:
+        log_audit_event(
+            "bankruptcy.predict.failed",
+            operation_status="failed",
+            resource_type="workspace",
+            resource_id=workspace_id,
+        )
         logger.exception("Bankruptcy analysis failed")
         return _json_error("bankruptcy analysis failed", 500)
 
+    log_audit_event(
+        "bankruptcy.predict.completed",
+        operation_status="succeeded",
+        resource_type="workspace",
+        resource_id=workspace_id,
+    )
     return {"ok": True, "data": data}
 
 
@@ -85,6 +105,7 @@ def records():
 
     if request.method == "GET":
         workspace_id = str(request.args.get("workspaceId", "default")).strip() or "default"
+        bind_log_context(user_id=user_id, workspace_id=workspace_id)
         try:
             records = list_bankruptcy_records(user_id=user_id, workspace_id=workspace_id)
         except BankruptcyValidationError as exc:
@@ -92,6 +113,7 @@ def records():
         return {"ok": True, "data": {"records": records}}
 
     workspace_id = str(request.form.get("workspaceId", "default")).strip() or "default"
+    bind_log_context(user_id=user_id, workspace_id=workspace_id)
     enterprise_name = str(request.form.get("enterpriseName", "")).strip()
     file_storage = request.files.get("file")
     try:
@@ -104,11 +126,29 @@ def records():
     except BankruptcyValidationError as exc:
         return _json_error(str(exc), 400)
     except BankruptcyConfigurationError as exc:
+        log_audit_event(
+            "bankruptcy.record.save_failed",
+            operation_status="failed",
+            resource_type="workspace",
+            resource_id=workspace_id,
+        )
         logger.exception("Bankruptcy runtime is unavailable")
         return _json_error(str(exc), 503)
     except Exception:
+        log_audit_event(
+            "bankruptcy.record.save_failed",
+            operation_status="failed",
+            resource_type="workspace",
+            resource_id=workspace_id,
+        )
         logger.exception("Failed to save bankruptcy record")
         return _json_error("failed to save bankruptcy record", 500)
+    log_audit_event(
+        "bankruptcy.record.saved",
+        operation_status="succeeded",
+        resource_type="record",
+        resource_id=data.get("id"),
+    )
     return {"ok": True, "data": data}
 
 
@@ -122,6 +162,7 @@ def read_record(record_id: int):
         return _json_error("authentication required", 401)
 
     workspace_id = str(request.args.get("workspaceId", "default")).strip() or "default"
+    bind_log_context(user_id=user_id, workspace_id=workspace_id, record_id=record_id)
     try:
         data = get_bankruptcy_record_detail(user_id=user_id, workspace_id=workspace_id, record_id=record_id)
     except BankruptcyAuthorizationError as exc:
@@ -143,6 +184,7 @@ def analyze_record(record_id: int):
         return _json_error("authentication required", 401)
 
     workspace_id = str(request.form.get("workspaceId", "")).strip() or str(request.args.get("workspaceId", "default")).strip() or "default"
+    bind_log_context(user_id=user_id, workspace_id=workspace_id, record_id=record_id)
     try:
         data = analyze_bankruptcy_record(user_id=user_id, workspace_id=workspace_id, record_id=record_id)
     except BankruptcyAuthorizationError as exc:
@@ -152,11 +194,29 @@ def analyze_record(record_id: int):
     except BankruptcyValidationError as exc:
         return _json_error(str(exc), 400)
     except BankruptcyConfigurationError as exc:
+        log_audit_event(
+            "bankruptcy.record.analyze_failed",
+            operation_status="failed",
+            resource_type="record",
+            resource_id=record_id,
+        )
         logger.exception("Bankruptcy runtime is unavailable")
         return _json_error(str(exc), 503)
     except Exception:
+        log_audit_event(
+            "bankruptcy.record.analyze_failed",
+            operation_status="failed",
+            resource_type="record",
+            resource_id=record_id,
+        )
         logger.exception("Bankruptcy analysis failed for saved record")
         return _json_error("bankruptcy analysis failed", 500)
+    log_audit_event(
+        "bankruptcy.record.analyzed",
+        operation_status="succeeded",
+        resource_type="record",
+        resource_id=record_id,
+    )
     return {"ok": True, "data": data}
 
 
@@ -170,6 +230,7 @@ def delete_record(record_id: int):
         return _json_error("authentication required", 401)
 
     workspace_id = str(request.args.get("workspaceId", "default")).strip() or "default"
+    bind_log_context(user_id=user_id, workspace_id=workspace_id, record_id=record_id)
     try:
         data = delete_bankruptcy_record(user_id=user_id, workspace_id=workspace_id, record_id=record_id)
     except BankruptcyAuthorizationError as exc:
@@ -178,6 +239,12 @@ def delete_record(record_id: int):
         return _json_error(str(exc), 404)
     except BankruptcyValidationError as exc:
         return _json_error(str(exc), 400)
+    log_audit_event(
+        "bankruptcy.record.deleted",
+        operation_status="succeeded",
+        resource_type="record",
+        resource_id=record_id,
+    )
     return {"ok": True, "data": data}
 
 
@@ -191,6 +258,7 @@ def read_record_plot(record_id: int):
         return _json_error("authentication required", 401)
 
     workspace_id = str(request.args.get("workspaceId", "default")).strip() or "default"
+    bind_log_context(user_id=user_id, workspace_id=workspace_id, record_id=record_id)
     try:
         plot_path = read_bankruptcy_record_plot(user_id=user_id, workspace_id=workspace_id, record_id=record_id)
     except BankruptcyAuthorizationError as exc:
@@ -215,6 +283,7 @@ def read_plot(filename: str):
         return _json_error("authentication required", 401)
 
     workspace_id = str(request.args.get("workspaceId", "default")).strip() or "default"
+    bind_log_context(user_id=user_id, workspace_id=workspace_id)
     token = str(request.args.get("token", "")).strip()
 
     try:
