@@ -5,6 +5,7 @@ import logging
 from flask import Blueprint, current_app, request, session
 from sqlalchemy import select
 
+from ..agent.memory import load_conversation_history, save_conversation_turn
 from ..agent.services import AgentServiceError, generate_reply_payload
 from ..db import session_scope
 from ..models import User
@@ -193,14 +194,21 @@ def workspace_chat():
         )
         trace_enabled = bool(current_app.config.get("AGENT_TRACE_VISUALIZATION_ENABLED", False))
         trace_details_enabled = bool(current_app.config.get("AGENT_TRACE_DEBUG_DETAILS_ENABLED", False))
+        thread, conversation_history, conversation_context = load_conversation_history(
+            db,
+            user_id=user_id,
+            workspace_id=request_workspace_id or _workspace_id(user.preferences),
+            role=role,
+        )
         try:
-            composed_message = message
             result = generate_reply_payload(
                 role=role,
                 system_prompt=preset["systemPrompt"],
-                user_message=composed_message,
+                user_message=message,
                 user_id=user_id,
                 workspace_id=request_workspace_id or _workspace_id(user.preferences),
+                conversation_history=conversation_history,
+                conversation_context=conversation_context,
                 rag_debug_enabled=debug_enabled,
                 entity=entity,
                 intent=intent,
@@ -210,6 +218,15 @@ def workspace_chat():
         except AgentServiceError:
             logger.exception("Agent runtime failed for workspace chat")
             return _json_error("agent service unavailable", 502)
+
+        save_conversation_turn(
+            db,
+            thread=thread,
+            user_message=message,
+            assistant_result=result,
+            intent=str(result.get("intent", intent)).strip(),
+            conversation_context=conversation_context,
+        )
 
         return {
             "ok": True,
@@ -221,7 +238,6 @@ def workspace_chat():
                 "noEvidence": result["noEvidence"],
                 "graph": result.get("graph", {}),
                 "graphMeta": result.get("graphMeta", {}),
-                **({"trace": result.get("trace", {})} if trace_enabled and isinstance(result.get("trace"), dict) else {}),
                 **({"trace": result.get("trace", {})} if trace_enabled and isinstance(result.get("trace"), dict) else {}),
                 **({"debug": result.get("debug", {})} if debug_enabled else {}),
             },

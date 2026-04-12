@@ -39,6 +39,7 @@ def _direct_kg_payload(
     workspace_id: str,
     entity: str,
     graph_intent: str,
+    conversation_history: list[dict[str, str]] | None = None,
     agent_trace_enabled: bool,
     agent_trace_debug_details_enabled: bool,
 ) -> dict[str, Any]:
@@ -60,7 +61,7 @@ def _direct_kg_payload(
     if not query_text:
         raise AgentServiceError("empty knowledge graph query")
 
-    raw = kg_tool.invoke(query=query_text, entity=entity, intent=graph_intent)
+    raw = kg_tool.invoke(query=query_text, entity=entity, intent=graph_intent, conversation_history=conversation_history)
     if not isinstance(raw, dict) or not bool(raw.get("ok", False)):
         raise AgentServiceError(str(raw.get("error", "knowledge graph query failed")) if isinstance(raw, dict) else "knowledge graph query failed")
 
@@ -76,6 +77,8 @@ def _direct_kg_payload(
         "reply": summary,
         "citations": [],
         "noEvidence": False,
+        "intent": "knowledge_graph",
+        "clarificationQuestion": "",
         "debug": {
             "knowledgeGraph": {
                 "query": query_text,
@@ -440,6 +443,21 @@ def _create_llm(agent_key: str) -> Any:
     )
 
 
+def _normalize_conversation_history(conversation_history: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    if not isinstance(conversation_history, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    for item in conversation_history:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", "")).strip()
+        content = str(item.get("content", "")).strip()
+        if not role or not content:
+            continue
+        normalized.append({"role": role, "content": content})
+    return normalized
+
+
 
 
 def _build_runtime() -> dict[str, Any]:
@@ -485,6 +503,8 @@ def generate_reply_payload(
     user_message: str,
     user_id: int = 0,
     workspace_id: str = "default",
+    conversation_history: list[dict[str, str]] | None = None,
+    conversation_context: str = "",
     rag_debug_enabled: bool = False,
     entity: str = "",
     intent: str = "",
@@ -493,6 +513,8 @@ def generate_reply_payload(
 ) -> dict[str, Any]:
     entity_text = str(entity or "").strip()
     graph_intent_text = str(intent or "").strip()
+    normalized_history = _normalize_conversation_history(conversation_history)
+    normalized_context = str(conversation_context or "").strip()
     if _should_run_direct_kg_query(user_message=user_message, entity=entity_text, graph_intent=graph_intent_text):
         try:
             return _direct_kg_payload(
@@ -501,6 +523,7 @@ def generate_reply_payload(
                 workspace_id=workspace_id,
                 entity=entity_text,
                 graph_intent=graph_intent_text,
+                conversation_history=normalized_history,
                 agent_trace_enabled=agent_trace_enabled,
                 agent_trace_debug_details_enabled=agent_trace_debug_details_enabled,
             )
@@ -522,6 +545,8 @@ def generate_reply_payload(
             "user_message": user_message,
             "user_id": user_id,
             "workspace_id": workspace_id,
+            "conversation_history": normalized_history,
+            "conversation_context": normalized_context,
             "intent": "",
             "needs_search": False,
             "needs_mcp": False,
@@ -578,7 +603,14 @@ def generate_reply_payload(
 
     if not reply:
         raise AgentServiceError("empty agent reply")
-    payload = {"reply": reply, "citations": citations, "noEvidence": no_evidence, "debug": debug_payload}
+    payload = {
+        "reply": reply,
+        "citations": citations,
+        "noEvidence": no_evidence,
+        "intent": str(output.get("intent", "")),
+        "clarificationQuestion": str(output.get("clarification_question", "")),
+        "debug": debug_payload,
+    }
     payload["graph"] = graph_payload
     payload["graphMeta"] = graph_meta_payload
     if trace_payload:

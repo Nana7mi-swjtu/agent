@@ -11,6 +11,8 @@ class AgentState(TypedDict):
     role: str
     system_prompt: str
     user_message: str
+    conversation_history: list[dict[str, str]]
+    conversation_context: str
     user_id: int
     workspace_id: str
     entity: str
