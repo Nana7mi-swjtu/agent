@@ -4,6 +4,7 @@ import KnowledgeGraphPanel from "@/features/chat/ui/KnowledgeGraphPanel.vue";
 import RagMessageDebug from "@/features/chat/ui/RagMessageDebug.vue";
 import {
   formatSourceMeta,
+  getMessageMemoryInfo,
   getMessageRagDebug,
   getMessageSources,
   getMessageTraceSteps,
@@ -59,6 +60,7 @@ const uiStore = useUiStore();
 const ragDebugForMessage = (message) => getMessageRagDebug(message);
 const traceStepsForMessage = (message) => getMessageTraceSteps(message);
 const sourcesForMessage = (message) => getMessageSources(message);
+const memoryInfoForMessage = (message) => getMessageMemoryInfo(message);
 const showGroundingMeta = (message) =>
   message?.from === "agent" &&
   (
@@ -112,6 +114,9 @@ const graphMetaForMessage = (message) =>
           :graph-meta="graphMetaForMessage(message)"
         />
         <div v-if="message.from === 'agent' && message.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
+        <div v-if="message.from === 'agent' && !message.pending && memoryInfoForMessage(message)?.memoryUsed" class="memory-context-info">
+          <small>💭 {{ uiStore.t("memoryContextUsed") }}{{ memoryInfoForMessage(message).memoryMessageCount }}{{ uiStore.t("memoryContextMessages") }}</small>
+        </div>
         <div v-if="message.from === 'agent' && !message.pending && sourcesForMessage(message).length" class="agent-sources-panel">
           <div class="agent-sources-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
           <div class="agent-sources-list">
@@ -157,6 +162,9 @@ const graphMetaForMessage = (message) =>
           compact
         />
         <div v-if="message.from === 'agent' && message.noEvidence" class="rag-debug-mini">{{ uiStore.t("ragDebugNoEvidenceFlag") }}</div>
+        <div v-if="message.from === 'agent' && memoryInfoForMessage(message)?.memoryUsed" class="memory-context-info">
+          <small>💭 {{ uiStore.t("memoryContextUsed") }}{{ memoryInfoForMessage(message).memoryMessageCount }}{{ uiStore.t("memoryContextMessages") }}</small>
+        </div>
         <div v-if="message.from === 'agent' && sourcesForMessage(message).length" class="agent-sources-panel">
           <div class="agent-sources-title">{{ uiStore.t("agentTraceCitationsTitle") }}</div>
           <div class="agent-sources-list">
@@ -321,6 +329,16 @@ const graphMetaForMessage = (message) =>
   margin-top: 8px;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.memory-context-info {
+  margin-top: 10px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: rgba(99, 102, 241, 0.08);
+  color: rgb(79, 70, 229);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .agent-sources-panel {

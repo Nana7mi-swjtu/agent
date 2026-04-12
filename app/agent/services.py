@@ -348,10 +348,16 @@ def _mcp_step(output: dict[str, Any], *, include_details: bool) -> dict[str, Any
 def _compose_step(output: dict[str, Any], *, include_details: bool) -> dict[str, Any]:
     details = None
     if include_details:
+        conversation_history = output.get("conversation_history", [])
+        if not isinstance(conversation_history, list):
+            conversation_history = []
         details = {
             "replyLength": len(str(output.get("reply", ""))),
             "usedSearch": bool(output.get("search_completed", False)),
             "usedMcp": bool(output.get("mcp_completed", False)),
+            "memoryUsed": bool(conversation_history),
+            "memoryMessageCount": len(conversation_history),
+            "conversationContextPresent": bool(str(output.get("conversation_context", "")).strip()),
         }
     return _trace_step(
         step_id="compose_answer",

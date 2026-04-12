@@ -24,6 +24,7 @@ export const normalizeChatMessage = (raw) => ({
   trace: normalizeTrace(raw?.trace),
   graph: normalizeGraph(raw?.graph),
   graphMeta: normalizeGraphMeta(raw?.graphMeta),
+  memoryInfo: raw?.memoryInfo && typeof raw.memoryInfo === "object" ? raw.memoryInfo : null,
   pending: Boolean(raw?.pending),
   pendingStage: typeof raw?.pendingStage === "string" ? raw.pendingStage : "",
 });
@@ -40,6 +41,7 @@ export const serializeChatMessage = (message) => ({
   trace: normalizeTrace(message?.trace),
   graph: normalizeGraph(message?.graph),
   graphMeta: normalizeGraphMeta(message?.graphMeta),
+  memoryInfo: message?.memoryInfo && typeof message.memoryInfo === "object" ? message.memoryInfo : null,
 });
 
 export const normalizeChatSession = (raw) => ({

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from ...rag.errors import RAGContractError
@@ -47,6 +47,8 @@ _MCP_HINTS = (
     "列出工具",
     "list tools",
 )
+
+_MAX_COMPOSE_HISTORY_MESSAGES = 8
 
 
 class PlannerOutput(BaseModel):
@@ -443,13 +445,31 @@ def _build_system_content(state: AgentState) -> str:
     return system_content
 
 
+def _history_messages_for_compose(state: AgentState, *, limit: int = _MAX_COMPOSE_HISTORY_MESSAGES) -> list[Any]:
+    history = state.get("conversation_history", [])
+    if not isinstance(history, list) or not history:
+        return []
+
+    normalized: list[Any] = []
+    for item in history[-limit:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", "")).strip().lower()
+        content = str(item.get("content", "")).strip()
+        if not role or not content:
+            continue
+        if role == "user":
+            normalized.append(HumanMessage(content=content))
+        elif role == "assistant":
+            normalized.append(AIMessage(content=content))
+    return normalized
+
+
 def compose_answer_node(state: AgentState):
     llm = state["main_llm"]
     system_content = _build_system_content(state)
-    messages: list[Any] = [
-        SystemMessage(content=system_content),
-        HumanMessage(content=state["user_message"]),
-    ]
+    history_messages = _history_messages_for_compose(state)
+    messages: list[Any] = [SystemMessage(content=system_content), *history_messages, HumanMessage(content=state["user_message"])]
     response = llm.invoke(messages)
     reply = str(getattr(response, "content", "")).strip()
     if not reply:

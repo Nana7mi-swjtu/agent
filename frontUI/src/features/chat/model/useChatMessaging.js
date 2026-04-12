@@ -67,6 +67,20 @@ export const useChatMessaging = () => {
   };
 
   const finalizeAssistantMessage = (pendingMessageId, payload = {}) => {
+    const trace = payload.trace && typeof payload.trace === "object" ? payload.trace : null;
+    let memoryInfo = null;
+    if (trace && Array.isArray(trace.steps)) {
+      const composeStep = trace.steps.find(
+        (step) => step && typeof step === "object" && (step.step_id || step.id) === "compose_answer",
+      );
+      if (composeStep && typeof composeStep.details === "object") {
+        memoryInfo = {
+          memoryUsed: Boolean(composeStep.details.memoryUsed),
+          memoryMessageCount: Number.isInteger(composeStep.details.memoryMessageCount) ? composeStep.details.memoryMessageCount : 0,
+          contextPresent: Boolean(composeStep.details.conversationContextPresent),
+        };
+      }
+    }
     chatStore.replaceMessage(pendingMessageId, {
       from: "agent",
       text: payload.reply || "",
@@ -75,9 +89,10 @@ export const useChatMessaging = () => {
       sources: payload.sources || [],
       noEvidence: Boolean(payload.noEvidence),
       debug: payload.debug || null,
-      trace: payload.trace || null,
+      trace: trace,
       graph: payload.graph || null,
       graphMeta: payload.graphMeta || null,
+      memoryInfo: memoryInfo,
       pending: false,
     });
     workspaceStore.systemPrompt = payload.systemPrompt || workspaceStore.systemPrompt;

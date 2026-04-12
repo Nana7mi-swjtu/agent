@@ -58,6 +58,21 @@ export const getMessageRagDebug = (message) => {
   return rag && typeof rag === "object" ? rag : null;
 };
 
+export const getMessageMemoryInfo = (message) => {
+  const trace = message?.trace;
+  if (!trace || typeof trace !== "object") return null;
+  const steps = Array.isArray(trace.steps) ? trace.steps : [];
+  const composeStep = steps.find(
+    (step) => step && typeof step === "object" && (step.step_id || step.id) === "compose_answer",
+  );
+  if (!composeStep || typeof composeStep.details !== "object") return null;
+  return {
+    memoryUsed: Boolean(composeStep.details.memoryUsed),
+    memoryMessageCount: Number.isInteger(composeStep.details.memoryMessageCount) ? composeStep.details.memoryMessageCount : 0,
+    contextPresent: Boolean(composeStep.details.conversationContextPresent),
+  };
+};
+
 export const formatSourceMeta = (source) => {
   if (!source || typeof source !== "object") return "-";
   if (source.kind === "web") {
