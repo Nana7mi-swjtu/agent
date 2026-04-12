@@ -81,6 +81,28 @@ def _build_kg_query(state: AgentState) -> str:
     return user_message
 
 
+def _conversation_context(state: AgentState) -> str:
+    context = str(state.get("conversation_context", "") or "").strip()
+    if context:
+        return context
+
+    history = state.get("conversation_history", [])
+    if not isinstance(history, list) or not history:
+        return ""
+
+    lines = ["最近对话："]
+    for item in history[-8:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", "")).strip()
+        content = str(item.get("content", "")).strip()
+        if not role or not content:
+            continue
+        label = {"user": "用户", "assistant": "助手", "system": "系统"}.get(role.lower(), role)
+        lines.append(f"{label}: {content[:360]}")
+    return "\n".join(lines)
+
+
 def _planner_prefers_search(message: str, *, rag_enabled: bool, web_enabled: bool) -> bool:
     lowered = message.lower()
     if any(token in lowered for token in _KNOWLEDGE_HINTS):
@@ -122,6 +144,7 @@ def plan_route_node(state: AgentState):
     rag_enabled = bool(state.get("rag_enabled", False))
     web_enabled = bool(state.get("web_enabled", False))
     mcp_enabled = bool(state.get("mcp_enabled", False))
+    conversation_context = _conversation_context(state)
 
     if not user_message:
         return {
@@ -151,6 +174,7 @@ def plan_route_node(state: AgentState):
                         "content": (
                             "You route user requests for a main agent. Decide whether the request needs "
                             "search evidence, MCP action execution, or clarification before proceeding."
+                            + (f"\n\nConversation memory:\n{conversation_context}" if conversation_context else "")
                         ),
                     },
                     {
@@ -248,6 +272,8 @@ def search_subagent_node(state: AgentState):
         {
             "llm": state.get("search_llm"),
             "query": str(request.get("query", state.get("user_message", ""))).strip(),
+            "conversation_history": list(state.get("conversation_history", [])) if isinstance(state.get("conversation_history"), list) else [],
+            "conversation_context": str(state.get("conversation_context", "") or "").strip(),
             "user_id": state["user_id"],
             "workspace_id": state["workspace_id"],
             "kg_enabled": bool(state.get("kg_enabled", False)),
@@ -367,6 +393,9 @@ def _build_system_content(state: AgentState) -> str:
             kg_lines.append(f"context_size={context_size}")
         if kg_lines:
             system_content = f"{system_content}\n\nKnowledge Graph metadata:\n" + "\n".join(kg_lines)
+    conversation_context = _conversation_context(state)
+    if conversation_context:
+        system_content = f"{system_content}\n\n对话记忆：\n{conversation_context}"
     search_result = state.get("search_result", {})
     if isinstance(search_result, dict) and search_result:
         summary = str(search_result.get("summary", "")).strip()

@@ -8,7 +8,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.agent import services as agent_services
 from app.agent.services import AgentServiceError
-from app.models import User
+from app.models import AgentConversationMessage, AgentConversationThread, User
 
 
 def _auth_headers(client, user_id: int) -> dict[str, str]:
@@ -273,6 +273,65 @@ def test_workspace_chat_requires_role(client, db_session, monkeypatch):
     payload = response.get_json()
     assert payload["data"]["role"] == "regulator"
     assert payload["data"]["reply"] == "agent generated response"
+
+
+def test_workspace_chat_reuses_conversation_history(client, db_session, monkeypatch):
+    user = User(email="memory@example.com", nickname="Memory", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    captured: list[dict[str, object]] = []
+
+    def _fake_generate_reply_payload(**kwargs):
+        captured.append(kwargs)
+        if len(captured) == 1:
+            return {
+                "reply": "请补充要分析的公司名称。",
+                "citations": [],
+                "noEvidence": False,
+                "intent": "clarify",
+                "graph": {},
+                "graphMeta": {},
+            }
+        return {
+            "reply": "已结合上一轮补充信息继续回答。",
+            "citations": [],
+            "noEvidence": False,
+            "intent": "answer",
+            "graph": {},
+            "graphMeta": {},
+        }
+
+    monkeypatch.setattr("app.workspace.routes.generate_reply_payload", _fake_generate_reply_payload)
+
+    first_response = client.post("/api/workspace/chat", json={"message": "请分析风险"}, headers=headers)
+    assert first_response.status_code == 200
+    assert captured[0]["conversation_history"] == []
+
+    db_session.expire_all()
+    thread = db_session.execute(select(AgentConversationThread)).scalar_one()
+    messages = db_session.execute(select(AgentConversationMessage).where(AgentConversationMessage.thread_id == thread.id)).scalars().all()
+    assert len(messages) == 2
+
+    second_response = client.post("/api/workspace/chat", json={"message": "腾讯"}, headers=headers)
+    assert second_response.status_code == 200
+
+    assert len(captured) == 2
+    second_history = captured[1]["conversation_history"]
+    assert isinstance(second_history, list)
+    assert str(captured[1]["conversation_context"]).startswith("最近对话：")
+    assert any(item.get("role") == "assistant" and "请补充要分析的公司名称" in item.get("content", "") for item in second_history if isinstance(item, dict))
+    assert any(item.get("role") == "user" and "请分析风险" in item.get("content", "") for item in second_history if isinstance(item, dict))
+
+    db_session.commit()
+    db_session.expire_all()
+    thread = db_session.execute(select(AgentConversationThread)).scalar_one()
+    messages = db_session.execute(select(AgentConversationMessage).where(AgentConversationMessage.thread_id == thread.id)).scalars().all()
+    assert len(messages) == 4
 
 
 def test_workspace_chat_includes_grouped_sources(client, db_session, monkeypatch):

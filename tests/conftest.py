@@ -87,6 +87,8 @@ def db_session(app):
     with app.app_context():
         session = get_session()
         try:
+            session.execute(text("DELETE FROM agent_conversation_messages"))
+            session.execute(text("DELETE FROM agent_conversation_threads"))
             session.execute(text("DELETE FROM rag_query_logs"))
             session.execute(text("DELETE FROM rag_index_jobs"))
             session.execute(text("DELETE FROM rag_chunks"))

@@ -6,6 +6,7 @@ import logging
 from flask import Blueprint, Response, current_app, request, session, stream_with_context
 from sqlalchemy import select
 
+from ..agent.memory import load_conversation_history, save_conversation_turn
 from ..agent.services import AgentServiceError, generate_reply_payload
 from ..db import session_scope
 from ..logging_utils import bind_log_context, log_audit_event
@@ -240,14 +241,21 @@ def workspace_chat():
         )
         trace_enabled = bool(current_app.config.get("AGENT_TRACE_VISUALIZATION_ENABLED", False))
         trace_details_enabled = bool(current_app.config.get("AGENT_TRACE_DEBUG_DETAILS_ENABLED", False))
+        thread, conversation_history, conversation_context = load_conversation_history(
+            db,
+            user_id=user_id,
+            workspace_id=request_workspace_id or _workspace_id(user.preferences),
+            role=role,
+        )
         try:
-            composed_message = message
             result = generate_reply_payload(
                 role=role,
                 system_prompt=preset["systemPrompt"],
-                user_message=composed_message,
+                user_message=message,
                 user_id=user_id,
                 workspace_id=workspace_id,
+                conversation_history=conversation_history,
+                conversation_context=conversation_context,
                 rag_debug_enabled=debug_enabled,
                 entity=entity,
                 intent=intent,
@@ -272,6 +280,15 @@ def workspace_chat():
             resource_id=workspace_id,
             role=role,
         )
+        save_conversation_turn(
+            db,
+            thread=thread,
+            user_message=message,
+            assistant_result=result,
+            intent=str(result.get("intent", intent)).strip(),
+            conversation_context=conversation_context,
+        )
+
         return {
             "ok": True,
             "data": _chat_response_data(
@@ -340,18 +357,35 @@ def workspace_chat_stream():
         )
         yield _stream_event({"type": "started", "role": role})
         try:
-            result = generate_reply_payload(
-                role=role,
-                system_prompt=preset["systemPrompt"],
-                user_message=message,
-                user_id=user_id,
-                workspace_id=workspace_id,
-                rag_debug_enabled=debug_enabled,
-                entity=entity,
-                intent=intent,
-                agent_trace_enabled=trace_enabled,
-                agent_trace_debug_details_enabled=trace_details_enabled,
-            )
+            with session_scope() as db:
+                thread, conversation_history, conversation_context = load_conversation_history(
+                    db,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    role=role,
+                )
+                result = generate_reply_payload(
+                    role=role,
+                    system_prompt=preset["systemPrompt"],
+                    user_message=message,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    conversation_history=conversation_history,
+                    conversation_context=conversation_context,
+                    rag_debug_enabled=debug_enabled,
+                    entity=entity,
+                    intent=intent,
+                    agent_trace_enabled=trace_enabled,
+                    agent_trace_debug_details_enabled=trace_details_enabled,
+                )
+                save_conversation_turn(
+                    db,
+                    thread=thread,
+                    user_message=message,
+                    assistant_result=result,
+                    intent=str(result.get("intent", intent)).strip(),
+                    conversation_context=conversation_context,
+                )
         except AgentServiceError:
             log_audit_event(
                 "workspace.chat.failed",

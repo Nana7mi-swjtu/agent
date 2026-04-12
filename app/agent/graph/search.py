@@ -40,6 +40,8 @@ _FRESHNESS_HINTS = (
 class SearchState(TypedDict):
     llm: Any
     query: str
+    conversation_history: list[dict[str, str]]
+    conversation_context: str
     user_id: int
     workspace_id: str
     kg_enabled: bool
@@ -82,6 +84,36 @@ def _normalize_strategy(strategy: str, *, use_rag: bool, use_web: bool, fallback
     if use_web:
         return "public_only"
     return base
+
+
+def _conversation_context(state: SearchState) -> str:
+    context = str(state.get("conversation_context", "") or "").strip()
+    if context:
+        return context
+
+    history = state.get("conversation_history", [])
+    if not isinstance(history, list) or not history:
+        return ""
+
+    lines = ["最近对话："]
+    for item in history[-8:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", "")).strip()
+        content = str(item.get("content", "")).strip()
+        if not role or not content:
+            continue
+        label = {"user": "用户", "assistant": "助手", "system": "系统"}.get(role.lower(), role)
+        lines.append(f"{label}: {content[:360]}")
+    return "\n".join(lines)
+
+
+def _query_with_context(state: SearchState) -> str:
+    query = str(state.get("query", "") or "").strip()
+    context = _conversation_context(state)
+    if not context:
+        return query
+    return f"{query}\n\n对话记忆：\n{context}"
 
 
 def _preferred_strategy(state: SearchState) -> str:
@@ -143,6 +175,12 @@ def _search_plan_node(state: SearchState):
     heuristic_use_rag = rag_enabled and strategy in {"private_only", "private_first", "hybrid"}
     if rag_enabled and knowledge_like and not explicit_public:
         heuristic_use_rag = True
+    freshness_like = any(token in query for token in _FRESHNESS_HINTS)
+    conversation_context = _conversation_context(state)
+
+    use_rag = rag_enabled and strategy in {"private_only", "private_first", "hybrid"}
+    if rag_enabled and knowledge_like:
+        use_rag = True
 
     heuristic_use_web = strategy in {"public_only", "hybrid"}
     if strategy == "private_first" and not heuristic_use_rag:
@@ -173,6 +211,7 @@ def _search_plan_node(state: SearchState):
                         "content": (
                             "You route search requests. Decide strategy from: private_only, public_only, "
                             "private_first, hybrid. Set use_kg/use_rag/use_web based on the request and available sources."
+                            + (f"\n\nConversation memory:\n{conversation_context}" if conversation_context else "")
                         ),
                     },
                     {
@@ -294,7 +333,7 @@ def _rag_lookup_node(state: SearchState):
         return {"rag_result": {"ok": False, "error": "rag tool unavailable"}}
 
     result = rag_tool.invoke(
-        query=state["query"],
+        query=_query_with_context(state),
         top_k=5,
         filters={},
         include_debug=bool(state.get("rag_debug_enabled", False)),
@@ -323,7 +362,7 @@ def _web_lookup_node(state: SearchState):
 
     return {
         "web_result": web_tool.invoke(
-            query=state["query"],
+            query=_query_with_context(state),
             max_results=5,
             topic="news" if any(token in state["query"].lower() for token in _FRESHNESS_HINTS) else "general",
             include_raw_content=False,
