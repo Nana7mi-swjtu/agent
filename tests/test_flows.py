@@ -275,13 +275,14 @@ def test_workspace_chat_requires_role(client, db_session, monkeypatch):
     assert payload["data"]["reply"] == "agent generated response"
 
 
-def test_workspace_chat_reuses_conversation_history(client, db_session, monkeypatch):
-    user = User(email="memory@example.com", nickname="Memory", password_hash=generate_password_hash("password123"))
+@pytest.mark.parametrize("role", ["investor", "enterprise_manager", "regulator"])
+def test_workspace_chat_reuses_conversation_history(client, db_session, monkeypatch, role):
+    user = User(email=f"memory-{role}@example.com", nickname="Memory", password_hash=generate_password_hash("password123"))
     db_session.add(user)
     db_session.commit()
     headers = _auth_headers(client, user.id)
 
-    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    response = client.patch("/api/workspace/context", json={"role": role}, headers=headers)
     assert response.status_code == 200
 
     captured: list[dict[str, object]] = []
@@ -314,6 +315,7 @@ def test_workspace_chat_reuses_conversation_history(client, db_session, monkeypa
 
     db_session.expire_all()
     thread = db_session.execute(select(AgentConversationThread)).scalar_one()
+    assert thread.role == role
     messages = db_session.execute(select(AgentConversationMessage).where(AgentConversationMessage.thread_id == thread.id)).scalars().all()
     assert len(messages) == 2
 
