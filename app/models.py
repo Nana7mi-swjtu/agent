@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -77,6 +77,35 @@ class AgentConversationMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     thread: Mapped["AgentConversationThread"] = relationship(back_populates="messages")
+
+
+class AgentChatJob(Base):
+    __tablename__ = "agent_chat_jobs"
+    __table_args__ = (
+        Index("ix_agent_chat_jobs_scope_status", "user_id", "workspace_id", "role", "conversation_id", "status"),
+        Index("ix_agent_chat_jobs_conversation_created", "user_id", "workspace_id", "conversation_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    entity: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    intent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
 
 
 class EmailCode(Base):

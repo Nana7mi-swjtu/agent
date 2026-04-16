@@ -31,6 +31,11 @@ export const useChatStore = defineStore("chat", () => {
     activeSessionId.value = sessionId;
   };
 
+  const findSession = (sessionId) => sessions.value.find((session) => session.id === String(sessionId || ""));
+
+  const findSessionByConversationId = (conversationId) =>
+    sessions.value.find((session) => session.conversationId === String(conversationId || ""));
+
   const createSession = (role, roleNameResolver, workspaceId = "default") => {
     const id = `s_${Date.now()}`;
     const roleTitle = role ? roleNameResolver(role) : "新对话";
@@ -53,43 +58,69 @@ export const useChatStore = defineStore("chat", () => {
     return createSession(role, roleNameResolver, workspaceId);
   };
 
+  const appendMessageToSession = (sessionId, message) => {
+    const session = findSession(sessionId);
+    if (!session) return "";
+    const normalized = normalizeChatMessage(message);
+    session.messages.push(normalized);
+    session.updatedAt = new Date().toISOString();
+    return normalized.id;
+  };
+
   const appendMessage = (message) => {
-    if (!activeSession.value) return;
-    activeSession.value.messages.push(normalizeChatMessage(message));
-    activeSession.value.updatedAt = new Date().toISOString();
+    if (!activeSession.value) return "";
+    return appendMessageToSession(activeSession.value.id, message);
+  };
+
+  const replaceMessageInSession = (sessionId, messageId, message) => {
+    const session = findSession(sessionId);
+    if (!session) return false;
+    const targetId = String(messageId || "");
+    const index = session.messages.findIndex((item) => item.id === targetId);
+    if (index < 0) return false;
+    session.messages.splice(index, 1, normalizeChatMessage({ ...message, id: targetId }));
+    session.updatedAt = new Date().toISOString();
+    return true;
   };
 
   const replaceMessage = (messageId, message) => {
     if (!activeSession.value) return false;
+    return replaceMessageInSession(activeSession.value.id, messageId, message);
+  };
+
+  const patchMessageInSession = (sessionId, messageId, patch) => {
+    const session = findSession(sessionId);
+    if (!session) return false;
     const targetId = String(messageId || "");
-    const index = activeSession.value.messages.findIndex((item) => item.id === targetId);
-    if (index < 0) return false;
-    activeSession.value.messages.splice(index, 1, normalizeChatMessage({ ...message, id: targetId }));
-    activeSession.value.updatedAt = new Date().toISOString();
+    const message = session.messages.find((item) => item.id === targetId);
+    if (!message) return false;
+    Object.assign(message, normalizeChatMessage({ ...message, ...patch, id: targetId }));
+    session.updatedAt = new Date().toISOString();
     return true;
   };
 
   const patchMessage = (messageId, patch) => {
     if (!activeSession.value) return false;
+    return patchMessageInSession(activeSession.value.id, messageId, patch);
+  };
+
+  const removeMessageFromSession = (sessionId, messageId) => {
+    const session = findSession(sessionId);
+    if (!session) return false;
     const targetId = String(messageId || "");
-    const message = activeSession.value.messages.find((item) => item.id === targetId);
-    if (!message) return false;
-    Object.assign(message, normalizeChatMessage({ ...message, ...patch, id: targetId }));
-    activeSession.value.updatedAt = new Date().toISOString();
+    const index = session.messages.findIndex((item) => item.id === targetId);
+    if (index < 0) return false;
+    session.messages.splice(index, 1);
+    session.updatedAt = new Date().toISOString();
     return true;
   };
 
   const removeMessage = (messageId) => {
     if (!activeSession.value) return false;
-    const targetId = String(messageId || "");
-    const index = activeSession.value.messages.findIndex((item) => item.id === targetId);
-    if (index < 0) return false;
-    activeSession.value.messages.splice(index, 1);
-    activeSession.value.updatedAt = new Date().toISOString();
-    return true;
+    return removeMessageFromSession(activeSession.value.id, messageId);
   };
 
-  const appendPendingAssistantMessage = (pendingStage = "") => {
+  const appendPendingAssistantMessage = (pendingStage = "", extra = {}) => {
     const id = buildMessageId();
     appendMessage({
       id,
@@ -98,6 +129,7 @@ export const useChatStore = defineStore("chat", () => {
       time: new Date().toISOString(),
       pending: true,
       pendingStage,
+      ...extra,
     });
     return id;
   };
@@ -165,15 +197,21 @@ export const useChatStore = defineStore("chat", () => {
     sessions,
     activeSessionId,
     activeSession,
+    findSession,
+    findSessionByConversationId,
     sending,
     error,
     setActiveSession,
     createSession,
     ensureSession,
     appendMessage,
+    appendMessageToSession,
     replaceMessage,
+    replaceMessageInSession,
     patchMessage,
+    patchMessageInSession,
     removeMessage,
+    removeMessageFromSession,
     appendPendingAssistantMessage,
     setSessionScope,
     deleteSession,

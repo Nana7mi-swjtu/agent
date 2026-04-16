@@ -8,7 +8,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.agent import services as agent_services
 from app.agent.services import AgentServiceError
-from app.models import AgentConversationMessage, AgentConversationThread, User
+from app.models import AgentChatJob, AgentConversationMessage, AgentConversationThread, User
 
 
 def _auth_headers(client, user_id: int) -> dict[str, str]:
@@ -633,6 +633,163 @@ def test_workspace_chat_stream_scopes_memory_by_conversation_id(client, db_sessi
     db_session.expire_all()
     threads = db_session.execute(select(AgentConversationThread)).scalars().all()
     assert {item.conversation_id for item in threads} == {"stream-conv-a", "stream-conv-b"}
+
+
+def test_workspace_chat_job_completes_and_saves_scoped_memory(client, app, db_session, monkeypatch):
+    user = User(email="chat-job@example.com", nickname="ChatJob", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+    app.config["AGENT_CHAT_JOBS_SYNC_EXECUTION"] = True
+
+    captured: list[dict[str, object]] = []
+
+    def _fake_generate_reply_payload(**kwargs):
+        captured.append(kwargs)
+        return {
+            "reply": "job reply",
+            "citations": [],
+            "sources": [],
+            "noEvidence": False,
+            "intent": "answer",
+            "graph": {},
+            "graphMeta": {},
+        }
+
+    monkeypatch.setattr("app.agent.jobs.generate_reply_payload", _fake_generate_reply_payload)
+
+    create_response = client.post(
+        "/api/workspace/chat/jobs",
+        json=_chat_payload("job question", "job-conv-a", workspaceId="ws-job"),
+        headers=headers,
+    )
+    assert create_response.status_code == 202
+    job_id = create_response.get_json()["data"]["jobId"]
+
+    job_response = client.get(f"/api/workspace/chat/jobs/{job_id}?workspaceId=ws-job", headers=headers)
+    assert job_response.status_code == 200
+    job_payload = job_response.get_json()["data"]
+    assert job_payload["status"] == "succeeded"
+    assert job_payload["result"]["reply"] == "job reply"
+    assert job_payload["conversationId"] == "job-conv-a"
+    assert captured[0]["conversation_history"] == []
+
+    db_session.expire_all()
+    messages = db_session.execute(select(AgentConversationMessage).order_by(AgentConversationMessage.id)).scalars().all()
+    assert [(item.role, item.content) for item in messages] == [
+        ("user", "job question"),
+        ("assistant", "job reply"),
+    ]
+    thread = db_session.execute(select(AgentConversationThread)).scalar_one()
+    assert thread.conversation_id == "job-conv-a"
+
+
+def test_workspace_chat_job_failure_records_job_without_memory_turn(client, app, db_session, monkeypatch):
+    user = User(email="chat-job-fail@example.com", nickname="ChatJobFail", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+    app.config["AGENT_CHAT_JOBS_SYNC_EXECUTION"] = True
+
+    def _raise_agent_error(**kwargs):
+        raise AgentServiceError("configured failure")
+
+    monkeypatch.setattr("app.agent.jobs.generate_reply_payload", _raise_agent_error)
+
+    create_response = client.post(
+        "/api/workspace/chat/jobs",
+        json=_chat_payload("job fail", "job-conv-fail", workspaceId="ws-job"),
+        headers=headers,
+    )
+    assert create_response.status_code == 202
+    job_id = create_response.get_json()["data"]["jobId"]
+
+    job_response = client.get(f"/api/workspace/chat/jobs/{job_id}?workspaceId=ws-job", headers=headers)
+    assert job_response.status_code == 200
+    job_payload = job_response.get_json()["data"]
+    assert job_payload["status"] == "failed"
+    assert job_payload["error"] == "configured failure"
+
+    db_session.expire_all()
+    assert db_session.execute(select(AgentConversationMessage)).scalars().all() == []
+
+
+def test_workspace_chat_job_conflict_is_conversation_scoped(client, app, db_session, monkeypatch):
+    user = User(email="chat-job-conflict@example.com", nickname="ChatJobConflict", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+    monkeypatch.setattr("app.workspace.routes.submit_agent_chat_job", lambda app_obj, job_id: None)
+
+    active = AgentChatJob(
+        user_id=user.id,
+        workspace_id="ws-job",
+        role="investor",
+        conversation_id="job-conv-active",
+        message="still running",
+        status="running",
+    )
+    db_session.add(active)
+    db_session.commit()
+
+    conflict = client.post(
+        "/api/workspace/chat/jobs",
+        json=_chat_payload("second", "job-conv-active", workspaceId="ws-job"),
+        headers=headers,
+    )
+    assert conflict.status_code == 409
+    assert conflict.get_json()["data"]["job"]["jobId"] == active.id
+
+    other = client.post(
+        "/api/workspace/chat/jobs",
+        json=_chat_payload("other conversation", "job-conv-other", workspaceId="ws-job"),
+        headers=headers,
+    )
+    assert other.status_code == 202
+    assert other.get_json()["data"]["conversationId"] == "job-conv-other"
+
+
+def test_workspace_chat_job_authorization_and_listing_scope(client, db_session):
+    owner = User(email="chat-job-owner@example.com", nickname="Owner", password_hash=generate_password_hash("password123"))
+    intruder = User(email="chat-job-intruder@example.com", nickname="Intruder", password_hash=generate_password_hash("password123"))
+    db_session.add_all([owner, intruder])
+    db_session.commit()
+
+    job = AgentChatJob(
+        user_id=owner.id,
+        workspace_id="ws-owner",
+        role="investor",
+        conversation_id="owner-conv",
+        message="private job",
+        status="succeeded",
+        result_json={"reply": "private", "citations": [], "sources": [], "noEvidence": False},
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    owner_headers = _auth_headers(client, owner.id)
+    owner_get = client.get(f"/api/workspace/chat/jobs/{job.id}?workspaceId=ws-owner", headers=owner_headers)
+    assert owner_get.status_code == 200
+
+    intruder_headers = _auth_headers(client, intruder.id)
+    intruder_get = client.get(f"/api/workspace/chat/jobs/{job.id}?workspaceId=ws-owner", headers=intruder_headers)
+    assert intruder_get.status_code == 404
+
+    intruder_list = client.get(
+        "/api/workspace/chat/jobs?workspaceId=ws-owner&conversationId=owner-conv",
+        headers=intruder_headers,
+    )
+    assert intruder_list.status_code == 200
+    assert intruder_list.get_json()["data"]["jobs"] == []
 
 
 def test_grouped_sources_deduplicate_documents_and_preserve_web_links():

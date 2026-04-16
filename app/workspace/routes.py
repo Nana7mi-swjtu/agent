@@ -6,46 +6,33 @@ import logging
 from flask import Blueprint, Response, current_app, request, session, stream_with_context
 from sqlalchemy import select
 
+from ..agent.jobs import (
+    AgentChatJobConflict,
+    AgentChatJobNotFound,
+    create_chat_job,
+    get_chat_job,
+    list_chat_jobs_for_conversation,
+    serialize_job,
+    submit_agent_chat_job,
+)
 from ..agent.memory import load_conversation_history, save_conversation_turn
 from ..agent.services import AgentServiceError, generate_reply_payload
 from ..db import session_scope
 from ..logging_utils import bind_log_context, log_audit_event
 from ..models import User
+from .roles import ROLE_PRESETS
 
 
 workspace_bp = Blueprint("workspace", __name__)
 logger = logging.getLogger(__name__)
 
-ROLE_PRESETS = {
-    "investor": {
-        "name": "投资者",
-        "description": "关注风险收益、现金流与估值逻辑。",
-        "systemPrompt": (
-            "你是投资者决策助手。你的目标是帮助用户评估项目的收益、风险、退出机制与资金效率，"
-            "并给出可执行的尽调清单与投资建议。"
-        ),
-    },
-    "enterprise_manager": {
-        "name": "企业管理者",
-        "description": "关注经营效率、组织协同与战略落地。",
-        "systemPrompt": (
-            "你是企业经营助手。你的目标是从战略、组织、财务和流程四个层面给出可执行建议，"
-            "并优先输出短周期可验证的行动项。"
-        ),
-    },
-    "regulator": {
-        "name": "监管机构",
-        "description": "关注合规风险、审计透明度与政策对齐。",
-        "systemPrompt": (
-            "你是监管分析助手。你的目标是识别潜在合规风险、披露缺口与流程漏洞，"
-            "并给出符合监管口径的整改建议与跟踪机制。"
-        ),
-    },
-}
-
 
 def _json_error(message: str, status_code: int):
     return {"ok": False, "error": message}, status_code
+
+
+def _json_error_data(message: str, status_code: int, data: dict):
+    return {"ok": False, "error": message, "data": data}, status_code
 
 
 def _current_user_id() -> int | None:
@@ -112,6 +99,7 @@ def _workspace_payload(preferences: dict | None) -> dict:
         "agentTraceVisualizationEnabled": bool(current_app.config.get("AGENT_TRACE_VISUALIZATION_ENABLED", False)),
         "agentTraceDebugDetailsEnabled": bool(current_app.config.get("AGENT_TRACE_DEBUG_DETAILS_ENABLED", False)),
         "chatStreamingEnabled": bool(current_app.config.get("WORKSPACE_CHAT_STREAMING_ENABLED", True)),
+        "agentChatJobsEnabled": bool(current_app.config.get("AGENT_CHAT_JOBS_ENABLED", True)),
         "roles": [
             {
                 "key": key,
@@ -146,6 +134,16 @@ def _chat_response_data(
         data["trace"] = result["trace"]
     if debug_enabled:
         data["debug"] = result.get("debug", {})
+    return data
+
+
+def _job_response_data(job) -> dict:
+    data = serialize_job(job, include_result=False)
+    if isinstance(job.result_json, dict):
+        result = dict(job.result_json)
+        result.setdefault("role", job.role)
+        result.setdefault("systemPrompt", ROLE_PRESETS.get(job.role, {}).get("systemPrompt", ""))
+        data["result"] = result
     return data
 
 
@@ -198,6 +196,126 @@ def patch_workspace_context():
             "ok": True,
             "data": _workspace_payload(preferences),
         }
+
+
+@workspace_bp.post("/chat/jobs")
+def create_workspace_chat_job():
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+    if not bool(current_app.config.get("AGENT_CHAT_JOBS_ENABLED", True)):
+        return _json_error("agent chat jobs are disabled", 404)
+
+    payload = request.get_json(silent=True)
+    message = payload.get("message", "") if isinstance(payload, dict) else ""
+    message = str(message).strip()
+    if not message:
+        return _json_error("message is required", 400)
+    conversation_id = _conversation_id(payload)
+    if not conversation_id:
+        return _json_error("conversationId is required", 400)
+
+    request_workspace_id = ""
+    entity = ""
+    intent = ""
+    if isinstance(payload, dict):
+        raw_workspace_id = payload.get("workspaceId")
+        if isinstance(raw_workspace_id, str):
+            request_workspace_id = raw_workspace_id.strip()
+        raw_entity = payload.get("entity")
+        if isinstance(raw_entity, str):
+            entity = raw_entity.strip()
+        raw_intent = payload.get("intent")
+        if isinstance(raw_intent, str):
+            intent = raw_intent.strip()
+
+    app_obj = current_app._get_current_object()
+    with session_scope() as db:
+        user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+        if not user:
+            return _json_error("user not found", 404)
+
+        role = _selected_role(user.preferences)
+        if not role:
+            return _json_error("please select a role first", 400)
+
+        workspace_id = request_workspace_id or _workspace_id(user.preferences)
+        bind_log_context(user_id=user_id, workspace_id=workspace_id)
+        try:
+            job = create_chat_job(
+                db,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                role=role,
+                conversation_id=conversation_id,
+                message=message,
+                entity=entity,
+                intent=intent,
+            )
+        except AgentChatJobConflict as exc:
+            bind_log_context(job_id=exc.active_job.id)
+            log_audit_event(
+                "workspace.chat.job.conflict",
+                operation_status="conflict",
+                resource_type="agent_chat_job",
+                resource_id=str(exc.active_job.id),
+                conversation_id=conversation_id,
+                role=role,
+            )
+            return _json_error_data(
+                "agent chat job already active for conversation",
+                409,
+                {"job": _job_response_data(exc.active_job)},
+            )
+        bind_log_context(job_id=job.id)
+        log_audit_event(
+            "workspace.chat.job.requested",
+            operation_status="requested",
+            resource_type="agent_chat_job",
+            resource_id=str(job.id),
+            conversation_id=conversation_id,
+            role=role,
+        )
+        job_id = int(job.id)
+        data = _job_response_data(job)
+
+    submit_agent_chat_job(app_obj, job_id)
+    return {"ok": True, "data": data}, 202
+
+
+@workspace_bp.get("/chat/jobs")
+def list_workspace_chat_jobs():
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+    conversation_id = str(request.args.get("conversationId", "") or "").strip()
+    if not conversation_id:
+        return _json_error("conversationId is required", 400)
+    workspace_id = str(request.args.get("workspaceId", "") or "").strip() or "default"
+
+    with session_scope() as db:
+        jobs = list_chat_jobs_for_conversation(
+            db,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            conversation_id=conversation_id,
+        )
+        return {"ok": True, "data": {"jobs": [_job_response_data(job) for job in jobs]}}
+
+
+@workspace_bp.get("/chat/jobs/<int:job_id>")
+def get_workspace_chat_job(job_id: int):
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+    workspace_id = str(request.args.get("workspaceId", "") or "").strip() or None
+
+    with session_scope() as db:
+        try:
+            job = get_chat_job(db, user_id=user_id, workspace_id=workspace_id, job_id=job_id)
+        except AgentChatJobNotFound:
+            return _json_error("agent chat job not found", 404)
+        return {"ok": True, "data": _job_response_data(job)}
 
 
 @workspace_bp.post("/chat")

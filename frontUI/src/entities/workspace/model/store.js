@@ -23,6 +23,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     parseBool(import.meta.env.VITE_AGENT_TRACE_DEBUG_DETAILS_ENABLED, false),
   );
   const chatStreamingEnabled = ref(parseBool(import.meta.env.VITE_WORKSPACE_CHAT_STREAMING_ENABLED, false));
+  const agentChatJobsEnabled = ref(parseBool(import.meta.env.VITE_AGENT_CHAT_JOBS_ENABLED, true));
 
   const applyContext = (data = {}) => {
     roles.value = Array.isArray(data.roles) ? data.roles : [];
@@ -36,6 +37,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       agentTraceDebugDetailsEnabled.value,
     );
     chatStreamingEnabled.value = parseBool(data.chatStreamingEnabled, chatStreamingEnabled.value);
+    agentChatJobsEnabled.value = parseBool(data.agentChatJobsEnabled, agentChatJobsEnabled.value);
     ready.value = true;
   };
 
@@ -60,6 +62,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       false,
     );
     chatStreamingEnabled.value = parseBool(import.meta.env.VITE_WORKSPACE_CHAT_STREAMING_ENABLED, false);
+    agentChatJobsEnabled.value = parseBool(import.meta.env.VITE_AGENT_CHAT_JOBS_ENABLED, true);
   };
 
   return {
@@ -72,6 +75,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     agentTraceEnabled,
     agentTraceDebugDetailsEnabled,
     chatStreamingEnabled,
+    agentChatJobsEnabled,
     applyContext,
     setContextReady,
     setActiveSession,

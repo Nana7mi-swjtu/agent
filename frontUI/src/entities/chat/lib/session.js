@@ -25,6 +25,10 @@ export const normalizeChatMessage = (raw) => ({
   graph: normalizeGraph(raw?.graph),
   graphMeta: normalizeGraphMeta(raw?.graphMeta),
   memoryInfo: raw?.memoryInfo && typeof raw.memoryInfo === "object" ? raw.memoryInfo : null,
+  jobId: raw?.jobId ? String(raw.jobId) : "",
+  jobStatus: typeof raw?.jobStatus === "string" ? raw.jobStatus : "",
+  submittedText: typeof raw?.submittedText === "string" ? raw.submittedText : "",
+  error: typeof raw?.error === "string" ? raw.error : "",
   pending: Boolean(raw?.pending),
   pendingStage: typeof raw?.pendingStage === "string" ? raw.pendingStage : "",
 });
@@ -42,6 +46,12 @@ export const serializeChatMessage = (message) => ({
   graph: normalizeGraph(message?.graph),
   graphMeta: normalizeGraphMeta(message?.graphMeta),
   memoryInfo: message?.memoryInfo && typeof message.memoryInfo === "object" ? message.memoryInfo : null,
+  jobId: message?.jobId ? String(message.jobId) : "",
+  jobStatus: typeof message?.jobStatus === "string" ? message.jobStatus : "",
+  submittedText: typeof message?.submittedText === "string" ? message.submittedText : "",
+  error: typeof message?.error === "string" ? message.error : "",
+  pending: Boolean(message?.pending),
+  pendingStage: typeof message?.pendingStage === "string" ? message.pendingStage : "",
 });
 
 export const normalizeChatSession = (raw) => ({
@@ -61,7 +71,7 @@ export const serializeChatSession = (session) => ({
   role: typeof session?.role === "string" ? session.role : "",
   title: String(session?.title || "新对话"),
   messages: Array.isArray(session?.messages)
-    ? session.messages.filter((message) => !message?.pending).map(serializeChatMessage)
+    ? session.messages.filter((message) => !message?.pending || message?.jobId).map(serializeChatMessage)
     : [],
   updatedAt: typeof session?.updatedAt === "string" ? session.updatedAt : new Date().toISOString(),
 });
