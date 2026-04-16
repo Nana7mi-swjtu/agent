@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import warnings
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -149,6 +150,38 @@ def test_bankruptcy_predict_returns_structured_result_and_plot(client, db_sessio
     plot_response = client.get(payload["plotUrl"])
     assert plot_response.status_code == 200
     assert plot_response.mimetype == "image/png"
+
+
+def test_bankruptcy_plot_supports_chinese_company_name(client, db_session):
+    bankruptcy_service.reset_runtime_for_tests()
+    user = User(email="bankruptcy-chinese-plot@example.com", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        response = client.post(
+            "/api/bankruptcy/predict",
+            data={
+                "workspaceId": "ws-risk",
+                "enterpriseName": "A公司",
+                "file": (io.BytesIO(_single_sample_csv_bytes()), "sample.csv"),
+            },
+            headers=headers,
+            content_type="multipart/form-data",
+        )
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["companyName"] == "A公司"
+    assert payload["plotUrl"].startswith("/api/bankruptcy/plots/")
+    glyph_warnings = [
+        item
+        for item in caught
+        if "Glyph" in str(item.message) and "missing from font" in str(item.message)
+    ]
+    assert glyph_warnings == []
 
 
 def test_bankruptcy_plot_rejects_invalid_token(client, db_session):

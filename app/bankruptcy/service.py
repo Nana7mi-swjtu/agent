@@ -30,6 +30,17 @@ from .repository import create_record, get_record_for_scope, list_records_for_sc
 _runtime_lock = Lock()
 _runtime: dict[str, Any] | None = None
 
+_CJK_FONT_CANDIDATES = (
+    "Microsoft YaHei",
+    "SimHei",
+    "SimSun",
+    "Noto Sans CJK SC",
+    "Source Han Sans SC",
+    "Arial Unicode MS",
+    "PingFang SC",
+    "Heiti SC",
+)
+
 
 def _project_root() -> Path:
     from pathlib import Path as _Path
@@ -50,6 +61,17 @@ def reset_runtime_for_tests() -> None:
         _runtime = None
 
 
+def _configure_matplotlib_fonts(matplotlib: Any) -> None:
+    from matplotlib import font_manager
+
+    available = {font.name for font in font_manager.fontManager.ttflist}
+    cjk_fonts = [name for name in _CJK_FONT_CANDIDATES if name in available]
+    if cjk_fonts:
+        matplotlib.rcParams["font.family"] = "sans-serif"
+        matplotlib.rcParams["font.sans-serif"] = [*cjk_fonts, *matplotlib.rcParams.get("font.sans-serif", [])]
+    matplotlib.rcParams["axes.unicode_minus"] = False
+
+
 def _load_dependencies() -> dict[str, Any]:
     try:
         import joblib
@@ -60,6 +82,7 @@ def _load_dependencies() -> dict[str, Any]:
     except ImportError as exc:
         raise BankruptcyConfigurationError(f"required package is missing: {exc}") from exc
     matplotlib.use("Agg")
+    _configure_matplotlib_fonts(matplotlib)
     import matplotlib.pyplot as plt
 
     return {
