@@ -29,13 +29,14 @@ class User(Base):
 class AgentConversationThread(Base):
     __tablename__ = "agent_conversation_threads"
     __table_args__ = (
-        UniqueConstraint("user_id", "workspace_id", "role", name="uq_agent_conversation_threads_scope"),
+        UniqueConstraint("user_id", "workspace_id", "role", "conversation_id", name="uq_agent_conversation_threads_scope"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_user_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_assistant_message: Mapped[str | None] = mapped_column(Text, nullable=True)

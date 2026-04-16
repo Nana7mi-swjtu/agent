@@ -72,6 +72,15 @@ def _workspace_id(data: dict | None) -> str:
     return "default"
 
 
+def _conversation_id(data: dict | None) -> str:
+    if not isinstance(data, dict):
+        return ""
+    value = data.get("conversationId")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return ""
+
+
 def _selected_role(data: dict | None) -> str | None:
     role = _extract_workspace(data).get("role")
     if isinstance(role, str) and role in ROLE_PRESETS:
@@ -202,6 +211,9 @@ def workspace_chat():
     message = str(message).strip()
     if not message:
         return _json_error("message is required", 400)
+    conversation_id = _conversation_id(payload)
+    if not conversation_id:
+        return _json_error("conversationId is required", 400)
     request_workspace_id = ""
     entity = ""
     intent = ""
@@ -244,8 +256,9 @@ def workspace_chat():
         thread, conversation_history, conversation_context = load_conversation_history(
             db,
             user_id=user_id,
-            workspace_id=request_workspace_id or _workspace_id(user.preferences),
+            workspace_id=workspace_id,
             role=role,
+            conversation_id=conversation_id,
         )
         try:
             result = generate_reply_payload(
@@ -312,6 +325,9 @@ def workspace_chat_stream():
     message = str(message).strip()
     if not message:
         return _json_error("message is required", 400)
+    conversation_id = _conversation_id(payload)
+    if not conversation_id:
+        return _json_error("conversationId is required", 400)
     request_workspace_id = ""
     entity = ""
     intent = ""
@@ -363,6 +379,7 @@ def workspace_chat_stream():
                     user_id=user_id,
                     workspace_id=workspace_id,
                     role=role,
+                    conversation_id=conversation_id,
                 )
                 result = generate_reply_payload(
                     role=role,

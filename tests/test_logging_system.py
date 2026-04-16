@@ -128,7 +128,11 @@ def test_auth_and_workspace_audit_events_are_recorded(client, app, db_session, m
         "app.workspace.routes.generate_reply_payload",
         lambda **kwargs: {"reply": "ok", "citations": [], "noEvidence": False},
     )
-    chat_response = client.post("/api/workspace/chat", json={"message": "hello"}, headers=patch_headers)
+    chat_response = client.post(
+        "/api/workspace/chat",
+        json={"message": "hello", "conversationId": "audit-conversation"},
+        headers=patch_headers,
+    )
     assert chat_response.status_code == 200
 
     records = _read_json_lines(app.extensions["logging"]["audit_log"])

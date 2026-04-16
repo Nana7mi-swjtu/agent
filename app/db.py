@@ -30,6 +30,7 @@ def init_db(app) -> None:
 
         ModelsBase.metadata.create_all(engine)
         _ensure_profile_columns(engine)
+        _ensure_agent_conversation_columns(engine)
         _ensure_rag_columns(engine)
         _ensure_bankruptcy_columns(engine)
 
@@ -59,6 +60,40 @@ def _ensure_profile_columns(engine) -> None:
 
     with engine.begin() as conn:
         conn.execute(text(f"ALTER TABLE users {', '.join(alter_sql)}"))
+
+
+def _ensure_agent_conversation_columns(engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "agent_conversation_threads" not in table_names:
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("agent_conversation_threads")}
+    with engine.begin() as conn:
+        if "conversation_id" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE agent_conversation_threads "
+                    "ADD COLUMN conversation_id VARCHAR(128) NOT NULL AFTER role"
+                )
+            )
+
+        indexes = {
+            item["name"]: tuple(item.get("column_names") or [])
+            for item in inspect(engine).get_indexes("agent_conversation_threads")
+        }
+        current_scope = indexes.get("uq_agent_conversation_threads_scope")
+        if current_scope == ("user_id", "workspace_id", "role"):
+            conn.execute(text("ALTER TABLE agent_conversation_threads DROP INDEX uq_agent_conversation_threads_scope"))
+            current_scope = None
+        if current_scope != ("user_id", "workspace_id", "role", "conversation_id"):
+            conn.execute(
+                text(
+                    "ALTER TABLE agent_conversation_threads "
+                    "ADD UNIQUE KEY uq_agent_conversation_threads_scope "
+                    "(user_id, workspace_id, role, conversation_id)"
+                )
+            )
 
 
 def _ensure_rag_columns(engine) -> None:
