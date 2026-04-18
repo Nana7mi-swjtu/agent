@@ -11,6 +11,7 @@ from flask_session import Session
 from werkzeug.exceptions import HTTPException
 
 from .config import Config
+from .agent.jobs import initialize_agent_chat_jobs
 from .db import init_db
 from .db_bootstrap import ensure_database_exists
 from .auth.routes import auth_bp
@@ -112,6 +113,8 @@ def create_app(config_overrides: dict | None = None) -> Flask:
 
     Session(app)
     init_db(app)
+    if app.config.get("AGENT_CHAT_JOBS_ENABLED", True):
+        initialize_agent_chat_jobs(app)
 
     if app.config.get("EMAIL_BACKEND") == "memory":
         app.extensions["email_outbox"] = []

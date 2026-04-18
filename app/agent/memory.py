@@ -36,6 +36,7 @@ def get_or_create_conversation_thread(
     user_id: int,
     workspace_id: str,
     role: str,
+    conversation_id: str,
 ) -> AgentConversationThread:
     thread = (
         db.execute(
@@ -43,6 +44,7 @@ def get_or_create_conversation_thread(
                 AgentConversationThread.user_id == user_id,
                 AgentConversationThread.workspace_id == workspace_id,
                 AgentConversationThread.role == role,
+                AgentConversationThread.conversation_id == conversation_id,
             )
         )
         .scalars()
@@ -55,6 +57,7 @@ def get_or_create_conversation_thread(
         user_id=user_id,
         workspace_id=workspace_id,
         role=role,
+        conversation_id=conversation_id,
         summary=None,
         last_user_message=None,
         last_assistant_message=None,
@@ -74,6 +77,7 @@ def load_conversation_history(
     user_id: int,
     workspace_id: str,
     role: str,
+    conversation_id: str,
     limit: int = _MEMORY_HISTORY_LIMIT,
 ) -> tuple[AgentConversationThread, list[dict[str, str]], str]:
     thread = get_or_create_conversation_thread(
@@ -81,6 +85,7 @@ def load_conversation_history(
         user_id=user_id,
         workspace_id=workspace_id,
         role=role,
+        conversation_id=conversation_id,
     )
 
     messages = (

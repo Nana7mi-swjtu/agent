@@ -30,6 +30,8 @@ def init_db(app) -> None:
 
         ModelsBase.metadata.create_all(engine)
         _ensure_profile_columns(engine)
+        _ensure_agent_conversation_columns(engine)
+        _ensure_agent_chat_job_columns(engine)
         _ensure_rag_columns(engine)
         _ensure_bankruptcy_columns(engine)
 
@@ -59,6 +61,88 @@ def _ensure_profile_columns(engine) -> None:
 
     with engine.begin() as conn:
         conn.execute(text(f"ALTER TABLE users {', '.join(alter_sql)}"))
+
+
+def _ensure_agent_conversation_columns(engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "agent_conversation_threads" not in table_names:
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("agent_conversation_threads")}
+    with engine.begin() as conn:
+        if "conversation_id" not in columns:
+            conn.execute(
+                text(
+                    "ALTER TABLE agent_conversation_threads "
+                    "ADD COLUMN conversation_id VARCHAR(128) NOT NULL AFTER role"
+                )
+            )
+
+        indexes = {
+            item["name"]: tuple(item.get("column_names") or [])
+            for item in inspect(engine).get_indexes("agent_conversation_threads")
+        }
+        current_scope = indexes.get("uq_agent_conversation_threads_scope")
+        if current_scope == ("user_id", "workspace_id", "role"):
+            conn.execute(text("ALTER TABLE agent_conversation_threads DROP INDEX uq_agent_conversation_threads_scope"))
+            current_scope = None
+        if current_scope != ("user_id", "workspace_id", "role", "conversation_id"):
+            conn.execute(
+                text(
+                    "ALTER TABLE agent_conversation_threads "
+                    "ADD UNIQUE KEY uq_agent_conversation_threads_scope "
+                    "(user_id, workspace_id, role, conversation_id)"
+                )
+            )
+
+
+def _ensure_agent_chat_job_columns(engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "agent_chat_jobs" not in table_names:
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("agent_chat_jobs")}
+    alter_sql: list[str] = []
+    if "entity" not in columns:
+        alter_sql.append("ADD COLUMN entity VARCHAR(255) NULL AFTER message")
+    if "intent" not in columns:
+        alter_sql.append("ADD COLUMN intent VARCHAR(255) NULL AFTER entity")
+    if "result_json" not in columns:
+        alter_sql.append("ADD COLUMN result_json JSON NULL AFTER status")
+    if "error_message" not in columns:
+        alter_sql.append("ADD COLUMN error_message VARCHAR(2048) NULL AFTER result_json")
+    if "started_at" not in columns:
+        alter_sql.append("ADD COLUMN started_at DATETIME NULL AFTER created_at")
+    if "completed_at" not in columns:
+        alter_sql.append("ADD COLUMN completed_at DATETIME NULL AFTER started_at")
+    if "updated_at" not in columns:
+        alter_sql.append(
+            "ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER completed_at"
+        )
+
+    with engine.begin() as conn:
+        if alter_sql:
+            conn.execute(text(f"ALTER TABLE agent_chat_jobs {', '.join(alter_sql)}"))
+
+        indexes = {item["name"] for item in inspect(engine).get_indexes("agent_chat_jobs")}
+        if "ix_agent_chat_jobs_scope_status" not in indexes:
+            conn.execute(
+                text(
+                    "ALTER TABLE agent_chat_jobs "
+                    "ADD INDEX ix_agent_chat_jobs_scope_status "
+                    "(user_id, workspace_id, role, conversation_id, status)"
+                )
+            )
+        if "ix_agent_chat_jobs_conversation_created" not in indexes:
+            conn.execute(
+                text(
+                    "ALTER TABLE agent_chat_jobs "
+                    "ADD INDEX ix_agent_chat_jobs_conversation_created "
+                    "(user_id, workspace_id, conversation_id, created_at)"
+                )
+            )
 
 
 def _ensure_rag_columns(engine) -> None:

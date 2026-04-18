@@ -1,8 +1,14 @@
-import { computed, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 
 import { useChatStore } from "@/entities/chat/model/store";
-import { postWorkspaceChat, postWorkspaceChatStream } from "@/entities/workspace/api";
+import {
+  getWorkspaceChatJob,
+  listWorkspaceChatJobs,
+  postWorkspaceChat,
+  postWorkspaceChatJob,
+  postWorkspaceChatStream,
+} from "@/entities/workspace/api";
 import { formatMessageTime } from "@/shared/lib/time";
 import { useUiStore } from "@/shared/model/ui-store";
 import { useWorkspaceStore } from "@/entities/workspace/model/store";
@@ -37,11 +43,15 @@ const parseStreamEvents = async (response, onEvent) => {
   }
 };
 
+const activeJobPolls = new Map();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const isActiveJobStatus = (status) => ["pending", "running"].includes(String(status || "").toLowerCase());
+
 export const useChatMessaging = () => {
   const uiStore = useUiStore();
   const chatStore = useChatStore();
   const workspaceStore = useWorkspaceStore();
-  const { selectedRole, systemPrompt, workspaceId, chatStreamingEnabled } = storeToRefs(workspaceStore);
+  const { selectedRole, systemPrompt, workspaceId, chatStreamingEnabled, agentChatJobsEnabled } = storeToRefs(workspaceStore);
   const { sessions, activeSessionId, sending, error, activeSession } = storeToRefs(chatStore);
   const input = ref("");
 
@@ -59,14 +69,20 @@ export const useChatMessaging = () => {
 
   const displayTime = (value) => formatMessageTime(value, uiStore.language);
 
-  const restoreFailedRequest = (pendingMessageId, text, message) => {
-    chatStore.removeMessage(pendingMessageId);
+  const restoreFailedRequest = (pendingMessageId, text, message, sessionId = "") => {
+    if (pendingMessageId) {
+      if (sessionId) {
+        chatStore.removeMessageFromSession(sessionId, pendingMessageId);
+      } else {
+        chatStore.removeMessage(pendingMessageId);
+      }
+    }
     error.value = message;
     input.value = text;
     return { ok: false, error: message };
   };
 
-  const finalizeAssistantMessage = (pendingMessageId, payload = {}) => {
+  const finalizeAssistantMessage = (pendingMessageId, payload = {}, sessionId = "", jobId = "") => {
     const trace = payload.trace && typeof payload.trace === "object" ? payload.trace : null;
     let memoryInfo = null;
     if (trace && Array.isArray(trace.steps)) {
@@ -81,7 +97,7 @@ export const useChatMessaging = () => {
         };
       }
     }
-    chatStore.replaceMessage(pendingMessageId, {
+    const message = {
       from: "agent",
       text: payload.reply || "",
       time: new Date().toISOString(),
@@ -93,9 +109,131 @@ export const useChatMessaging = () => {
       graph: payload.graph || null,
       graphMeta: payload.graphMeta || null,
       memoryInfo: memoryInfo,
+      jobId: jobId ? String(jobId) : "",
+      jobStatus: "succeeded",
       pending: false,
-    });
+    };
+    const replaced = sessionId
+      ? chatStore.replaceMessageInSession(sessionId, pendingMessageId, message)
+      : chatStore.replaceMessage(pendingMessageId, message);
+    if (!replaced && sessionId) {
+      chatStore.appendMessageToSession(sessionId, message);
+    }
     workspaceStore.systemPrompt = payload.systemPrompt || workspaceStore.systemPrompt;
+  };
+
+  const markAssistantJobFailed = (pendingMessageId, message, sessionId = "", jobId = "", submittedText = "") => {
+    const errorText = String(message || uiStore.t("sendFailed"));
+    const patch = {
+      from: "agent",
+      text: errorText,
+      time: new Date().toISOString(),
+      pending: false,
+      pendingStage: "",
+      jobId: jobId ? String(jobId) : "",
+      jobStatus: "failed",
+      submittedText,
+      error: errorText,
+    };
+    const patched = sessionId
+      ? chatStore.patchMessageInSession(sessionId, pendingMessageId, patch)
+      : chatStore.patchMessage(pendingMessageId, patch);
+    if (!patched && sessionId) {
+      chatStore.appendMessageToSession(sessionId, patch);
+    }
+    error.value = errorText;
+  };
+
+  const findJobMessage = (session, jobId) =>
+    session?.messages?.find((message) => String(message?.jobId || "") === String(jobId || ""));
+
+  const conversationHasActiveJob = (session) =>
+    Boolean(session?.messages?.some((message) => message?.from === "agent" && message?.jobId && message?.pending));
+
+  const applyJobSnapshot = (job, sessionId, fallbackMessageId = "") => {
+    if (!job || typeof job !== "object") return;
+    const session = chatStore.findSession(sessionId);
+    if (!session) return;
+    const jobId = String(job.jobId || "");
+    if (!jobId) return;
+    const existing = findJobMessage(session, jobId);
+    const messageId = existing?.id || fallbackMessageId;
+    if (isActiveJobStatus(job.status)) {
+      if (!existing) {
+        chatStore.appendMessageToSession(sessionId, {
+          from: "agent",
+          text: "",
+          time: job.createdAt || new Date().toISOString(),
+          pending: true,
+          pendingStage: uiStore.t("assistantWorking"),
+          jobId,
+          jobStatus: job.status,
+          submittedText: job.message || "",
+        });
+      } else {
+        chatStore.patchMessageInSession(sessionId, existing.id, {
+          pending: true,
+          pendingStage: uiStore.t("assistantWorking"),
+          jobStatus: job.status,
+        });
+      }
+      return;
+    }
+    if (job.status === "succeeded" && job.result && typeof job.result === "object") {
+      finalizeAssistantMessage(messageId || `job_${jobId}`, job.result, sessionId, jobId);
+      return;
+    }
+    if (job.status === "failed") {
+      markAssistantJobFailed(messageId || `job_${jobId}`, job.error || uiStore.t("sendFailed"), sessionId, jobId, job.message || "");
+    }
+  };
+
+  const pollJobUntilTerminal = async (jobId, sessionId, messageId) => {
+    const key = `${sessionId}:${jobId}`;
+    if (activeJobPolls.has(key)) return;
+    activeJobPolls.set(key, true);
+    try {
+      for (let attempt = 0; attempt < 180; attempt += 1) {
+        const response = await getWorkspaceChatJob(jobId, workspaceId.value);
+        if (!response.ok) {
+          markAssistantJobFailed(messageId, response.data?.error || uiStore.t("sendFailed"), sessionId, jobId);
+          return;
+        }
+        const job = response.data?.data;
+        applyJobSnapshot(job, sessionId, messageId);
+        if (!isActiveJobStatus(job?.status)) {
+          return;
+        }
+        await sleep(2000);
+      }
+      markAssistantJobFailed(messageId, uiStore.t("sendFailed"), sessionId, jobId);
+    } catch (pollError) {
+      markAssistantJobFailed(
+        messageId,
+        pollError instanceof Error ? pollError.message : uiStore.t("sendFailed"),
+        sessionId,
+        jobId,
+      );
+    } finally {
+      activeJobPolls.delete(key);
+    }
+  };
+
+  const hydrateConversationJobs = async () => {
+    const session = activeSession.value;
+    if (!session?.conversationId || !agentChatJobsEnabled.value) return;
+    const response = await listWorkspaceChatJobs(workspaceId.value, session.conversationId).catch(() => null);
+    if (!response?.ok) return;
+    const jobs = Array.isArray(response.data?.data?.jobs) ? response.data.data.jobs : [];
+    jobs.reverse().forEach((job) => {
+      applyJobSnapshot(job, session.id);
+      if (isActiveJobStatus(job?.status)) {
+        const message = findJobMessage(session, job.jobId);
+        if (message) {
+          void pollJobUntilTerminal(job.jobId, session.id, message.id);
+        }
+      }
+    });
   };
 
   const tryStreamReply = async (text, conversationId, pendingMessageId) => {
@@ -176,6 +314,10 @@ export const useChatMessaging = () => {
 
     const current = chatStore.ensureSession(selectedRole.value, uiStore.getRoleDisplayName, workspaceId.value);
     chatStore.setSessionScope({ workspaceId: workspaceId.value, role: selectedRole.value });
+    if (agentChatJobsEnabled.value && conversationHasActiveJob(current)) {
+      error.value = uiStore.t("assistantWorking");
+      return { ok: false, activeJob: true };
+    }
     chatStore.appendMessage({ from: "user", text, time: new Date().toISOString() });
     if (current.messages.length === 1) {
       current.title = text.slice(0, 20) || current.title;
@@ -185,6 +327,23 @@ export const useChatMessaging = () => {
 
     sending.value = true;
     try {
+      if (agentChatJobsEnabled.value) {
+        const jobResult = await postWorkspaceChatJob(text, workspaceId.value, current.conversationId);
+        if (!jobResult.ok) {
+          return restoreFailedRequest(pendingMessageId, text, jobResult.data?.error || uiStore.t("sendFailed"), current.id);
+        }
+        const job = jobResult.data?.data || {};
+        chatStore.patchMessageInSession(current.id, pendingMessageId, {
+          jobId: String(job.jobId || ""),
+          jobStatus: String(job.status || "pending"),
+          submittedText: text,
+          pending: true,
+          pendingStage: uiStore.t("assistantWorking"),
+        });
+        void pollJobUntilTerminal(job.jobId, current.id, pendingMessageId);
+        return jobResult;
+      }
+
       if (chatStreamingEnabled.value) {
         const streamResult = await tryStreamReply(text, current.conversationId, pendingMessageId);
         if (streamResult.ok) {
@@ -213,6 +372,14 @@ export const useChatMessaging = () => {
     }
   };
 
+  onMounted(() => {
+    void hydrateConversationJobs();
+  });
+
+  watch([activeSessionId, workspaceId], () => {
+    void hydrateConversationJobs();
+  });
+
   return {
     input,
     selectedRole,
@@ -221,6 +388,7 @@ export const useChatMessaging = () => {
     selectedRoleName,
     systemPrompt,
     chatStreamingEnabled,
+    agentChatJobsEnabled,
     sending,
     workspaceId,
     chatError: error,
@@ -228,6 +396,7 @@ export const useChatMessaging = () => {
     channelName,
     displayTime,
     send,
+    hydrateConversationJobs,
     setActiveSession: chatStore.setActiveSession,
     createSession: () => chatStore.createSession(selectedRole.value, uiStore.getRoleDisplayName, workspaceId.value),
   };
