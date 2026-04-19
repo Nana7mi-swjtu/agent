@@ -25,6 +25,7 @@ def analyze_robotics_enterprise_risk_opportunity(
     request: RoboticsInsightRequest | dict[str, Any],
     *,
     adapters: Iterable[EvidenceSourceAdapter] | None = None,
+    evidence_cache: Any | None = None,
 ) -> RoboticsInsightResult:
     normalized_request = _normalize_request(request)
     if not normalized_request.enterprise_name.strip():
@@ -40,6 +41,7 @@ def analyze_robotics_enterprise_risk_opportunity(
         request=normalized_request,
         profile=profile,
         adapters=list(adapters) if adapters is not None else _default_adapters(),
+        evidence_cache=evidence_cache,
     )
     events = extract_events(documents)
     opportunities, risks = build_signals(events=events, sources=documents, profile=profile)
@@ -85,7 +87,15 @@ def _collect_documents(
     request: RoboticsInsightRequest,
     profile,
     adapters: list[EvidenceSourceAdapter],
+    evidence_cache: Any | None = None,
 ) -> tuple[list[SourceDocument], list[str]]:
+    if evidence_cache is not None:
+        try:
+            result = evidence_cache.collect(request=request, profile=profile, adapters=adapters)
+        except Exception as exc:
+            return [], [f"机器人风险机会证据缓存不可用：{exc}"]
+        return _dedupe_documents(result.documents), _dedupe(result.limitations)
+
     documents: list[SourceDocument] = []
     limitations: list[str] = []
     for adapter in adapters:

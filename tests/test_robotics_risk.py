@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import inspect
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
+from app.models import RagChunk, RagDocument, RagIndexJob, RoboticsCninfoAnnouncement, RoboticsPolicyDocument
 from app.robotics_risk import (
     RoboticsInsightRequest,
     RoboticsInsightValidationError,
@@ -13,7 +16,10 @@ from app.robotics_risk.adapters import SourceCollectionResult, SourceUnavailable
 from app.robotics_risk.adapters.bidding import BiddingProcurementAdapter
 from app.robotics_risk.adapters.cninfo import CninfoAnnouncementAdapter
 from app.robotics_risk.adapters.policy import GovPolicyAdapter
+from app.robotics_risk.cache import RoboticsEvidenceCache, SourceFreshnessPolicy
+from app.robotics_risk.pdf_text import PdfTextExtractionResult, extract_pdf_text
 from app.robotics_risk.profiling import build_enterprise_profile
+from app.robotics_risk.repository import RoboticsEvidenceRepository, build_cache_key
 from app.robotics_risk.schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument
 from app.robotics_risk import service as robotics_service
 
@@ -65,6 +71,30 @@ class FakeFailingAdapter:
 
     def collect(self, *, request: RoboticsInsightRequest, profile: EnterpriseProfile):
         raise SourceUnavailableError(self.source_type, "captcha required")
+
+
+class CountingAdapter:
+    def __init__(self, *, source_type: str, documents: list[SourceDocument] | None = None, fail: str = "") -> None:
+        self.source_type = source_type
+        self.documents = list(documents or [])
+        self.fail = fail
+        self.calls = 0
+
+    def collect(self, *, request: RoboticsInsightRequest, profile: EnterpriseProfile):
+        self.calls += 1
+        if self.fail:
+            raise SourceUnavailableError(self.source_type, self.fail)
+        return SourceCollectionResult(documents=self.documents)
+
+
+class ShouldNotCallAdapter:
+    def __init__(self, source_type: str) -> None:
+        self.source_type = source_type
+        self.calls = 0
+
+    def collect(self, *, request: RoboticsInsightRequest, profile: EnterpriseProfile):
+        self.calls += 1
+        raise AssertionError(f"{self.source_type} adapter should not be called")
 
 
 def test_minimal_enterprise_request_uses_defaults():
@@ -152,3 +182,173 @@ def test_boundary_service_does_not_depend_on_main_agent_or_workspace_chat():
     assert "workspace" not in source.lower()
     assert "langgraph" not in source.lower()
     assert "flask" not in source.lower()
+
+
+def _cache_key(source_type: str, request: RoboticsInsightRequest) -> str:
+    return build_cache_key(source_type=source_type, request=request, profile=build_enterprise_profile(request))
+
+
+def test_cache_hits_are_analyzed_without_calling_external_adapters(db_session):
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    request = RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169", time_range="近30天")
+    repository = RoboticsEvidenceRepository(db_session)
+    for source_type, document in [
+        ("gov_policy", _policy_doc()),
+        ("cninfo_announcement", _announcement_doc()),
+        ("bidding_procurement", _bidding_doc()),
+    ]:
+        repository.upsert_source_document(
+            document,
+            cache_key=_cache_key(source_type, request),
+            fetched_at=now,
+            expires_at=now + timedelta(days=1),
+        )
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        request,
+        adapters=[
+            ShouldNotCallAdapter("gov_policy"),
+            ShouldNotCallAdapter("cninfo_announcement"),
+            ShouldNotCallAdapter("bidding_procurement"),
+        ],
+        evidence_cache=RoboticsEvidenceCache(db_session, now_factory=lambda: now),
+    )
+
+    payload = result.to_dict()
+    assert len(payload["sources"]) == 3
+    assert payload["events"]
+    assert payload["opportunities"]
+
+
+def test_cache_miss_calls_adapter_and_persists_returned_evidence(db_session):
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    request = RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天")
+    adapter = CountingAdapter(source_type="gov_policy", documents=[_policy_doc()])
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        request,
+        adapters=[adapter],
+        evidence_cache=RoboticsEvidenceCache(db_session, now_factory=lambda: now),
+    )
+
+    assert adapter.calls == 1
+    assert result.sources
+    assert db_session.query(RoboticsPolicyDocument).count() == 1
+
+
+def test_stale_partial_cache_refreshes_only_affected_source(db_session):
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    request = RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169", time_range="近30天")
+    repository = RoboticsEvidenceRepository(db_session)
+    repository.upsert_source_document(
+        _policy_doc(),
+        cache_key=_cache_key("gov_policy", request),
+        fetched_at=now,
+        expires_at=now + timedelta(days=1),
+    )
+    repository.upsert_source_document(
+        _announcement_doc(),
+        cache_key=_cache_key("cninfo_announcement", request),
+        fetched_at=now - timedelta(days=10),
+        expires_at=now - timedelta(days=1),
+    )
+    cninfo_adapter = CountingAdapter(source_type="cninfo_announcement", documents=[_announcement_doc()])
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        request,
+        adapters=[
+            ShouldNotCallAdapter("gov_policy"),
+            cninfo_adapter,
+        ],
+        evidence_cache=RoboticsEvidenceCache(db_session, now_factory=lambda: now),
+    )
+
+    assert cninfo_adapter.calls == 1
+    assert any("缓存已过期" in item for item in result.limitations)
+    assert len(result.sources) == 2
+
+
+def test_cninfo_pdf_parse_success_and_failure_are_persisted(db_session):
+    repository = RoboticsEvidenceRepository(db_session)
+
+    repository.persist_cninfo_pdf_result(
+        announcement_id="ann-ok",
+        title="石头科技年度报告",
+        pdf_url="https://static.cninfo.com.cn/ann-ok.pdf",
+        result=PdfTextExtractionResult(
+            text="公司研发投入增长并发布新产品。",
+            page_count=12,
+            extraction_method="native",
+            parse_status="parsed",
+        ),
+    )
+    repository.persist_cninfo_pdf_result(
+        announcement_id="ann-fail",
+        title="石头科技扫描公告",
+        pdf_url="https://static.cninfo.com.cn/ann-fail.pdf",
+        result=PdfTextExtractionResult(parse_status="failed", parse_error="PDF produced no usable text"),
+    )
+
+    ok = db_session.query(RoboticsCninfoAnnouncement).filter_by(announcement_id="ann-ok").one()
+    failed = db_session.query(RoboticsCninfoAnnouncement).filter_by(announcement_id="ann-fail").one()
+    assert ok.parse_status == "parsed"
+    assert ok.content_text == "公司研发投入增长并发布新产品。"
+    assert ok.page_count == 12
+    assert failed.status == "failed"
+    assert failed.parse_error == "PDF produced no usable text"
+
+
+def test_robotics_pdf_text_extraction_does_not_write_rag_rows(db_session, tmp_path: Path, monkeypatch):
+    class FakeLoaded:
+        extraction_method = "native"
+        ocr_used = False
+        ocr_provider = None
+        blocks = [type("Block", (), {"text": "公司签订重大合同。", "metadata": {"page": 1}})()]
+
+    class FakePdfLoader:
+        def __init__(self, **kwargs):
+            pass
+
+        def load(self, *, path: Path, source_name: str):
+            return FakeLoaded()
+
+    monkeypatch.setattr("app.rag.fileloaders.pdf_loader.PdfFileLoader", FakePdfLoader)
+    sample = tmp_path / "sample.pdf"
+    sample.write_bytes(b"%PDF-1.4")
+
+    result = extract_pdf_text(sample, source_name="sample.pdf")
+    RoboticsEvidenceRepository(db_session).persist_cninfo_pdf_result(
+        announcement_id="ann-rag-boundary",
+        title="石头科技重大合同公告",
+        pdf_url="https://static.cninfo.com.cn/ann-rag-boundary.pdf",
+        result=result,
+    )
+
+    assert result.succeeded
+    assert db_session.query(RagDocument).count() == 0
+    assert db_session.query(RagChunk).count() == 0
+    assert db_session.query(RagIndexJob).count() == 0
+
+
+def test_source_failure_negative_cache_degrades_independently(db_session):
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    request = RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天")
+    cache = RoboticsEvidenceCache(
+        db_session,
+        now_factory=lambda: now,
+        policies={"gov_policy": SourceFreshnessPolicy(timedelta(days=30), timedelta(hours=2))},
+    )
+
+    first = analyze_robotics_enterprise_risk_opportunity(
+        request,
+        adapters=[CountingAdapter(source_type="gov_policy", fail="network blocked")],
+        evidence_cache=cache,
+    )
+    second = analyze_robotics_enterprise_risk_opportunity(
+        request,
+        adapters=[ShouldNotCallAdapter("gov_policy")],
+        evidence_cache=cache,
+    )
+
+    assert any("network blocked" in item for item in first.limitations)
+    assert any("network blocked" in item for item in second.limitations)

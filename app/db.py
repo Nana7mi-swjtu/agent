@@ -34,6 +34,7 @@ def init_db(app) -> None:
         _ensure_agent_chat_job_columns(engine)
         _ensure_rag_columns(engine)
         _ensure_bankruptcy_columns(engine)
+        _ensure_robotics_evidence_columns(engine)
 
 
 def _ensure_profile_columns(engine) -> None:
@@ -270,6 +271,59 @@ def _ensure_bankruptcy_columns(engine) -> None:
 
     with engine.begin() as conn:
         conn.execute(text(f"ALTER TABLE bankruptcy_analysis_records {', '.join(alter_sql)}"))
+
+
+def _ensure_robotics_evidence_columns(engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    expected_tables = {
+        "robotics_policy_documents",
+        "robotics_cninfo_announcements",
+        "robotics_bidding_documents",
+    }
+    if not expected_tables.intersection(table_names):
+        return
+
+    index_specs = {
+        "robotics_policy_documents": {
+            "ix_robotics_policy_documents_cache_key": "(cache_key)",
+            "ix_robotics_policy_documents_url_hash": "(url_hash)",
+            "ix_robotics_policy_documents_published": "(published_at)",
+            "ix_robotics_policy_documents_fetched": "(fetched_at)",
+            "ix_robotics_policy_documents_status": "(status)",
+            "ix_robotics_policy_documents_content_hash": "(content_hash)",
+        },
+        "robotics_cninfo_announcements": {
+            "ix_robotics_cninfo_announcements_cache_key": "(cache_key)",
+            "ix_robotics_cninfo_announcements_adjunct_hash": "(adjunct_url_hash)",
+            "ix_robotics_cninfo_announcements_pdf_hash": "(pdf_url_hash)",
+            "ix_robotics_cninfo_announcements_sec_code_time": "(sec_code, announcement_time)",
+            "ix_robotics_cninfo_announcements_sec_name": "(sec_name)",
+            "ix_robotics_cninfo_announcements_fetched": "(fetched_at)",
+            "ix_robotics_cninfo_announcements_status": "(status)",
+            "ix_robotics_cninfo_announcements_parse_status": "(parse_status)",
+            "ix_robotics_cninfo_announcements_content_hash": "(content_hash)",
+        },
+        "robotics_bidding_documents": {
+            "ix_robotics_bidding_documents_cache_key": "(cache_key)",
+            "ix_robotics_bidding_documents_url_hash": "(url_hash)",
+            "ix_robotics_bidding_documents_published": "(published_at)",
+            "ix_robotics_bidding_documents_fetched": "(fetched_at)",
+            "ix_robotics_bidding_documents_status": "(status)",
+            "ix_robotics_bidding_documents_region": "(region)",
+            "ix_robotics_bidding_documents_enterprise": "(matched_enterprise_name)",
+            "ix_robotics_bidding_documents_content_hash": "(content_hash)",
+        },
+    }
+
+    with engine.begin() as conn:
+        for table_name, table_indexes in index_specs.items():
+            if table_name not in table_names:
+                continue
+            existing_indexes = {item["name"] for item in inspect(engine).get_indexes(table_name)}
+            for index_name, columns_sql in table_indexes.items():
+                if index_name not in existing_indexes:
+                    conn.execute(text(f"ALTER TABLE {table_name} ADD INDEX {index_name} {columns_sql}"))
 
 
 def get_session():
