@@ -94,6 +94,7 @@ def db_session(app):
             session.execute(text("DELETE FROM rag_index_jobs"))
             session.execute(text("DELETE FROM rag_chunks"))
             session.execute(text("DELETE FROM rag_documents"))
+            session.execute(text("DELETE FROM robotics_insight_runs"))
             session.execute(text("DELETE FROM robotics_policy_documents"))
             session.execute(text("DELETE FROM robotics_cninfo_announcements"))
             session.execute(text("DELETE FROM robotics_bidding_documents"))

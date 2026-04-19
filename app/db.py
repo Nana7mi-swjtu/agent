@@ -281,6 +281,7 @@ def _ensure_robotics_evidence_columns(engine) -> None:
         "robotics_cninfo_announcements",
         "robotics_bidding_documents",
         "robotics_listed_company_profiles",
+        "robotics_insight_runs",
     }
     if not expected_tables.intersection(table_names):
         return
@@ -321,6 +322,12 @@ def _ensure_robotics_evidence_columns(engine) -> None:
             "ix_robotics_listed_company_profiles_security_name": "(security_name)",
             "ix_robotics_listed_company_profiles_supported": "(is_supported)",
             "ix_robotics_listed_company_profiles_updated": "(updated_at)",
+        },
+        "robotics_insight_runs": {
+            "ix_robotics_insight_runs_enterprise": "(enterprise_name)",
+            "ix_robotics_insight_runs_stock_code": "(stock_code)",
+            "ix_robotics_insight_runs_status": "(status)",
+            "ix_robotics_insight_runs_created": "(created_at)",
         },
     }
 

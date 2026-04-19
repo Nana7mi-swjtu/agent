@@ -12,13 +12,17 @@ from app.models import (
     RagIndexJob,
     RoboticsBiddingDocument,
     RoboticsCninfoAnnouncement,
+    RoboticsInsightRun,
     RoboticsListedCompanyProfile,
     RoboticsPolicyDocument,
 )
 from app.robotics_risk import (
+    RoboticsRiskSubagentInput,
     RoboticsInsightRequest,
     RoboticsInsightValidationError,
     analyze_robotics_enterprise_risk_opportunity,
+    build_document_handoff,
+    run_robotics_risk_subagent,
 )
 from app.robotics_risk.adapters import SourceCollectionResult, SourceUnavailableError
 from app.robotics_risk.adapters.bidding import (
@@ -37,7 +41,9 @@ from app.robotics_risk.pdf_text import PdfTextExtractionResult, extract_pdf_text
 from app.robotics_risk.policy_planning import build_policy_search_plan
 from app.robotics_risk.profiling import build_enterprise_profile
 from app.robotics_risk.repository import RoboticsEvidenceRepository, build_cache_key
+from app.robotics_risk.run_repository import RoboticsInsightRunRepository
 from app.robotics_risk.schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument
+from app.robotics_risk import subagent as robotics_subagent
 from app.robotics_risk import service as robotics_service
 
 
@@ -515,8 +521,218 @@ def test_source_failures_degrade_independently_and_record_limitations():
     assert payload["opportunities"]
 
 
+def test_document_handoff_payload_contains_sections_citations_and_evidence():
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169"),
+        adapters=[
+            GovPolicyAdapter(documents=[_policy_doc()]),
+            CninfoAnnouncementAdapter(documents=[_announcement_doc()]),
+        ],
+    )
+
+    handoff = build_document_handoff(result)
+
+    assert handoff["documentType"] == "robotics_risk_opportunity_brief"
+    assert handoff["title"] == "石头科技风险与机会洞察简报"
+    assert [section["id"] for section in handoff["recommendedSections"]] == [
+        "executive_summary",
+        "opportunities",
+        "risks",
+        "evidence",
+        "limitations",
+    ]
+    assert handoff["opportunitySections"]
+    assert handoff["evidenceTable"]
+    first_signal = handoff["opportunitySections"][0]
+    assert handoff["citationMap"]["signals"][first_signal["id"]]["sourceIds"]
+    assert handoff["compactMarkdown"].startswith("# 石头科技风险与机会洞察简报")
+
+
+def test_document_handoff_handles_empty_sections_and_metadata_limitations():
+    empty_result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169"),
+        adapters=[],
+    )
+    empty_handoff = build_document_handoff(empty_result)
+
+    empty_section_by_id = {section["id"]: section for section in empty_handoff["recommendedSections"]}
+    assert empty_section_by_id["opportunities"].get("emptyState") == "未发现高置信度机会信号。"
+    assert empty_section_by_id["risks"].get("emptyState") == "未发现高置信度风险信号。"
+
+    metadata_only = SourceDocument(
+        id="src_meta_001",
+        source_type="bidding_procurement",
+        source_name="中国招标投标公共服务平台",
+        title="清洁机器人采购项目招标公告",
+        content="",
+        published_at="2026-04-03",
+        metadata={"status": "metadata_limited", "errorMessage": "公告正文提取受限"},
+    )
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169"),
+        adapters=[BiddingProcurementAdapter(documents=[metadata_only])],
+    )
+
+    handoff = build_document_handoff(result)
+
+    assert handoff["evidenceTable"][0]["metadataOnlyNote"] == "公告正文提取受限"
+    assert handoff["evidenceTable"][0]["sourceId"] == "src_meta_001"
+
+
+def test_subagent_input_normalizes_upstream_evidence_into_request_context():
+    contract = RoboticsRiskSubagentInput.from_dict(
+        {
+            "enterpriseName": " 石头科技 ",
+            "stockCode": "688169",
+            "analysisScope": {"timeRange": "近90天", "focus": "扫地机器人"},
+            "upstreamEvidence": [{"title": "行业搜索", "summary": "人形机器人产业链扩张"}],
+        }
+    )
+
+    request = contract.to_request()
+
+    assert request.enterprise_name == "石头科技"
+    assert request.stock_code == "688169"
+    assert request.time_range == "近90天"
+    assert "上游证据：行业搜索 人形机器人产业链扩张" in request.context
+
+
+def test_robotics_subagent_missing_enterprise_returns_need_input_without_sources():
+    adapter = ShouldNotCallAdapter("gov_policy")
+
+    output = run_robotics_risk_subagent({"enterpriseName": " "}, adapters=[adapter]).to_dict()
+
+    assert output["status"] == "need_input"
+    assert "缺少目标企业名称" in output["limitations"][0]
+    assert adapter.calls == 0
+    assert "runId" not in output
+
+
+def test_robotics_subagent_valid_input_persists_run_and_handoff_without_rag_rows(db_session):
+    now = datetime(2026, 4, 19, 12, 0, 0)
+
+    output = run_robotics_risk_subagent(
+        {
+            "enterpriseName": "石头科技",
+            "stockCode": "688169",
+            "analysisScope": {"timeRange": "近30天", "dimensions": ["政策", "公告"]},
+            "upstreamEvidence": [{"title": "搜索摘要", "summary": "服务机器人需求增长"}],
+        },
+        db=db_session,
+        adapters=[
+            GovPolicyAdapter(documents=[_policy_doc()]),
+            CninfoAnnouncementAdapter(documents=[_announcement_doc()]),
+        ],
+        now_factory=lambda: now,
+        id_factory=lambda: "run-subagent-001",
+    )
+    payload = output.to_dict()
+
+    assert payload["status"] == "done"
+    assert payload["runId"] == "run-subagent-001"
+    assert payload["documentHandoff"]["runId"] == "run-subagent-001"
+    assert payload["normalizedInput"]["upstreamEvidence"][0]["title"] == "搜索摘要"
+    row = db_session.query(RoboticsInsightRun).filter_by(run_id="run-subagent-001").one()
+    assert row.status == "done"
+    assert row.request_json["enterprise"]["name"] == "石头科技"
+    assert row.result_json["targetCompany"]["stockCode"] == "688169"
+    assert row.handoff_json["documentType"] == "robotics_risk_opportunity_brief"
+    stored = RoboticsInsightRunRepository(db_session).get_run_payload("run-subagent-001")
+    assert stored["documentHandoff"]["title"] == "石头科技风险与机会洞察简报"
+    assert RoboticsInsightRunRepository(db_session).get_run_payload("missing-run") is None
+    assert db_session.query(RagDocument).count() == 0
+    assert db_session.query(RagChunk).count() == 0
+    assert db_session.query(RagIndexJob).count() == 0
+
+
+def test_robotics_subagent_source_controls_disable_selected_sources():
+    policy = CountingAdapter(source_type="gov_policy", documents=[_policy_doc()])
+    bidding = CountingAdapter(source_type="bidding_procurement", documents=[_bidding_doc()])
+
+    output = run_robotics_risk_subagent(
+        {
+            "enterpriseName": "石头科技",
+            "sourceControls": {"useBidding": False},
+        },
+        adapters=[policy, bidding],
+        id_factory=lambda: "run-source-control",
+    ).to_dict()
+
+    assert output["status"] == "done"
+    assert policy.calls == 1
+    assert bidding.calls == 0
+    assert {item["sourceType"] for item in output["sourceReferences"]} == {"gov_policy"}
+
+
+def test_robotics_subagent_partial_run_persists_degraded_status(db_session):
+    output = run_robotics_risk_subagent(
+        {"enterpriseName": "石头科技", "stockCode": "688169"},
+        db=db_session,
+        adapters=[
+            GovPolicyAdapter(documents=[_policy_doc()]),
+            FakeFailingAdapter(),
+        ],
+        now_factory=lambda: datetime(2026, 4, 19, 12, 0, 0),
+        id_factory=lambda: "run-partial-001",
+    ).to_dict()
+
+    assert output["status"] == "partial"
+    assert any("captcha required" in item for item in output["limitations"])
+    row = db_session.query(RoboticsInsightRun).filter_by(run_id="run-partial-001").one()
+    assert row.status == "partial"
+    assert any("captcha required" in item for item in row.result_json["limitations"])
+
+
+def test_robotics_subagent_failure_after_run_creation_is_persisted(db_session):
+    class BadResolution:
+        supported = False
+        stock_code = ""
+        profile = None
+        limitations: list[str] = []
+
+        def to_metadata(self):
+            raise RuntimeError("metadata exploded")
+
+    class BadResolver:
+        def resolve_company(self, request):
+            return BadResolution()
+
+    output = run_robotics_risk_subagent(
+        {"enterpriseName": "石头科技"},
+        db=db_session,
+        adapters=[GovPolicyAdapter(documents=[_policy_doc()])],
+        company_resolver=BadResolver(),
+        id_factory=lambda: "run-failed-001",
+    ).to_dict()
+
+    assert output["status"] == "failed"
+    assert "metadata exploded" in output["errorMessage"]
+    row = db_session.query(RoboticsInsightRun).filter_by(run_id="run-failed-001").one()
+    assert row.status == "failed"
+    assert "metadata exploded" in row.error_message
+
+
+def test_direct_service_still_does_not_require_run_persistence(db_session):
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169"),
+        adapters=[GovPolicyAdapter(documents=[_policy_doc()])],
+    )
+
+    assert result.target_company["name"] == "石头科技"
+    assert db_session.query(RoboticsInsightRun).count() == 0
+
+
 def test_boundary_service_does_not_depend_on_main_agent_or_workspace_chat():
     source = inspect.getsource(robotics_service)
+
+    assert "app.agent" not in source
+    assert "workspace" not in source.lower()
+    assert "langgraph" not in source.lower()
+    assert "flask" not in source.lower()
+
+
+def test_boundary_subagent_does_not_depend_on_main_agent_or_routes():
+    source = inspect.getsource(robotics_subagent)
 
     assert "app.agent" not in source
     assert "workspace" not in source.lower()

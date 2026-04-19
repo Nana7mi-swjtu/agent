@@ -378,6 +378,36 @@ class RoboticsListedCompanyProfile(Base):
     )
 
 
+class RoboticsInsightRun(Base):
+    __tablename__ = "robotics_insight_runs"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_robotics_insight_runs_run_id"),
+        Index("ix_robotics_insight_runs_enterprise", "enterprise_name"),
+        Index("ix_robotics_insight_runs_stock_code", "stock_code"),
+        Index("ix_robotics_insight_runs_status", "status"),
+        Index("ix_robotics_insight_runs_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    enterprise_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    stock_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    request_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    handoff_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
 class RagChunk(Base):
     __tablename__ = "rag_chunks"
 
