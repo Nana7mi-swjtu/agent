@@ -10,6 +10,15 @@ from .schemas import EnterpriseProfile, InsightEvent, InsightSignal, SourceDocum
 _EVENT_STRENGTH = {
     "major_contract": 0.92,
     "winning_bid": 0.88,
+    "direct_enterprise_award": 0.94,
+    "candidate_award": 0.86,
+    "tender_opportunity": 0.76,
+    "procurement_demand": 0.72,
+    "smart_manufacturing_project": 0.74,
+    "amount_signal": 0.78,
+    "competitor_award_pressure": 0.84,
+    "project_change": 0.78,
+    "project_cancellation": 0.86,
     "policy_support": 0.84,
     "equipment_upgrade": 0.82,
     "government_procurement": 0.84,
@@ -76,8 +85,15 @@ def _build_signal(
     direct = any(item.relevance_scope == "enterprise" for item in source_docs)
     industry = any(item.relevance_scope == "industry" for item in source_docs)
     market = any(item.relevance_scope == "market_demand" for item in source_docs)
+    bidding_only_market = market and not direct and not industry
     reinforced = direct and (industry or market)
-    confidence = min(0.98, max(0.35, (impact / 100) + (0.08 if reinforced else 0.0)))
+    cross_source_reinforced = _has_cross_source_reinforcement(source_docs)
+    confidence_adjustment = 0.08 if reinforced else 0.0
+    if cross_source_reinforced and not reinforced:
+        confidence_adjustment += 0.05
+    if bidding_only_market:
+        confidence_adjustment -= 0.08
+    confidence = min(0.98, max(0.35, (impact / 100) + confidence_adjustment))
     label = "机会" if direction == "opportunity" else "风险"
     digest = sha1("|".join([direction, dimension, *source_ids]).encode("utf-8")).hexdigest()[:8]
     return InsightSignal(
@@ -144,7 +160,7 @@ def _reasoning(
 ) -> str:
     basis: list[str] = []
     if direct:
-        basis.append("企业直接公告")
+        basis.append("企业直接证据")
     if industry:
         basis.append("机器人行业政策/环境证据")
     if market:
@@ -153,11 +169,19 @@ def _reasoning(
         basis.append("公开来源证据")
     verb = "利好" if direction == "opportunity" else "可能冲击"
     matched_terms = _matched_terms(source_docs, profile)
-    inference = "直接企业证据与行业政策/市场证据共同支持" if direct and (industry or market) else (
-        "直接企业证据支持" if direct else "行业层面证据推断"
-    )
+    direct_roles = _direct_roles(source_docs)
+    if direct and direct_roles:
+        inference = f"直接企业证据支持（{', '.join(direct_roles[:3])}）"
+        if industry or market:
+            inference = f"{inference}，并与行业政策/市场证据共同支持"
+    elif direct:
+        inference = "直接企业证据与行业政策/市场证据共同支持" if (industry or market) else "直接企业证据支持"
+    elif _has_cross_source_reinforcement(source_docs):
+        inference = "政策、公告或招投标证据在同一维度形成交叉印证"
+    else:
+        inference = "行业或市场层面证据推断"
     match_text = f"，匹配画像关键词：{', '.join(matched_terms[:5])}" if matched_terms else ""
-    industry_limit = "；该信号尚需企业后续公告或经营数据验证" if industry and not direct else ""
+    industry_limit = "；该信号尚需企业后续公告或经营数据验证" if (industry or market) and not direct else ""
     return (
         f"该判断基于{'、'.join(basis)}，证据层级为{inference}，结合{profile.name}的"
         f"{', '.join(profile.segments)}画像{match_text}，{dimension}因素{verb}企业后续经营表现{industry_limit}。"
@@ -182,6 +206,28 @@ def _matched_terms(source_docs: list[SourceDocument], profile: EnterpriseProfile
                 seen.add(clean)
                 result.append(clean)
     return result
+
+
+def _has_cross_source_reinforcement(source_docs: list[SourceDocument]) -> bool:
+    source_types = {source.source_type for source in source_docs}
+    return "bidding_procurement" in source_types and bool(source_types & {"gov_policy", "cninfo_announcement"})
+
+
+def _direct_roles(source_docs: list[SourceDocument]) -> list[str]:
+    role_labels = {
+        "winner": "中标/成交",
+        "candidate": "中标候选",
+        "buyer": "采购/招标方",
+        "tenderer": "投标/供应商",
+        "content": "正文直接提及",
+        "title": "标题直接提及",
+    }
+    roles: list[str] = []
+    for source in source_docs:
+        role = str((source.metadata or {}).get("directMatchRole") or "").strip()
+        if role in role_labels and role_labels[role] not in roles:
+            roles.append(role_labels[role])
+    return roles
 
 
 def _dedupe(values: Iterable[str]) -> list[str]:

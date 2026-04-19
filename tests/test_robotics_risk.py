@@ -10,6 +10,7 @@ from app.models import (
     RagChunk,
     RagDocument,
     RagIndexJob,
+    RoboticsBiddingDocument,
     RoboticsCninfoAnnouncement,
     RoboticsListedCompanyProfile,
     RoboticsPolicyDocument,
@@ -20,10 +21,16 @@ from app.robotics_risk import (
     analyze_robotics_enterprise_risk_opportunity,
 )
 from app.robotics_risk.adapters import SourceCollectionResult, SourceUnavailableError
-from app.robotics_risk.adapters.bidding import BiddingProcurementAdapter
+from app.robotics_risk.adapters.bidding import (
+    BiddingPage,
+    BiddingProcurementAdapter,
+    parse_bidding_candidates_page,
+    parse_bidding_detail_page,
+)
 from app.robotics_risk.adapters.cninfo import CninfoAnnouncementAdapter, CninfoAnnouncementRecord, CninfoQueryPlan
 from app.robotics_risk.adapters.policy import GovPolicyAdapter, GovPolicyPage, parse_policy_candidates_page, parse_policy_detail_page
 from app.robotics_risk.cache import RoboticsEvidenceCache, SourceFreshnessPolicy
+from app.robotics_risk.bidding_planning import DEFAULT_BIDDING_NOTICE_CATEGORIES, build_bidding_search_plan
 from app.robotics_risk.company_resolution import ListedCompanyResolver
 from app.robotics_risk.company_seed import seed_robotics_listed_company_profiles
 from app.robotics_risk.pdf_text import PdfTextExtractionResult, extract_pdf_text
@@ -156,6 +163,34 @@ class FakeGovPolicyClient:
         return GovPolicyPage(url=url, html=self.detail_pages.get(url, ""))
 
 
+class FakeCebBiddingClient:
+    def __init__(
+        self,
+        *,
+        search_html: str = "",
+        detail_pages: dict[str, str] | None = None,
+        fail_search: Exception | None = None,
+        blocked_search: bool = False,
+    ) -> None:
+        self.search_html = search_html
+        self.detail_pages = dict(detail_pages or {})
+        self.fail_search = fail_search
+        self.blocked_search = blocked_search
+        self.searches: list[tuple[str, str, int]] = []
+        self.details: list[str] = []
+
+    def fetch_search_page(self, *, query: str, notice_category: str, page: int):
+        self.searches.append((query, notice_category, page))
+        if self.fail_search is not None:
+            raise self.fail_search
+        html = "验证码 安全验证" if self.blocked_search else self.search_html
+        return BiddingPage(url=f"https://custominfo.cebpubservice.com/search?keyword={query}", html=html)
+
+    def fetch_detail_page(self, url: str):
+        self.details.append(url)
+        return BiddingPage(url=url, html=self.detail_pages.get(url, ""))
+
+
 def test_minimal_enterprise_request_uses_defaults():
     result = analyze_robotics_enterprise_risk_opportunity(
         RoboticsInsightRequest(enterprise_name="石头科技"),
@@ -219,6 +254,39 @@ def test_policy_search_plan_generic_profile_reports_limitation():
 
     assert "机器人" in " ".join(plan.keywords)
     assert any("通用机器人政策关键词" in item for item in plan.limitations)
+    assert any("时间范围" in item for item in plan.limitations)
+
+
+def test_bidding_search_plan_uses_enterprise_segment_scenario_categories_and_bounds():
+    request = RoboticsInsightRequest(
+        enterprise_name="石头科技",
+        time_range="近60天",
+        focus="广东清洁机器人招投标",
+        context="扫地机器人 公共清洁",
+    )
+    profile = build_enterprise_profile(request)
+
+    plan = build_bidding_search_plan(request=request, profile=profile, max_queries=6, max_pages=2, detail_fetch_limit=3)
+
+    assert len(plan.query_terms) == 6
+    assert plan.max_pages == 2
+    assert plan.detail_fetch_limit == 3
+    assert plan.start_date
+    assert set(DEFAULT_BIDDING_NOTICE_CATEGORIES).issubset(set(plan.notice_categories))
+    assert "广东" in plan.region_hints
+    assert any(term.source == "enterprise" and "石头科技" in term.keyword for term in plan.query_terms)
+    assert any(term.matched_segment == "扫地机器人" for term in plan.query_terms)
+    assert any("截断" in item for item in plan.limitations)
+
+
+def test_bidding_search_plan_generic_profile_reports_limitation():
+    request = RoboticsInsightRequest(enterprise_name="未映射机器人公司", time_range="本季度")
+    profile = EnterpriseProfile(name="未映射机器人公司", segments=["机器人行业"], keywords=["机器人"])
+
+    plan = build_bidding_search_plan(request=request, profile=profile, max_queries=4)
+
+    assert any("机器人" in keyword for keyword in plan.keywords)
+    assert any("通用机器人采购关键词" in item for item in plan.limitations)
     assert any("时间范围" in item for item in plan.limitations)
 
 
@@ -297,6 +365,110 @@ def test_gov_policy_adapter_uses_list_fallback_and_reports_detail_failure():
     assert client.lists
     assert not result.documents
     assert any("详情页不可用" in item for item in result.limitations)
+
+
+def test_ceb_bidding_candidate_and_detail_parsing_records_metadata_and_attachments():
+    list_html = """
+    <html><body>
+      <a href="/bulletin/2026/04/notice-001.html">广东公共场所清洁机器人采购项目中标结果公告</a>
+      <span>2026-04-10</span>
+    </body></html>
+    """
+    detail_html = """
+    <html><head><meta name="noticeId" content="notice-001"></head><body>
+      <h1>广东公共场所清洁机器人采购项目中标结果公告</h1>
+      <div class="article">
+        项目名称：广东公共场所清洁机器人采购项目
+        项目编号：GD-RB-001
+        采购人：广州市城市管理局
+        中标人：石头科技
+        中标金额：320万元
+        发布时间：2026-04-10
+        本项目采购清洁机器人和服务机器人，用于公共场所智能清洁。
+      </div>
+      <a href="./result.pdf">中标结果附件.pdf</a>
+    </body></html>
+    """
+
+    candidates = parse_bidding_candidates_page(
+        list_html,
+        "https://custominfo.cebpubservice.com/search",
+        notice_category="winning_result",
+    )
+    detail = parse_bidding_detail_page(detail_html, candidates[0].url, candidate=candidates[0])
+
+    assert len(candidates) == 1
+    assert candidates[0].notice_type == "中标结果公告"
+    assert detail.notice_id == "notice-001"
+    assert detail.project_name == "广东公共场所清洁机器人采购项目"
+    assert detail.project_code == "GD-RB-001"
+    assert detail.buyer_name == "广州市城市管理局"
+    assert detail.winning_bidder == "石头科技"
+    assert detail.amount == "320万元"
+    assert detail.region == "广东"
+    assert detail.attachments[0]["fileType"] == "pdf"
+
+
+def test_bidding_adapter_searches_details_classifies_direct_and_metadata_only():
+    detail_url = "https://custominfo.cebpubservice.com/bulletin/notice-001.html"
+    search_html = f'<a href="{detail_url}">广东公共场所清洁机器人采购项目中标结果公告</a><span>2026-04-10</span>'
+    detail_html = """
+    <h1>广东公共场所清洁机器人采购项目中标结果公告</h1>
+    <div id="content">
+      项目名称：广东公共场所清洁机器人采购项目
+      采购人：广州市城市管理局
+      中标人：石头科技
+      中标金额：320万元
+      本项目采购清洁机器人。
+    </div>
+    """
+    client = FakeCebBiddingClient(search_html=search_html, detail_pages={detail_url: detail_html})
+    adapter = BiddingProcurementAdapter(client=client, max_queries=1, detail_fetch_limit=1)
+
+    result = adapter.collect(
+        request=RoboticsInsightRequest(enterprise_name="石头科技", context="扫地机器人"),
+        profile=EnterpriseProfile(name="石头科技", segments=["扫地机器人"], keywords=["清洁机器人"]),
+    )
+
+    assert client.searches
+    assert client.details == [detail_url]
+    assert len(result.documents) == 1
+    document = result.documents[0]
+    assert document.source_type == "bidding_procurement"
+    assert document.source_name == "中国招标投标公共服务平台"
+    assert document.relevance_scope == "enterprise"
+    assert document.metadata["directMatchRole"] == "winner"
+    assert document.metadata["noticeCategory"]
+    assert document.metadata["biddingSearchPlan"]["keywords"]
+
+
+def test_bidding_adapter_degrades_blocked_and_empty_source():
+    adapter = BiddingProcurementAdapter(client=FakeCebBiddingClient(blocked_search=True), max_queries=1)
+
+    result = adapter.collect(
+        request=RoboticsInsightRequest(enterprise_name="石头科技", context="扫地机器人"),
+        profile=EnterpriseProfile(name="石头科技", segments=["扫地机器人"], keywords=["清洁机器人"]),
+    )
+
+    assert not result.documents
+    assert any("反爬限制" in item for item in result.limitations)
+    assert any("未返回" in item for item in result.limitations)
+
+
+def test_metadata_only_bidding_notice_is_attributed_and_limited():
+    detail_url = "https://custominfo.cebpubservice.com/bulletin/notice-meta.html"
+    search_html = f'<a href="{detail_url}">清洁机器人采购项目招标公告</a><span>2026-04-10</span>'
+    detail_html = "<h1>清洁机器人采购项目招标公告</h1>"
+    client = FakeCebBiddingClient(search_html=search_html, detail_pages={detail_url: detail_html})
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", context="扫地机器人"),
+        adapters=[BiddingProcurementAdapter(client=client, max_queries=1, detail_fetch_limit=1)],
+    )
+
+    assert result.sources
+    assert result.sources[0].metadata["status"] == "metadata_limited"
+    assert any("公告正文提取受限" in item for item in result.limitations)
 
 
 def test_fake_adapters_produce_sources_events_signals_and_payload_refs():
@@ -386,6 +558,81 @@ def test_cache_hits_are_analyzed_without_calling_external_adapters(db_session):
     assert len(payload["sources"]) == 3
     assert payload["events"]
     assert payload["opportunities"]
+
+
+def test_live_ceb_bidding_cache_persists_metadata_reuses_and_avoids_rag_rows(db_session):
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    detail_url = "https://custominfo.cebpubservice.com/bulletin/notice-cache.html"
+    search_html = f'<a href="{detail_url}">广东公共场所清洁机器人采购项目中标结果公告</a><span>2026-04-10</span>'
+    detail_html = """
+    <h1>广东公共场所清洁机器人采购项目中标结果公告</h1>
+    <div id="content">
+      项目名称：广东公共场所清洁机器人采购项目
+      项目编号：GD-RB-CACHE
+      采购人：广州市城市管理局
+      中标人：石头科技
+      中标金额：320万元
+      本项目采购清洁机器人和服务机器人。
+    </div>
+    <a href="/files/result.pdf">附件.pdf</a>
+    """
+    client = FakeCebBiddingClient(search_html=search_html, detail_pages={detail_url: detail_html})
+    request = RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天", context="扫地机器人")
+    cache = RoboticsEvidenceCache(db_session, now_factory=lambda: now)
+
+    first = analyze_robotics_enterprise_risk_opportunity(
+        request,
+        adapters=[BiddingProcurementAdapter(client=client, max_queries=1, detail_fetch_limit=1)],
+        evidence_cache=cache,
+    )
+    second = analyze_robotics_enterprise_risk_opportunity(
+        request,
+        adapters=[ShouldNotCallAdapter("bidding_procurement")],
+        evidence_cache=cache,
+    )
+
+    row = db_session.query(RoboticsBiddingDocument).one()
+    assert first.sources
+    assert second.sources
+    assert row.notice_type == "中标结果公告"
+    assert row.project_name == "广东公共场所清洁机器人采购项目"
+    assert row.project_code == "GD-RB-CACHE"
+    assert row.buyer_name == "广州市城市管理局"
+    assert row.winning_bidder == "石头科技"
+    assert row.amount == "320万元"
+    assert row.region == "广东"
+    assert row.matched_enterprise_name == "石头科技"
+    assert row.metadata_json["sourceChannel"] == "cebpubservice"
+    assert row.metadata_json["directMatchRole"] == "winner"
+    assert row.metadata_json["attachments"][0]["fileType"] == "pdf"
+    assert any(source.relevance_scope == "enterprise" for source in second.sources)
+    assert db_session.query(RagDocument).count() == 0
+    assert db_session.query(RagChunk).count() == 0
+    assert db_session.query(RagIndexJob).count() == 0
+
+
+def test_bidding_negative_cache_reuses_empty_source_result(db_session):
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    request = RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天", context="扫地机器人")
+    cache = RoboticsEvidenceCache(
+        db_session,
+        now_factory=lambda: now,
+        policies={"bidding_procurement": SourceFreshnessPolicy(timedelta(days=3), timedelta(hours=1))},
+    )
+
+    first = analyze_robotics_enterprise_risk_opportunity(
+        request,
+        adapters=[BiddingProcurementAdapter(client=FakeCebBiddingClient(search_html="<html><body>暂无数据</body></html>"), max_queries=1)],
+        evidence_cache=cache,
+    )
+    second = analyze_robotics_enterprise_risk_opportunity(
+        request,
+        adapters=[ShouldNotCallAdapter("bidding_procurement")],
+        evidence_cache=cache,
+    )
+
+    assert any("未返回" in item for item in first.limitations)
+    assert any("未返回" in item for item in second.limitations)
 
 
 def test_cache_miss_calls_adapter_and_persists_returned_evidence(db_session):
@@ -495,6 +742,101 @@ def test_policy_and_cninfo_evidence_reinforce_same_dimension_signal():
     assert set(order_signal.source_ids) == {"policy-reinforce", "ann-reinforce"}
     assert order_signal.confidence > 0.9
     assert "共同支持" in order_signal.reasoning
+
+
+def test_bidding_direct_award_market_demand_and_competitor_pressure_reasoning():
+    direct_award = SourceDocument(
+        id="bid-direct",
+        source_type="bidding_procurement",
+        source_name="中国招标投标公共服务平台",
+        title="清洁机器人采购项目中标结果公告",
+        content="项目采购清洁机器人，中标人：石头科技，中标金额：300万元。",
+        published_at="2026-04-12",
+        authority_score=0.9,
+        relevance_scope="enterprise",
+        metadata={
+            "noticeType": "中标结果公告",
+            "projectName": "清洁机器人采购项目",
+            "winningBidder": "石头科技",
+            "amount": "300万元",
+            "directMatchRole": "winner",
+            "matchedEnterpriseName": "石头科技",
+        },
+    )
+    market_demand = SourceDocument(
+        id="bid-market",
+        source_type="bidding_procurement",
+        source_name="中国招标投标公共服务平台",
+        title="医院服务机器人采购公告",
+        content="医院采购服务机器人和配送机器人，用于医疗场景。",
+        published_at="2026-04-11",
+        authority_score=0.82,
+        relevance_scope="market_demand",
+        metadata={"noticeType": "招标公告", "inferenceLevel": "market_demand"},
+    )
+    competitor_award = SourceDocument(
+        id="bid-competitor",
+        source_type="bidding_procurement",
+        source_name="中国招标投标公共服务平台",
+        title="物流机器人采购项目中标候选人公示",
+        content="本项目采购物流机器人，第一中标候选人：竞争机器人公司。",
+        published_at="2026-04-10",
+        authority_score=0.82,
+        relevance_scope="market_demand",
+        metadata={
+            "noticeType": "中标候选人公示",
+            "winningBidder": "竞争机器人公司",
+            "directMatchRole": "competitor",
+        },
+    )
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", context="扫地机器人"),
+        adapters=[BiddingProcurementAdapter(documents=[direct_award, market_demand, competitor_award])],
+    )
+
+    assert any(event.event_type == "direct_enterprise_award" for event in result.events)
+    assert any(event.event_type == "competitor_award_pressure" for event in result.events)
+    assert any(signal.category == "订单机会" and "中标/成交" in signal.reasoning for signal in result.opportunities)
+    assert any(signal.category == "竞争压力" for signal in result.risks)
+
+
+def test_bidding_market_demand_confidence_increases_with_policy_reinforcement():
+    policy = SourceDocument(
+        id="policy-bid-reinforce",
+        source_type="gov_policy",
+        source_name="国务院政策文件库",
+        title="关于扩大机器人政府采购和应用场景开放的意见",
+        content="政策鼓励服务机器人政府采购，推动医疗场景开放。",
+        published_at="2026-04-01",
+        authority_score=0.95,
+        relevance_scope="industry",
+        metadata={"matchedSegments": ["服务机器人"]},
+    )
+    bidding = SourceDocument(
+        id="bid-reinforce",
+        source_type="bidding_procurement",
+        source_name="中国招标投标公共服务平台",
+        title="医院服务机器人采购公告",
+        content="医院采购服务机器人和配送机器人，用于医疗场景。",
+        published_at="2026-04-11",
+        authority_score=0.82,
+        relevance_scope="market_demand",
+        metadata={"noticeType": "招标公告", "matchedSegments": ["服务机器人"]},
+    )
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="未映射机器人公司", context="服务机器人 医疗"),
+        adapters=[
+            GovPolicyAdapter(documents=[policy]),
+            BiddingProcurementAdapter(documents=[bidding]),
+        ],
+    )
+
+    demand_signal = next(item for item in result.opportunities if item.category in {"市场需求", "订单"})
+    assert set(demand_signal.source_ids) & {"policy-bid-reinforce", "bid-reinforce"}
+    assert demand_signal.confidence >= 0.75
+    assert "验证" in demand_signal.reasoning
 
 
 def test_stale_partial_cache_refreshes_only_affected_source(db_session):

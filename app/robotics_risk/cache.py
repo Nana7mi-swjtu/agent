@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from .adapters import EvidenceSourceAdapter, SourceCollectionResult, SourceUnavailableError
+from .bidding_planning import build_bidding_search_plan
 from .company_resolution import CompanyResolutionResult, ListedCompanyResolver
 from .company_seed import seed_robotics_listed_company_profiles
 from .policy_planning import build_policy_search_plan
@@ -126,7 +127,7 @@ class RoboticsEvidenceCache:
 
         limitations.extend(result.limitations)
         if not result.documents:
-            message = result.limitations[0] if result.limitations else f"{_source_label(source_type)}未返回可用证据。"
+            message = _empty_result_message(source_type, result.limitations)
             self._record_negative(source_type, cache_key, "empty", message, now, policy.negative_ttl)
             return rows_to_source_documents(cached_rows), limitations
 
@@ -172,10 +173,14 @@ class RoboticsEvidenceCache:
                 published_since=published_since,
             )
         if source_type == SOURCE_BIDDING:
+            plan = build_bidding_search_plan(request=request, profile=profile)
             return self.repository.query_bidding_documents(
                 cache_key=cache_key,
                 request=request,
-                keywords=profile.keywords,
+                keywords=_dedupe([*profile.keywords, *plan.keywords]),
+                notice_categories=list(plan.notice_categories),
+                regions=list(plan.region_hints),
+                matched_enterprises=_dedupe([request.enterprise_name, profile.name]),
                 published_since=published_since,
             )
         return []
@@ -239,9 +244,23 @@ def _published_since(time_range: str, *, now: datetime) -> datetime | None:
 
 def _negative_limitation(source_type: str, row) -> str:
     error = str(getattr(row, "error_message", "") or "").strip()
+    status = str(getattr(row, "status", "") or "").strip()
+    if error and status == "empty":
+        return f"{_source_label(source_type)}未返回可用证据：{error}"
     if error:
         return error
+    if status == "empty":
+        return f"{_source_label(source_type)}未返回可用证据，已使用短期负缓存跳过重复请求。"
     return f"{_source_label(source_type)}近期不可用，已使用短期负缓存跳过重复请求。"
+
+
+def _empty_result_message(source_type: str, limitations: list[str]) -> str:
+    for limitation in limitations:
+        if any(marker in limitation for marker in ("未返回", "不可用", "失败", "反爬", "验证码")):
+            return limitation
+    if limitations:
+        return limitations[-1]
+    return f"{_source_label(source_type)}未返回可用证据。"
 
 
 def _source_label(source_type: str) -> str:
@@ -250,7 +269,7 @@ def _source_label(source_type: str) -> str:
     if source_type == SOURCE_CNINFO:
         return "巨潮资讯网"
     if source_type == SOURCE_BIDDING:
-        return "招中标/采购来源"
+        return "中国招标投标公共服务平台"
     return source_type
 
 

@@ -100,6 +100,9 @@ class RoboticsEvidenceRepository:
         cache_key: str,
         request: RoboticsInsightRequest,
         keywords: list[str],
+        notice_categories: list[str] | None = None,
+        regions: list[str] | None = None,
+        matched_enterprises: list[str] | None = None,
         published_since: datetime | None,
     ) -> list[RoboticsBiddingDocument]:
         stmt = select(RoboticsBiddingDocument).where(RoboticsBiddingDocument.status.notin_(NEGATIVE_STATUSES))
@@ -111,7 +114,17 @@ class RoboticsEvidenceRepository:
                     RoboticsBiddingDocument.published_at >= published_since,
                 )
             )
-        return list(self.db.execute(stmt.order_by(RoboticsBiddingDocument.published_at.desc())).scalars().all())
+        rows = list(self.db.execute(stmt.order_by(RoboticsBiddingDocument.published_at.desc())).scalars().all())
+        return [
+            row
+            for row in rows
+            if _bidding_row_matches_metadata(
+                row,
+                notice_categories=notice_categories or [],
+                regions=regions or [],
+                matched_enterprises=matched_enterprises or [],
+            )
+        ]
 
     def query_negative_records(self, *, source_type: str, cache_key: str, now: datetime) -> list[Any]:
         model = _model_for_source(source_type)
@@ -469,6 +482,11 @@ def cninfo_row_to_source_document(row: RoboticsCninfoAnnouncement) -> SourceDocu
 
 def bidding_row_to_source_document(row: RoboticsBiddingDocument) -> SourceDocument:
     metadata = dict(row.metadata_json or {})
+    relevance_scope = str(metadata.get("relevanceScope") or metadata.get("inferenceLevel") or "").strip()
+    if relevance_scope == "direct":
+        relevance_scope = "enterprise"
+    if relevance_scope not in {"enterprise", "market_demand", "industry"}:
+        relevance_scope = "enterprise" if row.matched_enterprise_name else "market_demand"
     metadata.update(
         {
             "noticeId": row.notice_id,
@@ -481,6 +499,8 @@ def bidding_row_to_source_document(row: RoboticsBiddingDocument) -> SourceDocume
             "amount": row.amount,
             "currency": row.currency,
             "region": row.region,
+            "matchedEnterpriseName": row.matched_enterprise_name,
+            "matchedKeywords": (row.matched_keywords_json or {}).get("keywords", []),
             "fetchedAt": _format_datetime(row.fetched_at),
             "expiresAt": _format_datetime(row.expires_at),
             "status": row.status,
@@ -489,13 +509,13 @@ def bidding_row_to_source_document(row: RoboticsBiddingDocument) -> SourceDocume
     return SourceDocument(
         id=f"bidding:{row.notice_id}",
         source_type=SOURCE_BIDDING,
-        source_name="全国公共资源交易/招标采购信息源",
+        source_name="中国招标投标公共服务平台",
         title=row.title,
-        content=row.content_text or "",
+        content=row.content_text or row.title,
         url=row.url or "",
         published_at=_format_datetime(row.published_at),
-        authority_score=0.85,
-        relevance_scope="market_demand",
+        authority_score=0.9 if relevance_scope == "enterprise" else 0.82,
+        relevance_scope=relevance_scope,
         metadata=metadata,
     )
 
@@ -569,6 +589,43 @@ def _bidding_lookup_filter(*, cache_key: str, request: RoboticsInsightRequest, k
     return or_(*clauses)
 
 
+def _bidding_row_matches_metadata(
+    row: RoboticsBiddingDocument,
+    *,
+    notice_categories: list[str],
+    regions: list[str],
+    matched_enterprises: list[str],
+) -> bool:
+    metadata = dict(row.metadata_json or {})
+    wanted_categories = set(_clean_values(notice_categories))
+    if wanted_categories:
+        row_category = str(metadata.get("noticeCategory") or "").strip()
+        if row_category and row_category not in wanted_categories:
+            return False
+    wanted_regions = set(_clean_values(regions))
+    if wanted_regions:
+        row_region = str(row.region or metadata.get("region") or "").strip()
+        if row_region and row_region not in wanted_regions:
+            return False
+    wanted_enterprises = set(_clean_values(matched_enterprises))
+    if wanted_enterprises:
+        text = " ".join(
+            _clean_values(
+                [
+                    row.matched_enterprise_name or "",
+                    row.buyer_name or "",
+                    row.winning_bidder or "",
+                    str(metadata.get("buyerName") or ""),
+                    str(metadata.get("winningBidder") or ""),
+                    " ".join(str(item) for item in metadata.get("candidates") or []),
+                ]
+            )
+        )
+        if text and not any(item in text for item in wanted_enterprises):
+            return False
+    return True
+
+
 def _model_for_source(source_type: str):
     if source_type == SOURCE_POLICY:
         return RoboticsPolicyDocument
@@ -585,7 +642,7 @@ def _source_name(source_type: str) -> str:
     if source_type == SOURCE_CNINFO:
         return "巨潮资讯网"
     if source_type == SOURCE_BIDDING:
-        return "全国公共资源交易/招标采购信息源"
+        return "中国招标投标公共服务平台"
     return "未知来源"
 
 

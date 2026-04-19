@@ -31,8 +31,13 @@ _ANNOUNCEMENT_RULES: tuple[tuple[str, tuple[str, ...], str, str, str], ...] = (
 
 _BIDDING_RULES: tuple[tuple[str, tuple[str, ...], str, str, str], ...] = (
     ("procurement_demand", ("采购", "招标", "需求", "项目"), "opportunity", "市场需求", "机器人相关采购体现市场需求"),
+    ("tender_opportunity", ("招标公告", "公开招标", "采购公告", "资格预审"), "opportunity", "投标机会", "招标或采购公告体现潜在投标机会"),
     ("winning_bid", ("中标", "成交", "中标候选"), "opportunity", "订单机会", "中标或成交信息体现订单机会"),
+    ("candidate_award", ("中标候选人", "第一中标候选人", "成交候选"), "opportunity", "订单机会", "中标候选信息体现订单转化机会"),
     ("smart_manufacturing_project", ("智能制造", "自动化产线", "仓储", "物流", "清洁", "医疗", "养老", "教育"), "opportunity", "应用场景", "下游场景项目释放需求信号"),
+    ("project_change", ("变更公告", "澄清公告", "更正公告", "延期", "暂停"), "risk", "项目不确定性", "项目变更或延期可能影响采购落地节奏"),
+    ("project_cancellation", ("终止公告", "废标", "流标", "取消采购", "采购失败"), "risk", "项目不确定性", "项目取消、废标或流标体现落地不确定性"),
+    ("amount_signal", ("中标金额", "成交金额", "预算金额", "合同金额", "万元"), "opportunity", "订单规模", "金额信息体现潜在订单或市场规模"),
 )
 
 
@@ -58,6 +63,8 @@ def extract_events(documents: list[SourceDocument]) -> list[InsightEvent]:
                     published_at=document.published_at,
                 )
             )
+        if document.source_type == "bidding_procurement":
+            events.extend(_metadata_bidding_events(document, start_index=len(events)))
     return events
 
 
@@ -77,3 +84,85 @@ def _evidence_sentence(text: str, keywords: tuple[str, ...]) -> str:
         if any(keyword in sentence for keyword in keywords):
             return sentence[:240]
     return (sentences[0] if sentences else str(text or "").strip())[:240]
+
+
+def _metadata_bidding_events(document: SourceDocument, *, start_index: int) -> list[InsightEvent]:
+    metadata = document.metadata or {}
+    events: list[InsightEvent] = []
+    direct_role = str(metadata.get("directMatchRole") or "").strip()
+    notice_type = str(metadata.get("noticeType") or "").strip()
+    amount = str(metadata.get("amount") or "").strip()
+    if document.relevance_scope == "enterprise" and direct_role in {"winner", "candidate"}:
+        events.append(
+            InsightEvent(
+                id=f"evt_{start_index + len(events) + 1:03d}",
+                source_document_id=document.id,
+                source_type=document.source_type,
+                event_type="direct_enterprise_award",
+                title=document.title,
+                summary="目标企业在招投标公告中被直接列为中标人或候选人",
+                direction="opportunity",
+                dimension="订单机会",
+                evidence_sentence=_bidding_metadata_sentence(document),
+                published_at=document.published_at,
+            )
+        )
+    if direct_role == "competitor":
+        events.append(
+            InsightEvent(
+                id=f"evt_{start_index + len(events) + 1:03d}",
+                source_document_id=document.id,
+                source_type=document.source_type,
+                event_type="competitor_award_pressure",
+                title=document.title,
+                summary="机器人相关项目由非目标企业中标或入围，可能带来竞争压力",
+                direction="risk",
+                dimension="竞争压力",
+                evidence_sentence=_bidding_metadata_sentence(document),
+                published_at=document.published_at,
+            )
+        )
+    if amount and not any(event.event_type == "amount_signal" for event in events):
+        events.append(
+            InsightEvent(
+                id=f"evt_{start_index + len(events) + 1:03d}",
+                source_document_id=document.id,
+                source_type=document.source_type,
+                event_type="amount_signal",
+                title=document.title,
+                summary="公告披露金额信息，可用于判断订单或采购需求规模",
+                direction="opportunity",
+                dimension="订单规模",
+                evidence_sentence=_bidding_metadata_sentence(document),
+                published_at=document.published_at,
+            )
+        )
+    if any(term in notice_type for term in ("变更", "澄清", "更正")):
+        events.append(
+            InsightEvent(
+                id=f"evt_{start_index + len(events) + 1:03d}",
+                source_document_id=document.id,
+                source_type=document.source_type,
+                event_type="project_change",
+                title=document.title,
+                summary="公告类型显示项目存在变更或澄清",
+                direction="risk",
+                dimension="项目不确定性",
+                evidence_sentence=_bidding_metadata_sentence(document),
+                published_at=document.published_at,
+            )
+        )
+    return events
+
+
+def _bidding_metadata_sentence(document: SourceDocument) -> str:
+    metadata = document.metadata or {}
+    parts = [
+        str(metadata.get("noticeType") or ""),
+        str(metadata.get("projectName") or document.title),
+        str(metadata.get("buyerName") or ""),
+        str(metadata.get("winningBidder") or ""),
+        str(metadata.get("amount") or ""),
+        str(metadata.get("directMatchRole") or ""),
+    ]
+    return "；".join(item for item in parts if item)[:240] or _evidence_sentence(f"{document.title}\n{document.content}", ("采购",))
