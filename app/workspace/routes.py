@@ -15,6 +15,7 @@ from ..agent.jobs import (
     serialize_job,
     submit_agent_chat_job,
 )
+from ..agent.analysis_session import load_analysis_session_state, save_analysis_session_state
 from ..agent.memory import load_conversation_history, save_conversation_turn
 from ..agent.services import AgentServiceError, generate_reply_payload
 from ..db import session_scope
@@ -154,6 +155,8 @@ def _chat_response_data(
         data["analysisResults"] = result.get("analysisResults", {})
     if isinstance(result.get("analysisHandoffBundle"), dict):
         data["analysisHandoffBundle"] = result.get("analysisHandoffBundle", {})
+    if isinstance(result.get("analysisSession"), dict):
+        data["analysisSession"] = result.get("analysisSession", {})
     if trace_enabled and isinstance(result.get("trace"), dict):
         data["trace"] = result["trace"]
     if debug_enabled:
@@ -410,6 +413,14 @@ def workspace_chat():
             role=role,
             conversation_id=conversation_id,
         )
+        analysis_session_state = load_analysis_session_state(
+            db,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            role=role,
+            conversation_id=conversation_id,
+            enabled_modules=enabled_analysis_modules,
+        )
         try:
             result = generate_reply_payload(
                 role=role,
@@ -425,6 +436,7 @@ def workspace_chat():
                 enabled_analysis_modules=enabled_analysis_modules,
                 analysis_shared_inputs=analysis_shared_inputs,
                 analysis_module_inputs=analysis_module_inputs,
+                analysis_session_state=analysis_session_state,
                 agent_trace_enabled=trace_enabled,
                 agent_trace_debug_details_enabled=trace_details_enabled,
             )
@@ -454,6 +466,16 @@ def workspace_chat():
             intent=str(result.get("intent", intent)).strip(),
             conversation_context=conversation_context,
         )
+        persisted_analysis_session = save_analysis_session_state(
+            db,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            role=role,
+            conversation_id=conversation_id,
+            payload=result.get("analysisSession"),
+        )
+        if persisted_analysis_session:
+            result["analysisSession"] = persisted_analysis_session
 
         return {
             "ok": True,
@@ -538,6 +560,14 @@ def workspace_chat_stream():
                     role=role,
                     conversation_id=conversation_id,
                 )
+                analysis_session_state = load_analysis_session_state(
+                    db,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    role=role,
+                    conversation_id=conversation_id,
+                    enabled_modules=enabled_analysis_modules,
+                )
                 result = generate_reply_payload(
                     role=role,
                     system_prompt=preset["systemPrompt"],
@@ -552,6 +582,7 @@ def workspace_chat_stream():
                     enabled_analysis_modules=enabled_analysis_modules,
                     analysis_shared_inputs=analysis_shared_inputs,
                     analysis_module_inputs=analysis_module_inputs,
+                    analysis_session_state=analysis_session_state,
                     agent_trace_enabled=trace_enabled,
                     agent_trace_debug_details_enabled=trace_details_enabled,
                 )
@@ -563,6 +594,16 @@ def workspace_chat_stream():
                     intent=str(result.get("intent", intent)).strip(),
                     conversation_context=conversation_context,
                 )
+                persisted_analysis_session = save_analysis_session_state(
+                    db,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    role=role,
+                    conversation_id=conversation_id,
+                    payload=result.get("analysisSession"),
+                )
+                if persisted_analysis_session:
+                    result["analysisSession"] = persisted_analysis_session
         except AgentServiceError:
             log_audit_event(
                 "workspace.chat.failed",

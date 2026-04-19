@@ -244,6 +244,41 @@ class RoboticsPolicyDocument(Base):
     )
 
 
+class AnalysisSession(Base):
+    __tablename__ = "analysis_sessions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "workspace_id", "role", "conversation_id", name="uq_analysis_sessions_scope"),
+        UniqueConstraint("session_id", name="uq_analysis_sessions_session_id"),
+        Index("ix_analysis_sessions_scope_status", "user_id", "workspace_id", "role", "conversation_id", "status"),
+        Index("ix_analysis_sessions_updated", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="collecting", index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    enabled_modules_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    slot_values_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    slot_states_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    missing_slots_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    question_plan_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    module_states_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    module_results_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    compatibility_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    bundle_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
 class RoboticsCninfoAnnouncement(Base):
     __tablename__ = "robotics_cninfo_announcements"
     __table_args__ = (

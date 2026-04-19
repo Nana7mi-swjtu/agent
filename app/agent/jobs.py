@@ -13,6 +13,7 @@ from ..db import session_scope
 from ..logging_utils import bind_log_context, log_audit_event
 from ..models import AgentChatJob, User
 from ..workspace.roles import ROLE_PRESETS
+from .analysis_session import load_analysis_session_state, save_analysis_session_state
 from .memory import load_conversation_history, save_conversation_turn
 from .services import AgentServiceError, generate_reply_payload
 
@@ -264,6 +265,13 @@ def run_agent_chat_job(app: Flask, job_id: int) -> None:
                     role=job.role,
                     conversation_id=job.conversation_id,
                 )
+                analysis_session_state = load_analysis_session_state(
+                    db,
+                    user_id=job.user_id,
+                    workspace_id=job.workspace_id,
+                    role=job.role,
+                    conversation_id=job.conversation_id,
+                )
                 result = generate_reply_payload(
                     role=job.role,
                     system_prompt=preset["systemPrompt"],
@@ -275,6 +283,7 @@ def run_agent_chat_job(app: Flask, job_id: int) -> None:
                     rag_debug_enabled=debug_enabled,
                     entity=str(job.entity or ""),
                     intent=str(job.intent or ""),
+                    analysis_session_state=analysis_session_state,
                     agent_trace_enabled=trace_enabled,
                     agent_trace_debug_details_enabled=trace_details_enabled,
                 )
@@ -286,6 +295,16 @@ def run_agent_chat_job(app: Flask, job_id: int) -> None:
                     intent=str(result.get("intent", job.intent or "")).strip(),
                     conversation_context=conversation_context,
                 )
+                persisted_analysis_session = save_analysis_session_state(
+                    db,
+                    user_id=job.user_id,
+                    workspace_id=job.workspace_id,
+                    role=job.role,
+                    conversation_id=job.conversation_id,
+                    payload=result.get("analysisSession"),
+                )
+                if persisted_analysis_session:
+                    result["analysisSession"] = persisted_analysis_session
                 _mark_succeeded(db, job, result)
                 log_audit_event(
                     "workspace.chat.job.completed",

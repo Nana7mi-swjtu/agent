@@ -10,6 +10,7 @@ from flask import current_app
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
+from .analysis_session import create_transient_analysis_session
 from .graph import build_graph
 from .graph.analysis_modules import (
     normalize_analysis_module_inputs,
@@ -816,6 +817,7 @@ def generate_reply_payload(
     enabled_analysis_modules: list[str] | None = None,
     analysis_shared_inputs: dict[str, Any] | None = None,
     analysis_module_inputs: dict[str, dict[str, Any]] | None = None,
+    analysis_session_state: dict[str, Any] | None = None,
     agent_trace_enabled: bool = False,
     agent_trace_debug_details_enabled: bool = False,
 ) -> dict[str, Any]:
@@ -825,12 +827,30 @@ def generate_reply_payload(
     if not effective_user_message:
         effective_user_message = f"{entity_text} {graph_intent_text}".strip()
     normalized_enabled_analysis_modules = normalize_enabled_analysis_modules(enabled_analysis_modules)
+    normalized_analysis_session_state = (
+        dict(analysis_session_state)
+        if isinstance(analysis_session_state, dict)
+        else {}
+    )
+    if not normalized_enabled_analysis_modules and isinstance(normalized_analysis_session_state.get("enabledModules"), list):
+        normalized_enabled_analysis_modules = [
+            str(item).strip()
+            for item in normalized_analysis_session_state.get("enabledModules", [])
+            if str(item).strip()
+        ]
+    fallback_report_goal = ""
+    if not normalized_enabled_analysis_modules:
+        fallback_report_goal = effective_user_message
     normalized_analysis_shared_inputs = normalize_analysis_shared_inputs(
         analysis_shared_inputs,
         fallback_enterprise=entity_text,
-        fallback_report_goal=effective_user_message,
+        fallback_report_goal=fallback_report_goal,
     )
     normalized_analysis_module_inputs = normalize_analysis_module_inputs(analysis_module_inputs)
+    if not normalized_analysis_session_state and normalized_enabled_analysis_modules:
+        normalized_analysis_session_state = create_transient_analysis_session(
+            enabled_modules=normalized_enabled_analysis_modules
+        )
     normalized_history = _normalize_conversation_history(conversation_history)
     normalized_context = str(conversation_context or "").strip()
     if not normalized_enabled_analysis_modules and _should_run_direct_kg_query(
@@ -875,6 +895,7 @@ def generate_reply_payload(
             "enabled_analysis_modules": normalized_enabled_analysis_modules,
             "analysis_shared_inputs": normalized_analysis_shared_inputs,
             "analysis_module_inputs": normalized_analysis_module_inputs,
+            "analysis_session": normalized_analysis_session_state,
             "analysis_missing_fields": [],
             "analysis_results": {},
             "analysis_handoff_bundle": {},
@@ -928,6 +949,9 @@ def generate_reply_payload(
         analysis_handoff_bundle_payload = output.get("analysis_handoff_bundle", {})
         if not isinstance(analysis_handoff_bundle_payload, dict):
             analysis_handoff_bundle_payload = {}
+        analysis_session_payload = output.get("analysis_session", {})
+        if not isinstance(analysis_session_payload, dict):
+            analysis_session_payload = {}
         trace_payload = (
             _build_trace_payload(output, include_details=bool(agent_trace_debug_details_enabled))
             if agent_trace_enabled
@@ -956,6 +980,8 @@ def generate_reply_payload(
         payload["analysisResults"] = analysis_results_payload
     if analysis_handoff_bundle_payload:
         payload["analysisHandoffBundle"] = analysis_handoff_bundle_payload
+    if analysis_session_payload:
+        payload["analysisSession"] = analysis_session_payload
     if trace_payload:
         payload["trace"] = trace_payload
     return payload

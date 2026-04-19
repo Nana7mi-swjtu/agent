@@ -30,6 +30,7 @@ class AgentState(TypedDict):
     enabled_analysis_modules: list[str]
     analysis_shared_inputs: dict[str, Any]
     analysis_module_inputs: dict[str, dict[str, Any]]
+    analysis_session: dict[str, Any]
     analysis_missing_fields: list[dict[str, Any]]
     analysis_results: dict[str, dict[str, Any]]
     analysis_handoff_bundle: dict[str, Any]

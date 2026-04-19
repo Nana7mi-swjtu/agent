@@ -8,7 +8,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.agent import services as agent_services
 from app.agent.services import AgentServiceError
-from app.models import AgentChatJob, AgentConversationMessage, AgentConversationThread, User
+from app.models import AgentChatJob, AgentConversationMessage, AgentConversationThread, AnalysisSession, User
 
 
 def _auth_headers(client, user_id: int) -> dict[str, str]:
@@ -656,6 +656,102 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
     assert captured_kwargs["analysis_module_inputs"]["robotics_risk"]["focus"] == "订单与政策"
     assert payload["analysisHandoffBundle"]["enabledModules"] == ["robotics_risk"]
     assert payload["analysisResults"]["robotics_risk"]["runId"] == "rrisk_001"
+
+
+def test_workspace_chat_restores_persisted_analysis_session_between_turns(client, db_session, monkeypatch):
+    user = User(email="chat-analysis-session@example.com", nickname="ChatAnalysisSession", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    captured_calls: list[dict[str, object]] = []
+
+    def _fake_generate_reply_payload(**kwargs):
+        captured_calls.append(kwargs)
+        restored_session = kwargs.get("analysis_session_state")
+        if isinstance(restored_session, dict) and restored_session.get("slotValues"):
+            return {
+                "reply": "second analysis answer",
+                "citations": [],
+                "sources": [],
+                "noEvidence": False,
+                "analysisSession": restored_session,
+                "graph": {},
+                "graphMeta": {},
+            }
+        return {
+            "reply": "first analysis answer",
+            "citations": [],
+            "sources": [],
+            "noEvidence": False,
+            "analysisSession": {
+                "status": "collecting",
+                "revision": 1,
+                "enabledModules": ["robotics_risk"],
+                "slotValues": {"enterprise_name": "石头科技"},
+                "slotStates": {
+                    "enterprise_name": {
+                        "status": "resolved",
+                        "updatedRevision": 1,
+                        "value": "石头科技",
+                    }
+                },
+                "missingSlots": ["time_range"],
+                "questionPlan": [
+                    {
+                        "groupId": "time_range",
+                        "slotIds": ["time_range"],
+                        "requiredSlotIds": ["time_range"],
+                        "labels": ["时间范围"],
+                        "question": "请补充时间范围。",
+                    }
+                ],
+                "moduleStates": {},
+                "moduleResults": {},
+                "compatibility": {
+                    "legacySharedInputs": {"enterpriseName": "石头科技"},
+                    "legacyModuleInputs": {},
+                },
+                "handoffBundle": {},
+            },
+            "graph": {},
+            "graphMeta": {},
+        }
+
+    monkeypatch.setattr("app.workspace.routes.generate_reply_payload", _fake_generate_reply_payload)
+
+    first = client.post(
+        "/api/workspace/chat",
+        json=_chat_payload(
+            "开始做机器人行业分析",
+            "analysis-session-conv",
+            enabledAnalysisModules=["robotics_risk"],
+        ),
+        headers=headers,
+    )
+    assert first.status_code == 200
+    first_payload = first.get_json()["data"]
+    assert first_payload["analysisSession"]["sessionId"].startswith("asess_")
+    assert first_payload["analysisSession"]["slotValues"]["enterprise_name"] == "石头科技"
+
+    second = client.post(
+        "/api/workspace/chat",
+        json=_chat_payload("继续", "analysis-session-conv"),
+        headers=headers,
+    )
+    assert second.status_code == 200
+    second_payload = second.get_json()["data"]
+    assert captured_calls[1]["analysis_session_state"]["sessionId"] == first_payload["analysisSession"]["sessionId"]
+    assert captured_calls[1]["analysis_session_state"]["slotValues"]["enterprise_name"] == "石头科技"
+    assert second_payload["analysisSession"]["sessionId"] == first_payload["analysisSession"]["sessionId"]
+
+    db_session.expire_all()
+    rows = db_session.execute(select(AnalysisSession).where(AnalysisSession.user_id == user.id)).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].session_id == first_payload["analysisSession"]["sessionId"]
 
 
 def test_workspace_chat_stream_emits_deltas_and_final_metadata(client, app, db_session, monkeypatch):

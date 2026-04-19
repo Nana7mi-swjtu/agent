@@ -1,40 +1,37 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ...robotics_risk import run_robotics_risk_subagent
+from .analysis_slots import (
+    AnalysisSlotDefinition,
+    AnalysisSlotOption,
+    SHARED_ANALYSIS_FOCUS_TAGS,
+    SHARED_ENTERPRISE_NAME,
+    SHARED_REPORT_GOAL,
+    SHARED_STOCK_CODE,
+    SHARED_TIME_RANGE,
+    SCOPE_MODULE,
+    VALUE_KIND_MULTI_CHOICE,
+    normalize_slot_value,
+    shared_slot_catalog,
+)
 
-ANALYSIS_HANDOFF_BUNDLE_SCHEMA_VERSION = "analysis_handoff_bundle.v1"
-
-
-@dataclass(frozen=True)
-class AnalysisFieldDefinition:
-    field: str
-    label: str
-    required: bool = True
+ANALYSIS_HANDOFF_BUNDLE_SCHEMA_VERSION = "analysis_handoff_bundle.v2"
 
 
 @dataclass(frozen=True)
 class AnalysisModuleContract:
     module_id: str
     display_name: str
-    shared_fields: tuple[AnalysisFieldDefinition, ...]
-    module_fields: tuple[AnalysisFieldDefinition, ...]
-    build_input: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]], dict[str, Any]]
-    run: Callable[[dict[str, Any]], Any]
-
-
-_SHARED_FIELDS: dict[str, AnalysisFieldDefinition] = {
-    "enterpriseName": AnalysisFieldDefinition("enterpriseName", "企业名称（如有股票代码可一并提供）"),
-    "stockCode": AnalysisFieldDefinition("stockCode", "股票代码", required=False),
-    "timeRange": AnalysisFieldDefinition("timeRange", "时间范围"),
-    "reportGoal": AnalysisFieldDefinition("reportGoal", "报告目标"),
-}
-
-
-def shared_field_definition(field_name: str) -> AnalysisFieldDefinition:
-    return _SHARED_FIELDS[field_name]
+    required_slots: tuple[str, ...]
+    optional_slots: tuple[str, ...] = field(default_factory=tuple)
+    slot_definitions: tuple[AnalysisSlotDefinition, ...] = field(default_factory=tuple)
+    legacy_input_slot_map: dict[str, str] = field(default_factory=dict)
+    legacy_passthrough_fields: tuple[str, ...] = field(default_factory=tuple)
+    slot_mapping: Callable[[dict[str, Any], dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None
+    run: Callable[[dict[str, Any]], Any] | None = None
 
 
 def normalize_enabled_analysis_modules(value: Any) -> list[str]:
@@ -55,9 +52,7 @@ def normalize_analysis_shared_inputs(
     fallback_report_goal: str = "",
 ) -> dict[str, Any]:
     raw = dict(value or {}) if isinstance(value, dict) else {}
-    enterprise_name = _clean_text(
-        raw.get("enterpriseName") or raw.get("enterprise_name") or fallback_enterprise
-    )
+    enterprise_name = _clean_text(raw.get("enterpriseName") or raw.get("enterprise_name") or fallback_enterprise)
     stock_code = _clean_text(raw.get("stockCode") or raw.get("stock_code"))
     time_range = _clean_text(raw.get("timeRange") or raw.get("time_range"))
     report_goal = _clean_text(raw.get("reportGoal") or raw.get("report_goal") or fallback_report_goal)
@@ -84,29 +79,123 @@ def normalize_analysis_module_inputs(value: Any) -> dict[str, dict[str, Any]]:
 
 
 def get_analysis_module_registry() -> dict[str, AnalysisModuleContract]:
-    shared_fields = (
-        shared_field_definition("enterpriseName"),
-        shared_field_definition("stockCode"),
-        shared_field_definition("timeRange"),
-        shared_field_definition("reportGoal"),
-    )
     return {
         "robotics_risk": AnalysisModuleContract(
             module_id="robotics_risk",
             display_name="机器人风险机会洞察",
-            shared_fields=shared_fields,
-            module_fields=(
-                AnalysisFieldDefinition("focus", "关注重点"),
-                AnalysisFieldDefinition("dimensions", "分析维度", required=False),
-                AnalysisFieldDefinition("sourceControls", "来源开关", required=False),
+            required_slots=(
+                SHARED_ENTERPRISE_NAME,
+                SHARED_TIME_RANGE,
+                SHARED_REPORT_GOAL,
+                SHARED_ANALYSIS_FOCUS_TAGS,
             ),
-            build_input=_build_robotics_risk_input,
+            optional_slots=(
+                SHARED_STOCK_CODE,
+                "robotics_risk.dimensions",
+            ),
+            slot_definitions=(
+                AnalysisSlotDefinition(
+                    slot_id="robotics_risk.dimensions",
+                    label="分析维度",
+                    scope=SCOPE_MODULE,
+                    value_kind=VALUE_KIND_MULTI_CHOICE,
+                    normalizer="choice_tags",
+                    group_id="robotics_risk.dimensions",
+                    priority=60,
+                    module_id="robotics_risk",
+                    prompt_hint="如需限定维度，可填写政策、公告、招中标、竞争。",
+                    options=(
+                        AnalysisSlotOption(value="政策", label="政策"),
+                        AnalysisSlotOption(value="公告", label="公告"),
+                        AnalysisSlotOption(value="招中标", label="招中标"),
+                        AnalysisSlotOption(value="竞争", label="竞争"),
+                    ),
+                ),
+            ),
+            legacy_input_slot_map={
+                "focus": SHARED_ANALYSIS_FOCUS_TAGS,
+                "dimensions": "robotics_risk.dimensions",
+            },
+            legacy_passthrough_fields=("sourceControls",),
+            slot_mapping=_map_robotics_risk_runtime_input,
             run=_run_robotics_risk_module,
         )
     }
 
 
-def normalize_analysis_module_output(contract: AnalysisModuleContract, raw_output: Any) -> dict[str, Any]:
+def build_slot_catalog(contracts: list[AnalysisModuleContract]) -> dict[str, AnalysisSlotDefinition]:
+    catalog = shared_slot_catalog()
+    for contract in contracts:
+        for definition in contract.slot_definitions:
+            catalog[definition.slot_id] = definition
+    return catalog
+
+
+def map_legacy_inputs_to_slot_updates(
+    *,
+    contracts: list[AnalysisModuleContract],
+    slot_catalog: dict[str, AnalysisSlotDefinition],
+    shared_inputs: dict[str, Any],
+    module_inputs: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    slot_updates: dict[str, Any] = {}
+    compatibility = {
+        "legacySharedInputs": dict(shared_inputs) if isinstance(shared_inputs, dict) else {},
+        "legacyModuleInputs": {},
+    }
+    shared_mapping = {
+        "enterpriseName": SHARED_ENTERPRISE_NAME,
+        "stockCode": SHARED_STOCK_CODE,
+        "timeRange": SHARED_TIME_RANGE,
+        "reportGoal": SHARED_REPORT_GOAL,
+    }
+    for field_name, slot_id in shared_mapping.items():
+        raw_value = shared_inputs.get(field_name) if isinstance(shared_inputs, dict) else None
+        if raw_value in (None, "", [], {}):
+            continue
+        definition = slot_catalog.get(slot_id)
+        if definition is None:
+            continue
+        normalized = normalize_slot_value(definition, raw_value)
+        if normalized not in (None, "", [], {}):
+            slot_updates[slot_id] = normalized
+
+    for contract in contracts:
+        current_inputs = module_inputs.get(contract.module_id, {}) if isinstance(module_inputs, dict) else {}
+        if not isinstance(current_inputs, dict):
+            current_inputs = {}
+        compatibility["legacyModuleInputs"][contract.module_id] = dict(current_inputs)
+        for field_name, slot_id in contract.legacy_input_slot_map.items():
+            raw_value = current_inputs.get(field_name)
+            if raw_value in (None, "", [], {}):
+                continue
+            definition = slot_catalog.get(slot_id)
+            if definition is None:
+                continue
+            normalized = normalize_slot_value(definition, raw_value)
+            if normalized not in (None, "", [], {}):
+                slot_updates[slot_id] = normalized
+    return slot_updates, compatibility
+
+
+def build_runtime_input(
+    contract: AnalysisModuleContract,
+    *,
+    slot_values: dict[str, Any],
+    compatibility: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    if contract.slot_mapping is None:
+        return {}
+    return contract.slot_mapping(slot_values, compatibility, context)
+
+
+def normalize_analysis_module_output(
+    contract: AnalysisModuleContract,
+    raw_output: Any,
+    *,
+    input_revision: int | None = None,
+) -> dict[str, Any]:
     payload = raw_output.to_dict() if hasattr(raw_output, "to_dict") else dict(raw_output or {})
     if not isinstance(payload, dict):
         payload = {}
@@ -119,7 +208,7 @@ def normalize_analysis_module_output(contract: AnalysisModuleContract, raw_outpu
     limitations = _normalize_string_list(payload.get("limitations"))
     run_id = _clean_text(payload.get("runId") or payload.get("run_id"))
     summary = _build_module_summary(result_payload=result_payload, handoff_payload=handoff_payload, limitations=limitations)
-    return _drop_empty(
+    normalized = _drop_empty(
         {
             "moduleId": contract.module_id,
             "displayName": contract.display_name,
@@ -129,7 +218,9 @@ def normalize_analysis_module_output(contract: AnalysisModuleContract, raw_outpu
             "runId": run_id,
             "documentHandoff": handoff_payload,
             "result": result_payload,
-            "targetCompany": payload.get("targetCompany") if isinstance(payload.get("targetCompany"), dict) else payload.get("target_company", {}),
+            "targetCompany": payload.get("targetCompany")
+            if isinstance(payload.get("targetCompany"), dict)
+            else payload.get("target_company", {}),
             "normalizedInput": payload.get("normalizedInput")
             if isinstance(payload.get("normalizedInput"), dict)
             else payload.get("normalized_input", {}),
@@ -139,16 +230,25 @@ def normalize_analysis_module_output(contract: AnalysisModuleContract, raw_outpu
             "errorMessage": _clean_text(payload.get("errorMessage") or payload.get("error_message")),
         }
     )
+    if input_revision is not None:
+        normalized["inputSnapshotRevision"] = int(input_revision)
+    return normalized
 
 
 def build_analysis_handoff_bundle(
     *,
-    enabled_modules: list[str],
-    shared_inputs: dict[str, Any],
+    analysis_session: dict[str, Any],
+    shared_summary: dict[str, Any],
     module_results: dict[str, dict[str, Any]],
     unsupported_modules: list[str] | None = None,
 ) -> dict[str, Any]:
     unsupported = [module_id for module_id in list(unsupported_modules or []) if module_id]
+    enabled_modules = _string_list(analysis_session.get("enabledModules"))
+    stale_modules = [
+        module_id
+        for module_id, module_state in _dict_items(analysis_session.get("moduleStates")).items()
+        if isinstance(module_state, dict) and str(module_state.get("status", "")).strip() == "stale"
+    ]
     module_result_list = [
         dict(module_results[module_id])
         for module_id in enabled_modules
@@ -173,13 +273,20 @@ def build_analysis_handoff_bundle(
     return _drop_empty(
         {
             "schemaVersion": ANALYSIS_HANDOFF_BUNDLE_SCHEMA_VERSION,
-            "enabledModules": list(enabled_modules),
+            "analysisSession": {
+                "sessionId": _clean_text(analysis_session.get("sessionId")),
+                "status": _clean_text(analysis_session.get("status")),
+                "revision": int(analysis_session.get("revision", 0) or 0),
+            },
+            "enabledModules": enabled_modules,
             "sharedInputSummary": _drop_empty(
                 {
-                    "enterpriseName": _clean_text(shared_inputs.get("enterpriseName")),
-                    "stockCode": _clean_text(shared_inputs.get("stockCode")),
-                    "timeRange": _clean_text(shared_inputs.get("timeRange")),
-                    "reportGoal": _clean_text(shared_inputs.get("reportGoal")),
+                    "enterpriseName": _clean_text(shared_summary.get("enterpriseName")),
+                    "stockCode": _clean_text(shared_summary.get("stockCode")),
+                    "timeRange": _clean_text(shared_summary.get("timeRange")),
+                    "reportGoal": _clean_text(shared_summary.get("reportGoal")),
+                    "analysisFocusTags": _string_list(shared_summary.get("analysisFocusTags")),
+                    "regionScope": _string_list(shared_summary.get("regionScope")),
                 }
             ),
             "moduleResults": module_result_list,
@@ -187,6 +294,7 @@ def build_analysis_handoff_bundle(
             "moduleSummaries": module_summaries,
             "documentHandoffs": document_handoffs,
             "unsupportedModules": unsupported,
+            "staleModules": stale_modules,
             "limitations": limitations,
         }
     )
@@ -196,33 +304,38 @@ def _run_robotics_risk_module(payload: dict[str, Any]) -> Any:
     return run_robotics_risk_subagent(payload)
 
 
-def _build_robotics_risk_input(
-    shared_inputs: dict[str, Any],
-    module_inputs: dict[str, Any],
+def _map_robotics_risk_runtime_input(
+    slot_values: dict[str, Any],
+    compatibility: dict[str, Any],
     context: dict[str, Any],
 ) -> dict[str, Any]:
-    dimensions = module_inputs.get("dimensions")
-    source_controls = module_inputs.get("sourceControls") or module_inputs.get("source_controls")
+    module_inputs = compatibility.get("legacyModuleInputs", {}) if isinstance(compatibility, dict) else {}
+    robotics_inputs = module_inputs.get("robotics_risk", {}) if isinstance(module_inputs, dict) else {}
+    source_controls = robotics_inputs.get("sourceControls") or robotics_inputs.get("source_controls")
+    focus_tags = slot_values.get(SHARED_ANALYSIS_FOCUS_TAGS, [])
+    focus = "、".join(_string_list(focus_tags))
+    dimensions = slot_values.get("robotics_risk.dimensions", [])
     return _drop_empty(
         {
-            "enterpriseName": _clean_text(shared_inputs.get("enterpriseName")),
-            "stockCode": _clean_text(shared_inputs.get("stockCode")),
-            "timeRange": _clean_text(shared_inputs.get("timeRange")) or "近30天",
-            "focus": _clean_text(module_inputs.get("focus")),
-            "dimensions": dimensions if isinstance(dimensions, list) else [],
+            "enterpriseName": _clean_text(slot_values.get(SHARED_ENTERPRISE_NAME)),
+            "stockCode": _clean_text(slot_values.get(SHARED_STOCK_CODE)),
+            "timeRange": _clean_text(slot_values.get(SHARED_TIME_RANGE)) or "近30天",
+            "focus": focus,
+            "dimensions": _string_list(dimensions),
             "sourceControls": source_controls if isinstance(source_controls, dict) else {},
             "conversationContext": _clean_text(context.get("conversationContext")),
             "metadata": _drop_empty(
                 {
-                    "reportGoal": _clean_text(shared_inputs.get("reportGoal")),
+                    "reportGoal": _clean_text(slot_values.get(SHARED_REPORT_GOAL)),
                     "orchestration": {
                         "moduleId": "robotics_risk",
                         "sharedInputs": _drop_empty(
                             {
-                                "enterpriseName": _clean_text(shared_inputs.get("enterpriseName")),
-                                "stockCode": _clean_text(shared_inputs.get("stockCode")),
-                                "timeRange": _clean_text(shared_inputs.get("timeRange")),
-                                "reportGoal": _clean_text(shared_inputs.get("reportGoal")),
+                                "enterpriseName": _clean_text(slot_values.get(SHARED_ENTERPRISE_NAME)),
+                                "stockCode": _clean_text(slot_values.get(SHARED_STOCK_CODE)),
+                                "timeRange": _clean_text(slot_values.get(SHARED_TIME_RANGE)),
+                                "reportGoal": _clean_text(slot_values.get(SHARED_REPORT_GOAL)),
+                                "analysisFocusTags": _string_list(slot_values.get(SHARED_ANALYSIS_FOCUS_TAGS)),
                             }
                         ),
                     },
@@ -304,14 +417,7 @@ def _normalize_value(value: Any) -> Any:
 
 
 def _normalize_string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    result: list[str] = []
-    for item in value:
-        clean = _clean_text(item)
-        if clean and clean not in result:
-            result.append(clean)
-    return result
+    return _string_list(value)
 
 
 def _truncate(value: str, *, limit: int) -> str:
@@ -323,6 +429,21 @@ def _truncate(value: str, *, limit: int) -> str:
 
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _dict_items(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        clean = str(item or "").strip()
+        if clean and clean not in result:
+            result.append(clean)
+    return result
 
 
 def _drop_empty(value: Any) -> Any:

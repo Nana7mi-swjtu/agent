@@ -11,8 +11,23 @@ from ...rag.service import build_cited_response
 from .analysis_modules import (
     AnalysisModuleContract,
     build_analysis_handoff_bundle,
+    build_runtime_input,
+    build_slot_catalog,
     get_analysis_module_registry,
+    map_legacy_inputs_to_slot_updates,
     normalize_analysis_module_output,
+)
+from .analysis_slots import (
+    AnalysisSlotDefinition,
+    SHARED_ANALYSIS_FOCUS_TAGS,
+    SHARED_ENTERPRISE_NAME,
+    SHARED_REGION_SCOPE,
+    SHARED_REPORT_GOAL,
+    SHARED_STOCK_CODE,
+    SHARED_TIME_RANGE,
+    has_slot_value,
+    parse_answer_for_group,
+    slot_label,
 )
 from .mcp import build_mcp_graph
 from .search import build_search_graph
@@ -167,6 +182,11 @@ def _analysis_module_inputs(state: AgentState) -> dict[str, dict[str, Any]]:
     }
 
 
+def _analysis_session_state(state: AgentState) -> dict[str, Any]:
+    value = state.get("analysis_session", {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _analysis_contracts(enabled_modules: list[str]) -> tuple[list[AnalysisModuleContract], list[str]]:
     registry = get_analysis_module_registry()
     contracts: list[AnalysisModuleContract] = []
@@ -180,23 +200,12 @@ def _analysis_contracts(enabled_modules: list[str]) -> tuple[list[AnalysisModule
     return contracts, unsupported
 
 
-def _has_analysis_value(value: Any) -> bool:
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, list):
-        return bool(value)
-    if isinstance(value, dict):
-        return bool(value)
-    return value is not None
-
-
 def _analysis_missing_field_id(item: dict[str, Any]) -> str:
     scope = str(item.get("scope", "")).strip()
-    module_id = str(item.get("moduleId", "")).strip()
-    field_name = str(item.get("field", "")).strip()
-    if scope == "module" and module_id:
-        return f"analysis.{module_id}.{field_name}"
-    return f"analysis.shared.{field_name}"
+    slot_id = str(item.get("slotId", "")).strip() or str(item.get("field", "")).strip()
+    if scope == "module" and slot_id:
+        return f"analysis.{slot_id}"
+    return f"analysis.shared.{slot_id}"
 
 
 def _analysis_shared_question(missing_fields: list[dict[str, Any]]) -> str:
@@ -231,6 +240,328 @@ def _analysis_need_input_question(module_result: dict[str, Any], contract: Analy
     if error_message:
         return f"{contract.display_name} 仍需补充信息：{error_message}"
     return f"{contract.display_name} 仍需补充必要输入后才能继续。"
+
+
+def _base_analysis_session(existing: dict[str, Any], *, enabled_modules: list[str]) -> dict[str, Any]:
+    compatibility = existing.get("compatibility", {}) if isinstance(existing.get("compatibility"), dict) else {}
+    return {
+        "sessionId": str(existing.get("sessionId", "")).strip(),
+        "status": str(existing.get("status", "")).strip() or "collecting",
+        "revision": _safe_int(existing.get("revision", 0), default=0),
+        "enabledModules": _string_list(existing.get("enabledModules", enabled_modules)),
+        "slotValues": dict(existing.get("slotValues", {})) if isinstance(existing.get("slotValues"), dict) else {},
+        "slotStates": dict(existing.get("slotStates", {})) if isinstance(existing.get("slotStates"), dict) else {},
+        "missingSlots": _string_list(existing.get("missingSlots", [])),
+        "questionPlan": [dict(item) for item in existing.get("questionPlan", []) if isinstance(item, dict)]
+        if isinstance(existing.get("questionPlan"), list)
+        else [],
+        "moduleStates": dict(existing.get("moduleStates", {})) if isinstance(existing.get("moduleStates"), dict) else {},
+        "moduleResults": dict(existing.get("moduleResults", {})) if isinstance(existing.get("moduleResults"), dict) else {},
+        "compatibility": {
+            "legacySharedInputs": dict(compatibility.get("legacySharedInputs", {}))
+            if isinstance(compatibility.get("legacySharedInputs"), dict)
+            else {},
+            "legacyModuleInputs": dict(compatibility.get("legacyModuleInputs", {}))
+            if isinstance(compatibility.get("legacyModuleInputs"), dict)
+            else {},
+        },
+        "handoffBundle": dict(existing.get("handoffBundle", {})) if isinstance(existing.get("handoffBundle"), dict) else {},
+    }
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        clean = str(item or "").strip()
+        if clean and clean not in result:
+            result.append(clean)
+    return result
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _merge_enabled_modules_into_session(session: dict[str, Any], explicit_enabled_modules: list[str]) -> tuple[list[str], bool]:
+    current_enabled = _string_list(session.get("enabledModules", []))
+    if not explicit_enabled_modules:
+        session["enabledModules"] = current_enabled
+        return current_enabled, False
+    normalized_explicit = [module_id for module_id in explicit_enabled_modules if module_id]
+    changed = normalized_explicit != current_enabled
+    if changed:
+        allowed = set(normalized_explicit)
+        session["enabledModules"] = normalized_explicit
+        session["moduleStates"] = {
+            module_id: payload
+            for module_id, payload in _dict_payload(session.get("moduleStates")).items()
+            if module_id in allowed
+        }
+        session["moduleResults"] = {
+            module_id: payload
+            for module_id, payload in _dict_payload(session.get("moduleResults")).items()
+            if module_id in allowed
+        }
+        compatibility = _dict_payload(session.get("compatibility"))
+        legacy_module_inputs = _dict_payload(compatibility.get("legacyModuleInputs"))
+        session["compatibility"] = {
+            **compatibility,
+            "legacyModuleInputs": {
+                module_id: payload
+                for module_id, payload in legacy_module_inputs.items()
+                if module_id in allowed
+            },
+        }
+        session["handoffBundle"] = {}
+        session["missingSlots"] = []
+        session["questionPlan"] = []
+    return normalized_explicit, changed
+
+
+def _dict_payload(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _merge_compatibility(session: dict[str, Any], compatibility_update: dict[str, Any]) -> list[str]:
+    compatibility = _dict_payload(session.get("compatibility"))
+    existing_shared = _dict_payload(compatibility.get("legacySharedInputs"))
+    existing_modules = _dict_payload(compatibility.get("legacyModuleInputs"))
+    update_shared = _dict_payload(compatibility_update.get("legacySharedInputs"))
+    update_modules = _dict_payload(compatibility_update.get("legacyModuleInputs"))
+    changed_modules: list[str] = []
+
+    for key, value in update_shared.items():
+        if existing_shared.get(key) != value:
+            existing_shared[key] = value
+
+    for module_id, payload in update_modules.items():
+        if not isinstance(payload, dict):
+            continue
+        if existing_modules.get(module_id) != payload:
+            changed_modules.append(module_id)
+            existing_modules[module_id] = dict(payload)
+
+    session["compatibility"] = {
+        "legacySharedInputs": existing_shared,
+        "legacyModuleInputs": existing_modules,
+    }
+    return changed_modules
+
+
+def _mark_modules_stale(
+    session: dict[str, Any],
+    *,
+    contracts: list[AnalysisModuleContract],
+    changed_slots: list[str] | None = None,
+    changed_modules: list[str] | None = None,
+) -> list[str]:
+    dirty_modules: list[str] = []
+    dirty_slot_set = set(changed_slots or [])
+    dirty_module_set = set(changed_modules or [])
+    module_states = _dict_payload(session.get("moduleStates"))
+    module_results = _dict_payload(session.get("moduleResults"))
+    for contract in contracts:
+        dependency_slots = set(contract.required_slots) | set(contract.optional_slots)
+        affected_slots = sorted(dirty_slot_set.intersection(dependency_slots))
+        if not affected_slots and contract.module_id not in dirty_module_set:
+            continue
+        if contract.module_id not in module_results and contract.module_id not in module_states:
+            continue
+        dirty_modules.append(contract.module_id)
+        module_state = dict(module_states.get(contract.module_id, {}))
+        module_state["status"] = "stale"
+        if affected_slots:
+            module_state["staleSlots"] = affected_slots
+        module_states[contract.module_id] = module_state
+        module_result = dict(module_results.get(contract.module_id, {}))
+        if module_result:
+            module_result["status"] = "stale"
+            if affected_slots:
+                module_result["staleSlots"] = affected_slots
+            module_result["stale"] = True
+            module_results[contract.module_id] = module_result
+    session["moduleStates"] = module_states
+    session["moduleResults"] = module_results
+    return dirty_modules
+
+
+def _apply_slot_updates(session: dict[str, Any], slot_updates: dict[str, Any], *, contracts: list[AnalysisModuleContract]) -> list[str]:
+    if not slot_updates:
+        return []
+    slot_values = _dict_payload(session.get("slotValues"))
+    slot_states = _dict_payload(session.get("slotStates"))
+    changed_slots: list[str] = []
+    for slot_id, value in slot_updates.items():
+        if slot_values.get(slot_id) == value:
+            continue
+        slot_values[slot_id] = value
+        changed_slots.append(slot_id)
+    if not changed_slots:
+        return []
+    session["revision"] = _safe_int(session.get("revision", 0), default=0) + 1
+    for slot_id in changed_slots:
+        slot_states[slot_id] = {
+            "status": "resolved",
+            "updatedRevision": int(session["revision"]),
+            "value": slot_values.get(slot_id),
+        }
+    session["slotValues"] = slot_values
+    session["slotStates"] = slot_states
+    _mark_modules_stale(session, contracts=contracts, changed_slots=changed_slots)
+    return changed_slots
+
+
+def _required_slot_ids(contracts: list[AnalysisModuleContract]) -> list[str]:
+    result: list[str] = []
+    for contract in contracts:
+        for slot_id in contract.required_slots:
+            if slot_id not in result:
+                result.append(slot_id)
+    return result
+
+
+def _relevant_slot_ids(contracts: list[AnalysisModuleContract]) -> list[str]:
+    result = _required_slot_ids(contracts)
+    for contract in contracts:
+        for slot_id in contract.optional_slots:
+            if slot_id not in result:
+                result.append(slot_id)
+    return result
+
+
+def _missing_slot_entries(
+    *,
+    required_slot_ids: list[str],
+    slot_catalog: dict[str, AnalysisSlotDefinition],
+    contracts: list[AnalysisModuleContract],
+    slot_values: dict[str, Any],
+) -> list[dict[str, Any]]:
+    contract_names = {contract.module_id: contract.display_name for contract in contracts}
+    missing: list[dict[str, Any]] = []
+    for slot_id in required_slot_ids:
+        definition = slot_catalog.get(slot_id)
+        if definition is None:
+            continue
+        if any(not has_slot_value(slot_values.get(depends_on)) for depends_on in definition.depends_on):
+            continue
+        if has_slot_value(slot_values.get(slot_id)):
+            continue
+        missing.append(
+            {
+                "scope": definition.scope,
+                "slotId": definition.slot_id,
+                "label": definition.label,
+                "groupId": definition.group_id,
+                "moduleId": definition.module_id,
+                "moduleName": contract_names.get(definition.module_id, definition.module_id),
+            }
+        )
+    missing.sort(key=lambda item: (_slot_priority(slot_catalog, item.get("slotId", "")), item.get("label", "")))
+    return missing
+
+
+def _slot_priority(slot_catalog: dict[str, AnalysisSlotDefinition], slot_id: str) -> int:
+    definition = slot_catalog.get(str(slot_id))
+    return int(definition.priority) if definition is not None else 999
+
+
+def _build_question_plan(
+    *,
+    missing_entries: list[dict[str, Any]],
+    relevant_slot_ids: list[str],
+    slot_catalog: dict[str, AnalysisSlotDefinition],
+) -> list[dict[str, Any]]:
+    plan: list[dict[str, Any]] = []
+    seen_groups: set[str] = set()
+    for item in missing_entries:
+        group_id = str(item.get("groupId", "")).strip()
+        if not group_id or group_id in seen_groups:
+            continue
+        seen_groups.add(group_id)
+        group_slot_ids = [
+            slot_id
+            for slot_id in relevant_slot_ids
+            if slot_id in slot_catalog and slot_catalog[slot_id].group_id == group_id
+        ]
+        labels = [slot_label(slot_catalog, slot_id) for slot_id in group_slot_ids if slot_id in slot_catalog]
+        required_slot_ids = [str(entry.get("slotId", "")).strip() for entry in missing_entries if entry.get("groupId") == group_id]
+        first_definition = slot_catalog.get(required_slot_ids[0]) if required_slot_ids else None
+        question = ""
+        if first_definition is not None and first_definition.prompt_hint:
+            question = first_definition.prompt_hint
+        if not question:
+            question = "请补充以下信息：" + "、".join(label for label in labels if label) + "。"
+        plan.append(
+            {
+                "groupId": group_id,
+                "slotIds": group_slot_ids,
+                "requiredSlotIds": required_slot_ids,
+                "labels": labels,
+                "question": question,
+            }
+        )
+    return plan
+
+
+def _shared_summary_from_slot_values(slot_values: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "enterpriseName": str(slot_values.get(SHARED_ENTERPRISE_NAME, "") or "").strip(),
+        "stockCode": str(slot_values.get(SHARED_STOCK_CODE, "") or "").strip(),
+        "timeRange": str(slot_values.get(SHARED_TIME_RANGE, "") or "").strip(),
+        "reportGoal": str(slot_values.get(SHARED_REPORT_GOAL, "") or "").strip(),
+        "analysisFocusTags": list(slot_values.get(SHARED_ANALYSIS_FOCUS_TAGS, []))
+        if isinstance(slot_values.get(SHARED_ANALYSIS_FOCUS_TAGS), list)
+        else [],
+        "regionScope": list(slot_values.get(SHARED_REGION_SCOPE, []))
+        if isinstance(slot_values.get(SHARED_REGION_SCOPE), list)
+        else [],
+    }
+
+
+def _analysis_shared_inputs_from_slot_values(slot_values: dict[str, Any]) -> dict[str, Any]:
+    shared_summary = _shared_summary_from_slot_values(slot_values)
+    return {
+        "enterpriseName": shared_summary.get("enterpriseName", ""),
+        "stockCode": shared_summary.get("stockCode", ""),
+        "timeRange": shared_summary.get("timeRange", ""),
+        "reportGoal": shared_summary.get("reportGoal", ""),
+    }
+
+
+def _current_question_group(session: dict[str, Any]) -> dict[str, Any]:
+    question_plan = session.get("questionPlan", [])
+    if not isinstance(question_plan, list) or not question_plan:
+        return {}
+    first = question_plan[0]
+    return dict(first) if isinstance(first, dict) else {}
+
+
+def _has_current_results_for_all_enabled_modules(session: dict[str, Any]) -> bool:
+    enabled_modules = _string_list(session.get("enabledModules"))
+    module_results = _dict_payload(session.get("moduleResults"))
+    module_states = _dict_payload(session.get("moduleStates"))
+    if not enabled_modules:
+        return False
+    for module_id in enabled_modules:
+        result = module_results.get(module_id)
+        state = module_states.get(module_id, {})
+        if not isinstance(result, dict):
+            return False
+        if str(result.get("status", "")).strip() == "stale":
+            return False
+        if isinstance(state, dict) and str(state.get("status", "")).strip() == "stale":
+            return False
+    return True
+
+
+def _has_stale_modules(session: dict[str, Any]) -> bool:
+    module_states = _dict_payload(session.get("moduleStates"))
+    return any(str(payload.get("status", "")).strip() == "stale" for payload in module_states.values() if isinstance(payload, dict))
 
 
 def _analysis_bundle_system_section(state: AgentState) -> str:
@@ -455,75 +786,98 @@ def route_after_analysis_modules(state: AgentState) -> str:
 
 
 def analysis_intake_node(state: AgentState):
-    enabled_modules = _enabled_analysis_modules(state)
+    explicit_enabled_modules = _enabled_analysis_modules(state)
     shared_inputs = _analysis_shared_inputs(state)
     module_inputs = _analysis_module_inputs(state)
+    session = _base_analysis_session(_analysis_session_state(state), enabled_modules=explicit_enabled_modules)
+    enabled_modules, enabled_modules_changed = _merge_enabled_modules_into_session(session, explicit_enabled_modules)
     contracts, unsupported_modules = _analysis_contracts(enabled_modules)
+    slot_catalog = build_slot_catalog(contracts)
+    relevant_slot_ids = _relevant_slot_ids(contracts)
 
-    shared_missing: list[dict[str, Any]] = []
-    seen_shared_fields: set[str] = set()
-    for contract in contracts:
-        for field in contract.shared_fields:
-            if not field.required or field.field in seen_shared_fields:
-                continue
-            seen_shared_fields.add(field.field)
-            if not _has_analysis_value(shared_inputs.get(field.field)):
-                shared_missing.append(
-                    {
-                        "scope": "shared",
-                        "field": field.field,
-                        "label": field.label,
-                    }
-                )
+    slot_updates, compatibility_update = map_legacy_inputs_to_slot_updates(
+        contracts=contracts,
+        slot_catalog=slot_catalog,
+        shared_inputs=shared_inputs,
+        module_inputs=module_inputs,
+    )
+    compatibility_changed_modules = _merge_compatibility(session, compatibility_update)
+    if enabled_modules_changed:
+        compatibility_changed_modules = list({*compatibility_changed_modules, *enabled_modules})
 
-    module_missing: list[dict[str, Any]] = []
-    if not shared_missing:
-        for contract in contracts:
-            current_inputs = module_inputs.get(contract.module_id, {})
-            for field in contract.module_fields:
-                if not field.required:
-                    continue
-                if not _has_analysis_value(current_inputs.get(field.field)):
-                    module_missing.append(
-                        {
-                            "scope": "module",
-                            "moduleId": contract.module_id,
-                            "moduleName": contract.display_name,
-                            "field": field.field,
-                            "label": field.label,
-                        }
-                    )
+    if not slot_updates and not shared_inputs and not module_inputs:
+        current_group = _current_question_group(session)
+        current_slot_ids = [slot_id for slot_id in current_group.get("slotIds", []) if slot_id in slot_catalog]
+        if current_slot_ids:
+            slot_updates = parse_answer_for_group(
+                slot_ids=current_slot_ids,
+                slot_catalog=slot_catalog,
+                user_message=str(state.get("user_message", "")).strip(),
+            )
 
-    missing_fields = shared_missing or module_missing
+    changed_slots = _apply_slot_updates(session, slot_updates, contracts=contracts)
+    if compatibility_changed_modules:
+        _mark_modules_stale(
+            session,
+            contracts=contracts,
+            changed_modules=compatibility_changed_modules,
+        )
+
+    missing_entries = _missing_slot_entries(
+        required_slot_ids=_required_slot_ids(contracts),
+        slot_catalog=slot_catalog,
+        contracts=contracts,
+        slot_values=_dict_payload(session.get("slotValues")),
+    )
+    question_plan = _build_question_plan(
+        missing_entries=missing_entries,
+        relevant_slot_ids=relevant_slot_ids,
+        slot_catalog=slot_catalog,
+    )
+    session["questionPlan"] = question_plan
+    session["missingSlots"] = [str(item.get("slotId", "")).strip() for item in missing_entries if str(item.get("slotId", "")).strip()]
+    session["enabledModules"] = enabled_modules
+
     clarification_question = ""
-    if shared_missing:
-        clarification_question = _analysis_shared_question(shared_missing)
-    elif module_missing:
-        clarification_question = _analysis_module_question(module_missing)
+    needs_clarification = bool(missing_entries)
+    if question_plan:
+        clarification_question = str(question_plan[0].get("question", "")).strip()
+
+    analysis_completed = False
+    if missing_entries:
+        session["status"] = "collecting"
+    elif _has_stale_modules(session):
+        session["status"] = "stale"
+    elif _has_current_results_for_all_enabled_modules(session):
+        session["status"] = "completed"
+        analysis_completed = True
+    else:
+        session["status"] = "ready"
 
     debug_payload = {
+        "sessionId": str(session.get("sessionId", "")).strip(),
+        "status": str(session.get("status", "")).strip(),
+        "revision": int(session.get("revision", 0) or 0),
         "enabledModules": enabled_modules,
         "supportedModules": [contract.module_id for contract in contracts],
         "unsupportedModules": unsupported_modules,
-        "missingSharedFields": [item["field"] for item in shared_missing],
-        "missingModuleFields": {
-            contract.module_id: [
-                item["field"]
-                for item in module_missing
-                if str(item.get("moduleId", "")).strip() == contract.module_id
-            ]
-            for contract in contracts
-            if any(str(item.get("moduleId", "")).strip() == contract.module_id for item in module_missing)
-        },
-        "sharedInputsReady": not bool(shared_missing),
+        "changedSlots": changed_slots,
+        "missingSlots": list(session.get("missingSlots", [])),
+        "questionPlan": list(session.get("questionPlan", [])),
+        "sharedInputsReady": not bool(missing_entries),
     }
     return {
-        "needs_clarification": bool(missing_fields),
+        "enabled_analysis_modules": enabled_modules,
+        "analysis_session": session,
+        "analysis_shared_inputs": _analysis_shared_inputs_from_slot_values(_dict_payload(session.get("slotValues"))),
+        "analysis_results": _dict_payload(session.get("moduleResults")),
+        "analysis_handoff_bundle": _dict_payload(session.get("handoffBundle")),
+        "needs_clarification": needs_clarification,
         "clarification_question": clarification_question,
-        "missing_fields": [_analysis_missing_field_id(item) for item in missing_fields],
-        "analysis_missing_fields": missing_fields,
+        "missing_fields": [_analysis_missing_field_id(item) for item in missing_entries],
+        "analysis_missing_fields": missing_entries,
         "analysis_unsupported_modules": unsupported_modules,
-        "analysis_completed": False,
+        "analysis_completed": analysis_completed,
         "debug": {
             **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
             "analysisIntake": debug_payload,
@@ -532,34 +886,81 @@ def analysis_intake_node(state: AgentState):
 
 
 def analysis_modules_node(state: AgentState):
-    enabled_modules = _enabled_analysis_modules(state)
-    shared_inputs = _analysis_shared_inputs(state)
-    module_inputs = _analysis_module_inputs(state)
+    session = _base_analysis_session(_analysis_session_state(state), enabled_modules=_enabled_analysis_modules(state))
+    enabled_modules = _string_list(session.get("enabledModules"))
     contracts, unsupported_modules = _analysis_contracts(enabled_modules)
     context = {
         "conversationContext": _conversation_context(state),
         "userMessage": str(state.get("user_message", "")).strip(),
     }
-    results: dict[str, dict[str, Any]] = {}
+    results: dict[str, dict[str, Any]] = _dict_payload(session.get("moduleResults"))
     needs_clarification = False
     clarification_question = ""
+    module_states = _dict_payload(session.get("moduleStates"))
+    session["status"] = "running"
+
+    modules_to_run: list[AnalysisModuleContract] = []
+    for contract in contracts:
+        module_result = results.get(contract.module_id)
+        module_state = module_states.get(contract.module_id, {})
+        if not isinstance(module_result, dict):
+            modules_to_run.append(contract)
+            continue
+        if str(module_result.get("status", "")).strip() == "stale":
+            modules_to_run.append(contract)
+            continue
+        if isinstance(module_state, dict) and str(module_state.get("status", "")).strip() == "stale":
+            modules_to_run.append(contract)
+            continue
 
     for contract in contracts:
-        runtime_input = contract.build_input(shared_inputs, module_inputs.get(contract.module_id, {}), context)
-        normalized_result = normalize_analysis_module_output(contract, contract.run(runtime_input))
+        if contract not in modules_to_run:
+            continue
+        runtime_input = build_runtime_input(
+            contract,
+            slot_values=_dict_payload(session.get("slotValues")),
+            compatibility=_dict_payload(session.get("compatibility")),
+            context=context,
+        )
+        normalized_result = normalize_analysis_module_output(
+            contract,
+            contract.run(runtime_input) if contract.run is not None else {},
+            input_revision=_safe_int(session.get("revision", 0), default=0),
+        )
         results[contract.module_id] = normalized_result
+        module_states[contract.module_id] = {
+            "status": str(normalized_result.get("status", "")).strip() or "failed",
+            "lastRunRevision": _safe_int(session.get("revision", 0), default=0),
+            "staleSlots": [],
+        }
         if normalized_result.get("status") == "need_input" and not clarification_question:
             needs_clarification = True
             clarification_question = _analysis_need_input_question(normalized_result, contract)
 
+    session["moduleResults"] = results
+    session["moduleStates"] = module_states
     bundle = build_analysis_handoff_bundle(
-        enabled_modules=enabled_modules,
-        shared_inputs=shared_inputs,
+        analysis_session=session,
+        shared_summary=_shared_summary_from_slot_values(_dict_payload(session.get("slotValues"))),
         module_results=results,
         unsupported_modules=unsupported_modules,
     )
+    session["handoffBundle"] = bundle
+    if needs_clarification:
+        session["status"] = "collecting"
+    elif any(str(result.get("status", "")).strip() == "failed" for result in results.values() if isinstance(result, dict)):
+        session["status"] = "failed"
+    elif _has_stale_modules(session):
+        session["status"] = "stale"
+    else:
+        session["status"] = "completed"
+
     debug_payload = {
+        "sessionId": str(session.get("sessionId", "")).strip(),
+        "status": str(session.get("status", "")).strip(),
+        "revision": _safe_int(session.get("revision", 0), default=0),
         "enabledModules": enabled_modules,
+        "executedModules": [contract.module_id for contract in modules_to_run],
         "completedModules": [module_id for module_id, result in results.items() if result.get("status") in {"done", "partial"}],
         "statuses": {
             module_id: str(result.get("status", "")).strip()
@@ -575,6 +976,9 @@ def analysis_modules_node(state: AgentState):
         "bundleLimitations": list(bundle.get("limitations", [])) if isinstance(bundle.get("limitations", []), list) else [],
     }
     return {
+        "enabled_analysis_modules": enabled_modules,
+        "analysis_session": session,
+        "analysis_shared_inputs": _analysis_shared_inputs_from_slot_values(_dict_payload(session.get("slotValues"))),
         "analysis_results": results,
         "analysis_handoff_bundle": bundle,
         "analysis_completed": not needs_clarification,
