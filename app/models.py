@@ -342,6 +342,42 @@ class RoboticsBiddingDocument(Base):
     )
 
 
+class RoboticsListedCompanyProfile(Base):
+    __tablename__ = "robotics_listed_company_profiles"
+    __table_args__ = (
+        UniqueConstraint("profile_key", name="uq_robotics_listed_company_profiles_key"),
+        Index("ix_robotics_listed_company_profiles_stock_code", "stock_code"),
+        Index("ix_robotics_listed_company_profiles_company_name", "company_name"),
+        Index("ix_robotics_listed_company_profiles_security_name", "security_name"),
+        Index("ix_robotics_listed_company_profiles_supported", "is_supported"),
+        Index("ix_robotics_listed_company_profiles_updated", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    profile_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    stock_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    exchange: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    market: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    security_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    aliases_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    industry_segments_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    robotics_keywords_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    cninfo_column: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cninfo_org_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    is_supported: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    unsupported_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
 class RagChunk(Base):
     __tablename__ = "rag_chunks"
 

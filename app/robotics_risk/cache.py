@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from .adapters import EvidenceSourceAdapter, SourceCollectionResult, SourceUnavailableError
+from .company_resolution import CompanyResolutionResult, ListedCompanyResolver
+from .company_seed import seed_robotics_listed_company_profiles
 from .repository import (
     SOURCE_BIDDING,
     SOURCE_CNINFO,
@@ -37,10 +39,18 @@ class RoboticsEvidenceCache:
         *,
         now_factory: Callable[[], datetime] | None = None,
         policies: dict[str, SourceFreshnessPolicy] | None = None,
+        seed_company_profiles: bool = True,
     ) -> None:
         self.repository = RoboticsEvidenceRepository(db)
         self._now_factory = now_factory or datetime.utcnow
         self._policies = {**DEFAULT_FRESHNESS_POLICIES, **(policies or {})}
+        self._seed_company_profiles = bool(seed_company_profiles)
+        self._company_profiles_seeded = False
+
+    def resolve_company(self, request: RoboticsInsightRequest) -> CompanyResolutionResult:
+        self._ensure_company_profiles_seeded()
+        resolver = ListedCompanyResolver(self.repository)
+        return resolver.resolve(request.enterprise_name, stock_code=request.stock_code)
 
     def collect(
         self,
@@ -205,6 +215,12 @@ class RoboticsEvidenceCache:
         except Exception as exc:
             return [], [f"{source_type}来源不可用：{exc}"]
         return result.documents, result.limitations
+
+    def _ensure_company_profiles_seeded(self) -> None:
+        if not self._seed_company_profiles or self._company_profiles_seeded:
+            return
+        seed_robotics_listed_company_profiles(self.repository)
+        self._company_profiles_seeded = True
 
 
 def _published_since(time_range: str, *, now: datetime) -> datetime | None:

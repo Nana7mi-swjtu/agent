@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from app.models import RagChunk, RagDocument, RagIndexJob, RoboticsCninfoAnnouncement, RoboticsPolicyDocument
+from app.models import (
+    RagChunk,
+    RagDocument,
+    RagIndexJob,
+    RoboticsCninfoAnnouncement,
+    RoboticsListedCompanyProfile,
+    RoboticsPolicyDocument,
+)
 from app.robotics_risk import (
     RoboticsInsightRequest,
     RoboticsInsightValidationError,
@@ -14,9 +21,11 @@ from app.robotics_risk import (
 )
 from app.robotics_risk.adapters import SourceCollectionResult, SourceUnavailableError
 from app.robotics_risk.adapters.bidding import BiddingProcurementAdapter
-from app.robotics_risk.adapters.cninfo import CninfoAnnouncementAdapter
+from app.robotics_risk.adapters.cninfo import CninfoAnnouncementAdapter, CninfoAnnouncementRecord, CninfoQueryPlan
 from app.robotics_risk.adapters.policy import GovPolicyAdapter
 from app.robotics_risk.cache import RoboticsEvidenceCache, SourceFreshnessPolicy
+from app.robotics_risk.company_resolution import ListedCompanyResolver
+from app.robotics_risk.company_seed import seed_robotics_listed_company_profiles
 from app.robotics_risk.pdf_text import PdfTextExtractionResult, extract_pdf_text
 from app.robotics_risk.profiling import build_enterprise_profile
 from app.robotics_risk.repository import RoboticsEvidenceRepository, build_cache_key
@@ -95,6 +104,19 @@ class ShouldNotCallAdapter:
     def collect(self, *, request: RoboticsInsightRequest, profile: EnterpriseProfile):
         self.calls += 1
         raise AssertionError(f"{self.source_type} adapter should not be called")
+
+
+class FakeCninfoClient:
+    def __init__(self, records: list[CninfoAnnouncementRecord] | None = None, fail: Exception | None = None) -> None:
+        self.records = list(records or [])
+        self.fail = fail
+        self.plans: list[CninfoQueryPlan] = []
+
+    def query_announcements(self, plan: CninfoQueryPlan) -> list[CninfoAnnouncementRecord]:
+        self.plans.append(plan)
+        if self.fail is not None:
+            raise self.fail
+        return list(self.records)
 
 
 def test_minimal_enterprise_request_uses_defaults():
@@ -352,3 +374,233 @@ def test_source_failure_negative_cache_degrades_independently(db_session):
 
     assert any("network blocked" in item for item in first.limitations)
     assert any("network blocked" in item for item in second.limitations)
+
+
+def test_listed_company_profile_seed_is_idempotent_and_queryable(db_session):
+    repository = RoboticsEvidenceRepository(db_session)
+
+    first_count = seed_robotics_listed_company_profiles(repository)
+    second_count = seed_robotics_listed_company_profiles(repository)
+
+    assert first_count == second_count
+    assert db_session.query(RoboticsListedCompanyProfile).filter_by(stock_code="688169").count() == 1
+    profile = repository.get_listed_company_profile_by_stock_code("688169")
+    assert profile is not None
+    assert profile.security_name == "石头科技"
+    assert profile.is_supported == 1
+
+
+@pytest.mark.parametrize(
+    ("enterprise", "stock_code", "expected_code", "expected_match"),
+    [
+        ("", "688169", "688169", "stock_code"),
+        ("北京石头世纪科技股份有限公司", "", "688169", "company_name"),
+        ("石头科技", "", "688169", "security_name"),
+        ("Roborock", "", "688169", "alias"),
+        ("石头世纪科技", "", "688169", "fuzzy"),
+    ],
+)
+def test_listed_company_resolver_matches_stock_name_alias_and_fuzzy(
+    db_session,
+    enterprise,
+    stock_code,
+    expected_code,
+    expected_match,
+):
+    repository = RoboticsEvidenceRepository(db_session)
+    seed_robotics_listed_company_profiles(repository)
+
+    result = ListedCompanyResolver(repository).resolve(enterprise, stock_code=stock_code)
+
+    assert result.resolved
+    assert result.stock_code == expected_code
+    assert result.match_type == expected_match
+    assert result.supported
+
+
+def test_listed_company_resolver_reports_ambiguous_unresolved_and_unsupported(db_session):
+    repository = RoboticsEvidenceRepository(db_session)
+    seed_robotics_listed_company_profiles(repository)
+    repository.upsert_listed_company_profile(
+        {
+            "stock_code": "111111",
+            "security_name": "机器人一号",
+            "company_name": "机器人一号股份有限公司",
+            "aliases": ["机器人"],
+            "is_supported": True,
+        }
+    )
+    repository.upsert_listed_company_profile(
+        {
+            "stock_code": "222222",
+            "security_name": "机器人二号",
+            "company_name": "机器人二号股份有限公司",
+            "aliases": ["机器人"],
+            "is_supported": True,
+        }
+    )
+    resolver = ListedCompanyResolver(repository)
+
+    ambiguous = resolver.resolve("机器人")
+    unresolved = resolver.resolve("不存在机器人公司")
+    unsupported = resolver.resolve("优必选")
+
+    assert ambiguous.match_type == "ambiguous"
+    assert ambiguous.limitations
+    assert not unresolved.resolved
+    assert "未在本地" in unresolved.limitations[0]
+    assert unsupported.resolved
+    assert not unsupported.supported
+    assert "港股" in unsupported.limitations[0]
+
+
+def test_cninfo_adapter_builds_stock_query_and_normalizes_metadata():
+    record = CninfoAnnouncementRecord(
+        announcement_id="ann-001",
+        title="石头科技关于重大合同和新产品研发的公告",
+        announcement_time="2026-04-18",
+        sec_code="688169",
+        sec_name="石头科技",
+        adjunct_url="new/disclosure/detail?x=1",
+        pdf_url="https://static.cninfo.com.cn/ann-001.pdf",
+    )
+    client = FakeCninfoClient(records=[record])
+    adapter = CninfoAnnouncementAdapter(client=client, pdf_parse_limit=0)
+
+    result = adapter.collect(
+        request=RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169"),
+        profile=EnterpriseProfile(name="石头科技", stock_code="688169", keywords=["机器人"]),
+    )
+
+    assert client.plans[0].query_type == "stock_code"
+    assert client.plans[0].stock_code == "688169"
+    assert len(result.documents) == 1
+    document = result.documents[0]
+    assert document.metadata["announcementId"] == "ann-001"
+    assert document.metadata["secCode"] == "688169"
+    assert document.authority_score == 0.95
+
+
+def test_cninfo_adapter_uses_name_fallback_and_reports_empty_result():
+    client = FakeCninfoClient(records=[])
+    adapter = CninfoAnnouncementAdapter(client=client)
+
+    result = adapter.collect(
+        request=RoboticsInsightRequest(enterprise_name="未映射机器人公司"),
+        profile=EnterpriseProfile(name="未映射机器人公司", keywords=["机器人"]),
+    )
+
+    assert client.plans[0].query_type == "name"
+    assert any("企业名称搜索" in item for item in result.limitations)
+    assert any("未返回" in item for item in result.limitations)
+
+
+def test_cninfo_adapter_downloads_selected_pdf_and_persists_parse_status(db_session, monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"%PDF-1.4"
+
+    def fake_urlopen(*_args, **_kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr("app.robotics_risk.adapters.cninfo.urlopen", fake_urlopen)
+    record = CninfoAnnouncementRecord(
+        announcement_id="ann-pdf",
+        title="石头科技关于重大合同的公告",
+        announcement_time="2026-04-18",
+        sec_code="688169",
+        sec_name="石头科技",
+        pdf_url="https://static.cninfo.com.cn/ann-pdf.pdf",
+    )
+    adapter = CninfoAnnouncementAdapter(
+        client=FakeCninfoClient(records=[record]),
+        pdf_text_extractor=lambda _path: PdfTextExtractionResult(
+            text="公司签订重大合同并发布新产品。",
+            page_count=3,
+            extraction_method="native",
+            parse_status="parsed",
+        ),
+        pdf_parse_limit=1,
+    )
+    cache = RoboticsEvidenceCache(db_session, now_factory=lambda: datetime(2026, 4, 19, 12, 0, 0))
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天"),
+        adapters=[adapter],
+        evidence_cache=cache,
+    )
+
+    row = db_session.query(RoboticsCninfoAnnouncement).filter_by(announcement_id="ann-pdf").one()
+    assert row.sec_code == "688169"
+    assert row.parse_status == "parsed"
+    assert row.content_text == "公司签订重大合同并发布新产品。"
+    assert result.events
+
+
+def test_standalone_workflow_uses_resolved_stock_code_for_cninfo(db_session):
+    record = CninfoAnnouncementRecord(
+        announcement_id="ann-resolved",
+        title="石头科技关于研发投入增长的公告",
+        announcement_time="2026-04-18",
+        sec_code="688169",
+        sec_name="石头科技",
+        pdf_url="https://static.cninfo.com.cn/ann-resolved.pdf",
+    )
+    client = FakeCninfoClient(records=[record])
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天"),
+        adapters=[CninfoAnnouncementAdapter(client=client, pdf_parse_limit=0)],
+        evidence_cache=RoboticsEvidenceCache(db_session, now_factory=lambda: datetime(2026, 4, 19, 12, 0, 0)),
+    )
+
+    assert client.plans[0].stock_code == "688169"
+    assert result.target_company["stockCode"] == "688169"
+    assert result.target_company["matchType"] in {"security_name", "alias", "company_name", "fuzzy"}
+    assert any(source.metadata.get("queryType") == "stock_code" for source in result.sources)
+
+
+def test_cninfo_parse_failure_is_cached_without_rag_rows(db_session, monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"%PDF-1.4"
+
+    monkeypatch.setattr("app.robotics_risk.adapters.cninfo.urlopen", lambda *_args, **_kwargs: FakeResponse())
+    record = CninfoAnnouncementRecord(
+        announcement_id="ann-parse-fail",
+        title="石头科技扫描公告",
+        announcement_time="2026-04-18",
+        sec_code="688169",
+        sec_name="石头科技",
+        pdf_url="https://static.cninfo.com.cn/ann-parse-fail.pdf",
+    )
+    adapter = CninfoAnnouncementAdapter(
+        client=FakeCninfoClient(records=[record]),
+        pdf_text_extractor=lambda _path: PdfTextExtractionResult(parse_status="failed", parse_error="no text"),
+        pdf_parse_limit=1,
+    )
+
+    analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天"),
+        adapters=[adapter],
+        evidence_cache=RoboticsEvidenceCache(db_session, now_factory=lambda: datetime(2026, 4, 19, 12, 0, 0)),
+    )
+
+    row = db_session.query(RoboticsCninfoAnnouncement).filter_by(announcement_id="ann-parse-fail").one()
+    assert row.parse_status == "failed"
+    assert row.parse_error == "no text"
+    assert db_session.query(RagDocument).count() == 0
+    assert db_session.query(RagChunk).count() == 0
+    assert db_session.query(RagIndexJob).count() == 0

@@ -7,7 +7,12 @@ from typing import Any
 
 from sqlalchemy import or_, select
 
-from app.models import RoboticsBiddingDocument, RoboticsCninfoAnnouncement, RoboticsPolicyDocument
+from app.models import (
+    RoboticsBiddingDocument,
+    RoboticsCninfoAnnouncement,
+    RoboticsListedCompanyProfile,
+    RoboticsPolicyDocument,
+)
 
 from .pdf_text import PdfTextExtractionResult
 from .schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument
@@ -208,8 +213,9 @@ class RoboticsEvidenceRepository:
         row.published_at = _parse_datetime(document.published_at)
         row.fetched_at = fetched_at
         row.expires_at = expires_at
-        row.content_text = document.content
-        row.content_hash = _hash_text(document.content) if document.content else row.content_hash
+        if document.content:
+            row.content_text = document.content
+            row.content_hash = _hash_text(document.content)
         row.matched_keywords_json = {"keywords": _clean_values(metadata.get("matchedKeywords") or [])}
         row.relevance_segments_json = {"segments": _clean_values(metadata.get("relevanceSegments") or [])}
         row.metadata_json = metadata
@@ -260,13 +266,16 @@ class RoboticsEvidenceRepository:
         row.content_hash = _hash_text(document.content) if document.content else row.content_hash
         row.matched_keywords_json = {"keywords": _clean_values(metadata.get("matchedKeywords") or [])}
         row.metadata_json = metadata
-        row.status = str(metadata.get("status") or ("parsed" if document.content else "fetched"))
+        row.status = str(metadata.get("status") or ("parsed" if document.content else row.status or "fetched"))
         row.error_message = _first_text(metadata, "errorMessage", "error_message")
         row.page_count = _coerce_int(metadata.get("pageCount") or metadata.get("page_count")) or row.page_count
         row.extraction_method = _first_text(metadata, "extractionMethod", "extraction_method") or row.extraction_method
         row.ocr_used = 1 if bool(metadata.get("ocrUsed") or metadata.get("ocr_used")) else row.ocr_used
-        row.parse_status = _first_text(metadata, "parseStatus", "parse_status") or ("parsed" if document.content else "pending")
-        row.parse_error = _first_text(metadata, "parseError", "parse_error")
+        row.parse_status = (
+            _first_text(metadata, "parseStatus", "parse_status")
+            or ("parsed" if document.content else row.parse_status or "pending")
+        )
+        row.parse_error = _first_text(metadata, "parseError", "parse_error") or row.parse_error
         self.db.flush()
         return row
 
@@ -311,6 +320,57 @@ class RoboticsEvidenceRepository:
         row.error_message = _first_text(metadata, "errorMessage", "error_message")
         self.db.flush()
         return row
+
+    def upsert_listed_company_profile(self, payload: dict[str, Any]) -> RoboticsListedCompanyProfile:
+        profile_key = _profile_key(payload)
+        stock_code = _normalize_stock_code(_payload_text(payload, "stock_code", "stockCode"))
+        row = _one_or_none(
+            self.db,
+            select(RoboticsListedCompanyProfile).where(RoboticsListedCompanyProfile.profile_key == profile_key),
+        )
+        if row is None and stock_code:
+            row = _one_or_none(
+                self.db,
+                select(RoboticsListedCompanyProfile).where(RoboticsListedCompanyProfile.stock_code == stock_code),
+            )
+        if row is None:
+            row = RoboticsListedCompanyProfile(
+                profile_key=profile_key,
+                company_name=str(payload.get("company_name") or payload.get("companyName") or "").strip(),
+            )
+            self.db.add(row)
+
+        row.stock_code = stock_code or row.stock_code
+        row.exchange = _payload_text(payload, "exchange") or row.exchange
+        row.market = _payload_text(payload, "market") or row.market
+        row.security_name = _payload_text(payload, "security_name", "securityName") or row.security_name
+        row.company_name = _payload_text(payload, "company_name", "companyName") or row.company_name
+        row.aliases_json = {"aliases": _clean_values(payload.get("aliases") or [])}
+        row.industry_segments_json = {"segments": _clean_values(payload.get("industry_segments") or payload.get("industrySegments") or [])}
+        row.robotics_keywords_json = {"keywords": _clean_values(payload.get("robotics_keywords") or payload.get("roboticsKeywords") or [])}
+        row.cninfo_column = _payload_text(payload, "cninfo_column", "cninfoColumn") or row.cninfo_column
+        row.cninfo_org_id = _payload_text(payload, "cninfo_org_id", "cninfoOrgId") or row.cninfo_org_id
+        row.is_supported = 1 if bool(payload.get("is_supported", payload.get("isSupported", True))) else 0
+        row.unsupported_reason = _payload_text(payload, "unsupported_reason", "unsupportedReason")
+        row.source = _payload_text(payload, "source") or row.source
+        row.metadata_json = dict(payload.get("metadata") or payload.get("metadata_json") or {})
+        self.db.flush()
+        return row
+
+    def get_listed_company_profile_by_stock_code(self, stock_code: str) -> RoboticsListedCompanyProfile | None:
+        clean = _normalize_stock_code(stock_code)
+        if not clean:
+            return None
+        stmt = select(RoboticsListedCompanyProfile).where(RoboticsListedCompanyProfile.stock_code == clean)
+        return _one_or_none(self.db, stmt)
+
+    def list_listed_company_profiles(self) -> list[RoboticsListedCompanyProfile]:
+        stmt = select(RoboticsListedCompanyProfile).order_by(
+            RoboticsListedCompanyProfile.is_supported.desc(),
+            RoboticsListedCompanyProfile.stock_code.asc(),
+            RoboticsListedCompanyProfile.company_name.asc(),
+        )
+        return list(self.db.execute(stmt).scalars().all())
 
 
 def rows_to_source_documents(rows: list[Any]) -> list[SourceDocument]:
@@ -544,3 +604,29 @@ def _coerce_int(value: Any) -> int | None:
         return int(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _payload_text(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _profile_key(payload: dict[str, Any]) -> str:
+    explicit = _payload_text(payload, "profile_key", "profileKey")
+    if explicit:
+        return explicit
+    stock_code = _normalize_stock_code(_payload_text(payload, "stock_code", "stockCode"))
+    if stock_code:
+        exchange = _payload_text(payload, "exchange") or _payload_text(payload, "market")
+        return f"{exchange.lower()}:{stock_code}" if exchange else stock_code
+    company_name = _payload_text(payload, "company_name", "companyName")
+    return f"name:{_hash_text(company_name)[:24]}"
+
+
+def _normalize_stock_code(value: str | None) -> str:
+    raw = str(value or "").strip().upper()
+    match = re.search(r"(\d{5,6})", raw)
+    return match.group(1) if match else raw

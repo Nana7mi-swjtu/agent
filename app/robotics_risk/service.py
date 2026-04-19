@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from typing import Any
 
 from .adapters import (
@@ -26,10 +27,15 @@ def analyze_robotics_enterprise_risk_opportunity(
     *,
     adapters: Iterable[EvidenceSourceAdapter] | None = None,
     evidence_cache: Any | None = None,
+    company_resolver: Any | None = None,
 ) -> RoboticsInsightResult:
     normalized_request = _normalize_request(request)
     if not normalized_request.enterprise_name.strip():
         raise RoboticsInsightValidationError("enterprise_name is required")
+
+    resolution = _resolve_company(normalized_request, evidence_cache=evidence_cache, company_resolver=company_resolver)
+    if resolution is not None and resolution.supported and resolution.stock_code and not normalized_request.stock_code.strip():
+        normalized_request = replace(normalized_request, stock_code=resolution.stock_code)
 
     analysis_scope = AnalysisScope(
         time_range=normalized_request.time_range or "近30天",
@@ -37,6 +43,11 @@ def analyze_robotics_enterprise_risk_opportunity(
         dimensions=normalized_request.dimensions or ["政策", "公告", "招中标", "竞争"],
     )
     profile = build_enterprise_profile(normalized_request)
+    if resolution is not None:
+        profile.limitations.extend(resolution.limitations)
+        if resolution.profile is not None:
+            profile.segments = _dedupe([*profile.segments, *resolution.profile.industry_segments])
+            profile.keywords = _dedupe([*profile.keywords, *resolution.profile.robotics_keywords])
     documents, source_limitations = _collect_documents(
         request=normalized_request,
         profile=profile,
@@ -52,10 +63,10 @@ def analyze_robotics_enterprise_risk_opportunity(
         limitations.append("已获取来源文档，但未抽取到明确风险或机会事件。")
 
     return build_result(
-        target_company={
-            "name": normalized_request.enterprise_name,
-            "stockCode": normalized_request.stock_code,
-        },
+        target_company=_target_company_payload(
+            request=normalized_request,
+            resolution=resolution,
+        ),
         analysis_scope=analysis_scope,
         profile=profile,
         opportunities=opportunities,
@@ -111,6 +122,50 @@ def _collect_documents(
         documents.extend(result.documents)
         limitations.extend(result.limitations)
     return _dedupe_documents(documents), _dedupe(limitations)
+
+
+def _resolve_company(
+    request: RoboticsInsightRequest,
+    *,
+    evidence_cache: Any | None,
+    company_resolver: Any | None,
+):
+    resolver = company_resolver
+    if resolver is None and evidence_cache is not None and hasattr(evidence_cache, "resolve_company"):
+        resolver = evidence_cache
+    if resolver is None:
+        return None
+    try:
+        if hasattr(resolver, "resolve_company"):
+            return resolver.resolve_company(request)
+        return resolver.resolve(request.enterprise_name, stock_code=request.stock_code)
+    except Exception as exc:
+        return type(
+            "_ResolutionFailure",
+            (),
+            {
+                "supported": False,
+                "stock_code": "",
+                "profile": None,
+                "limitations": [f"上市公司本地解析不可用：{exc}"],
+                "to_metadata": lambda self: {"limitations": self.limitations, "matchType": "failed"},
+            },
+        )()
+
+
+def _target_company_payload(*, request: RoboticsInsightRequest, resolution: Any | None) -> dict[str, Any]:
+    payload = {
+        "name": request.enterprise_name,
+        "stockCode": request.stock_code,
+    }
+    if resolution is None:
+        return payload
+    metadata = resolution.to_metadata()
+    for key in ("securityName", "companyName", "exchange", "market", "matchType", "confidence", "isSupported"):
+        value = metadata.get(key)
+        if value not in (None, "", [], {}):
+            payload[key] = value
+    return payload
 
 
 def _dedupe(values: list[str]) -> list[str]:
