@@ -6,9 +6,16 @@ from .schemas import InsightEvent, SourceDocument
 
 _POLICY_RULES: tuple[tuple[str, tuple[str, ...], str, str, str], ...] = (
     ("policy_support", ("支持", "鼓励", "推动", "促进", "补贴", "培育"), "opportunity", "政策支持", "政策支持带来行业扩张机会"),
-    ("regulatory_constraint", ("监管", "规范", "准入", "标准", "安全要求", "合规"), "risk", "政策监管", "监管和标准要求可能提高合规成本"),
+    ("regulatory_constraint", ("监管", "规范", "准入", "合规"), "risk", "政策监管", "监管和准入要求可能提高合规成本"),
+    ("standardization", ("标准", "标准化", "规范条件", "认证", "检测"), "risk", "标准合规", "标准化和认证要求可能提高产品与经营门槛"),
+    ("government_procurement", ("政府采购", "采购需求", "首台套", "招标采购"), "opportunity", "订单", "政府采购政策可能释放机器人相关订单机会"),
     ("equipment_upgrade", ("设备更新", "智能制造", "自动化", "数字化改造"), "opportunity", "设备更新", "设备更新政策可能提升机器人需求"),
-    ("application_scenario", ("养老", "医疗", "教育", "仓储", "物流", "清洁"), "opportunity", "应用场景", "机器人应用场景扩展"),
+    ("application_scenario", ("养老", "医疗", "教育", "仓储", "物流", "清洁", "场景开放", "应用场景"), "opportunity", "应用场景", "机器人应用场景扩展"),
+    ("subsidy_tax_support", ("补助", "补贴", "税收优惠", "专项资金", "财政支持"), "opportunity", "政策支持", "财政税收政策可能改善机器人企业投入回报"),
+    ("ai_plus_policy", ("人工智能+", "人工智能", "具身智能", "智能机器人"), "opportunity", "产品研发", "人工智能相关政策可能强化机器人产品和研发机会"),
+    ("industrial_upgrading", ("产业升级", "新质生产力", "先进制造", "高端装备"), "opportunity", "产业升级", "产业升级政策可能增强机器人产业需求"),
+    ("data_security", ("数据安全", "网络安全", "个人信息", "隐私保护"), "risk", "数据合规", "数据安全要求可能提高机器人产品合规要求"),
+    ("quality_supervision", ("质量监督", "产品质量", "安全生产", "缺陷召回"), "risk", "产品质量", "产品质量和安全监管可能提高经营风险"),
 )
 
 _ANNOUNCEMENT_RULES: tuple[tuple[str, tuple[str, ...], str, str, str], ...] = (

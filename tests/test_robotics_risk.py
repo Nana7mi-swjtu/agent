@@ -22,11 +22,12 @@ from app.robotics_risk import (
 from app.robotics_risk.adapters import SourceCollectionResult, SourceUnavailableError
 from app.robotics_risk.adapters.bidding import BiddingProcurementAdapter
 from app.robotics_risk.adapters.cninfo import CninfoAnnouncementAdapter, CninfoAnnouncementRecord, CninfoQueryPlan
-from app.robotics_risk.adapters.policy import GovPolicyAdapter
+from app.robotics_risk.adapters.policy import GovPolicyAdapter, GovPolicyPage, parse_policy_candidates_page, parse_policy_detail_page
 from app.robotics_risk.cache import RoboticsEvidenceCache, SourceFreshnessPolicy
 from app.robotics_risk.company_resolution import ListedCompanyResolver
 from app.robotics_risk.company_seed import seed_robotics_listed_company_profiles
 from app.robotics_risk.pdf_text import PdfTextExtractionResult, extract_pdf_text
+from app.robotics_risk.policy_planning import build_policy_search_plan
 from app.robotics_risk.profiling import build_enterprise_profile
 from app.robotics_risk.repository import RoboticsEvidenceRepository, build_cache_key
 from app.robotics_risk.schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument
@@ -119,6 +120,42 @@ class FakeCninfoClient:
         return list(self.records)
 
 
+class FakeGovPolicyClient:
+    def __init__(
+        self,
+        *,
+        search_html: str = "",
+        list_html: str = "",
+        detail_pages: dict[str, str] | None = None,
+        fail_search: Exception | None = None,
+        fail_detail_urls: set[str] | None = None,
+    ) -> None:
+        self.search_html = search_html
+        self.list_html = list_html
+        self.detail_pages = dict(detail_pages or {})
+        self.fail_search = fail_search
+        self.fail_detail_urls = set(fail_detail_urls or set())
+        self.searches: list[tuple[str, str, int]] = []
+        self.lists: list[tuple[str, int]] = []
+        self.details: list[str] = []
+
+    def fetch_search_page(self, *, query: str, scope: str, page: int):
+        self.searches.append((query, scope, page))
+        if self.fail_search is not None:
+            raise self.fail_search
+        return GovPolicyPage(url=f"https://www.gov.cn/search?q={query}&scope={scope}", html=self.search_html)
+
+    def fetch_list_page(self, *, scope: str, page: int):
+        self.lists.append((scope, page))
+        return GovPolicyPage(url=f"https://www.gov.cn/zhengce/zhengceku/{scope}/index.htm", html=self.list_html)
+
+    def fetch_detail_page(self, url: str):
+        self.details.append(url)
+        if url in self.fail_detail_urls:
+            raise SourceUnavailableError("gov_policy", "detail blocked")
+        return GovPolicyPage(url=url, html=self.detail_pages.get(url, ""))
+
+
 def test_minimal_enterprise_request_uses_defaults():
     result = analyze_robotics_enterprise_risk_opportunity(
         RoboticsInsightRequest(enterprise_name="石头科技"),
@@ -151,6 +188,115 @@ def test_robotics_profile_infers_segments(enterprise, context, expected):
 
     assert expected in profile.segments
     assert profile.keywords
+
+
+def test_policy_search_plan_uses_profile_segments_domains_and_bounds():
+    request = RoboticsInsightRequest(
+        enterprise_name="石头科技",
+        time_range="近90天",
+        focus="清洁机器人政府采购",
+        context="扫地机器人",
+    )
+    profile = build_enterprise_profile(request)
+
+    plan = build_policy_search_plan(request=request, profile=profile, max_queries=8, max_pages=2, detail_fetch_limit=3)
+
+    assert len(plan.query_terms) == 8
+    assert plan.max_pages == 2
+    assert plan.detail_fetch_limit == 3
+    assert plan.start_date
+    assert "state_council" in plan.source_scopes
+    assert any(term.matched_segment == "扫地机器人" for term in plan.query_terms)
+    assert any(term.policy_domain for term in plan.query_terms)
+    assert any("截断" in item for item in plan.limitations)
+
+
+def test_policy_search_plan_generic_profile_reports_limitation():
+    request = RoboticsInsightRequest(enterprise_name="未映射企业", time_range="本季度")
+    profile = build_enterprise_profile(request)
+
+    plan = build_policy_search_plan(request=request, profile=profile, max_queries=4)
+
+    assert "机器人" in " ".join(plan.keywords)
+    assert any("通用机器人政策关键词" in item for item in plan.limitations)
+    assert any("时间范围" in item for item in plan.limitations)
+
+
+def test_gov_policy_candidate_and_detail_parsing_records_metadata_and_attachments():
+    list_html = """
+    <html><body>
+      <ul>
+        <li><a href="/zhengce/zhengceku/gwywj/2026-04/01/content_123456.htm">国务院办公厅关于加快机器人应用场景建设的意见</a><span>2026-04-01</span></li>
+      </ul>
+    </body></html>
+    """
+    detail_html = """
+    <html><head>
+      <meta name="PubDate" content="2026-04-01">
+      <meta name="ContentId" content="content_123456">
+    </head><body>
+      <h1>国务院办公厅关于加快机器人应用场景建设的意见</h1>
+      <div>发文机关：国务院办公厅 文号：国办发〔2026〕1号</div>
+      <div class="pages_content">
+        <p>政策鼓励人形机器人、服务机器人在养老、医疗、教育、物流等场景开放应用。</p>
+        <p>推动设备更新和智能制造改造。</p>
+      </div>
+      <a href="./annex.pdf">附件：重点任务清单.pdf</a>
+    </body></html>
+    """
+
+    candidates = parse_policy_candidates_page(list_html, "https://www.gov.cn/zhengce/zhengceku/gwywj/index.htm", default_scope="state_council")
+    detail = parse_policy_detail_page(detail_html, candidates[0].url, candidate=candidates[0])
+
+    assert len(candidates) == 1
+    assert candidates[0].source_scope == "state_council"
+    assert detail.policy_id == "content_123456"
+    assert detail.issuing_agency == "国务院办公厅"
+    assert detail.document_number == "国办发〔2026〕1号"
+    assert "服务机器人" in detail.content
+    assert detail.attachments[0]["fileType"] == "pdf"
+
+
+def test_gov_policy_adapter_searches_fetches_details_and_degrades_metadata_only():
+    policy_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/2026-04/01/content_123456.htm"
+    search_html = f'<a href="{policy_url}">国务院办公厅关于加快机器人应用场景建设的意见</a><span>2026-04-01</span>'
+    detail_html = """
+    <h1>国务院办公厅关于加快机器人应用场景建设的意见</h1>
+    <div class="pages_content">政策鼓励服务机器人和清洁机器人应用，推动设备更新。</div>
+    """
+    client = FakeGovPolicyClient(search_html=search_html, detail_pages={policy_url: detail_html})
+    adapter = GovPolicyAdapter(client=client, max_queries=2, detail_fetch_limit=1)
+
+    result = adapter.collect(
+        request=RoboticsInsightRequest(enterprise_name="石头科技", context="扫地机器人"),
+        profile=EnterpriseProfile(name="石头科技", segments=["扫地机器人"], keywords=["扫地机器人", "服务机器人"]),
+    )
+
+    assert client.searches
+    assert client.details == [policy_url]
+    assert len(result.documents) == 1
+    document = result.documents[0]
+    assert document.source_type == "gov_policy"
+    assert document.relevance_scope == "industry"
+    assert document.metadata["sourceScope"] == "state_council"
+    assert document.metadata["searchKeyword"]
+    assert document.metadata["policySearchPlan"]["keywords"]
+
+
+def test_gov_policy_adapter_uses_list_fallback_and_reports_detail_failure():
+    policy_url = "https://www.gov.cn/zhengce/zhengceku/bmwj/2026-04/02/content_999999.htm"
+    list_html = f'<a href="{policy_url}">工业和信息化部关于机器人标准化工作的通知</a><span>2026-04-02</span>'
+    client = FakeGovPolicyClient(list_html=list_html, detail_pages={}, fail_detail_urls={policy_url})
+    adapter = GovPolicyAdapter(client=client, max_queries=1, detail_fetch_limit=1)
+
+    result = adapter.collect(
+        request=RoboticsInsightRequest(enterprise_name="埃斯顿", context="工业机器人"),
+        profile=EnterpriseProfile(name="埃斯顿", segments=["工业机器人"], keywords=["工业机器人"]),
+    )
+
+    assert client.lists
+    assert not result.documents
+    assert any("详情页不可用" in item for item in result.limitations)
 
 
 def test_fake_adapters_produce_sources_events_signals_and_payload_refs():
@@ -256,6 +402,99 @@ def test_cache_miss_calls_adapter_and_persists_returned_evidence(db_session):
     assert adapter.calls == 1
     assert result.sources
     assert db_session.query(RoboticsPolicyDocument).count() == 1
+
+
+def test_live_gov_policy_cache_persists_metadata_and_reuses_without_rag_rows(db_session):
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    policy_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/2026-04/01/content_123456.htm"
+    search_html = f'<a href="{policy_url}">国务院办公厅关于推动服务机器人应用场景开放的意见</a><span>2026-04-01</span>'
+    detail_html = """
+    <h1>国务院办公厅关于推动服务机器人应用场景开放的意见</h1>
+    <div>发文机关：国务院办公厅 文号：国办发〔2026〕2号</div>
+    <div class="pages_content">政策鼓励服务机器人、清洁机器人在养老和公共服务场景应用，推动设备更新。</div>
+    <a href="/zhengce/file/task.pdf">附件.pdf</a>
+    """
+    client = FakeGovPolicyClient(search_html=search_html, detail_pages={policy_url: detail_html})
+    request = RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天", context="扫地机器人")
+    cache = RoboticsEvidenceCache(db_session, now_factory=lambda: now)
+
+    first = analyze_robotics_enterprise_risk_opportunity(
+        request,
+        adapters=[GovPolicyAdapter(client=client, max_queries=1, detail_fetch_limit=1)],
+        evidence_cache=cache,
+    )
+    second = analyze_robotics_enterprise_risk_opportunity(
+        request,
+        adapters=[ShouldNotCallAdapter("gov_policy")],
+        evidence_cache=cache,
+    )
+
+    row = db_session.query(RoboticsPolicyDocument).one()
+    assert first.sources
+    assert second.sources
+    assert row.policy_id
+    assert row.issuing_agency == "国务院办公厅"
+    assert row.document_number == "国办发〔2026〕2号"
+    assert row.metadata_json["sourceScope"] == "state_council"
+    assert row.metadata_json["searchKeyword"]
+    assert row.metadata_json["attachments"][0]["fileType"] == "pdf"
+    assert any(source.metadata.get("attachmentFullTextParsed") is False for source in second.sources)
+    assert db_session.query(RagDocument).count() == 0
+    assert db_session.query(RagChunk).count() == 0
+    assert db_session.query(RagIndexJob).count() == 0
+
+
+def test_metadata_only_gov_policy_is_attributed_and_limited():
+    policy_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/2026-04/01/content_meta.htm"
+    search_html = f'<a href="{policy_url}">国务院办公厅关于机器人标准化工作的意见</a><span>2026-04-01</span>'
+    detail_html = "<h1>国务院办公厅关于机器人标准化工作的意见</h1>"
+    client = FakeGovPolicyClient(search_html=search_html, detail_pages={policy_url: detail_html})
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="埃斯顿", context="工业机器人"),
+        adapters=[GovPolicyAdapter(client=client, max_queries=1, detail_fetch_limit=1)],
+    )
+
+    assert result.sources
+    assert result.sources[0].metadata["status"] == "metadata_limited"
+    assert any("政策正文提取受限" in item for item in result.limitations)
+
+
+def test_policy_and_cninfo_evidence_reinforce_same_dimension_signal():
+    policy = SourceDocument(
+        id="policy-reinforce",
+        source_type="gov_policy",
+        source_name="国务院政策文件库",
+        title="关于扩大机器人政府采购和应用场景开放的意见",
+        content="政策鼓励服务机器人政府采购，推动清洁机器人应用场景开放。",
+        published_at="2026-04-01",
+        authority_score=0.95,
+        relevance_scope="industry",
+        metadata={"matchedSegments": ["扫地机器人"], "sourceScope": "state_council"},
+    )
+    announcement = SourceDocument(
+        id="ann-reinforce",
+        source_type="cninfo_announcement",
+        source_name="巨潮资讯网",
+        title="石头科技关于重大合同和中标订单的公告",
+        content="公司签订重大合同并获得服务机器人订单。",
+        published_at="2026-04-02",
+        authority_score=0.95,
+        relevance_scope="enterprise",
+    )
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", context="扫地机器人"),
+        adapters=[
+            GovPolicyAdapter(documents=[policy]),
+            CninfoAnnouncementAdapter(documents=[announcement]),
+        ],
+    )
+
+    order_signal = next(item for item in result.opportunities if item.category == "订单")
+    assert set(order_signal.source_ids) == {"policy-reinforce", "ann-reinforce"}
+    assert order_signal.confidence > 0.9
+    assert "共同支持" in order_signal.reasoning
 
 
 def test_stale_partial_cache_refreshes_only_affected_source(db_session):

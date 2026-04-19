@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from .adapters import EvidenceSourceAdapter, SourceCollectionResult, SourceUnavailableError
 from .company_resolution import CompanyResolutionResult, ListedCompanyResolver
 from .company_seed import seed_robotics_listed_company_profiles
+from .policy_planning import build_policy_search_plan
 from .repository import (
     SOURCE_BIDDING,
     SOURCE_CNINFO,
@@ -152,9 +153,15 @@ class RoboticsEvidenceCache:
         published_since: datetime | None,
     ):
         if source_type == SOURCE_POLICY:
+            plan = build_policy_search_plan(request=request, profile=profile)
             return self.repository.query_policy_documents(
                 cache_key=cache_key,
-                keywords=profile.keywords,
+                keywords=_dedupe([*profile.keywords, *plan.keywords]),
+                source_scopes=list(plan.source_scopes),
+                matched_segments=profile.segments,
+                policy_domains=[
+                    item.policy_domain for item in plan.query_terms if item.policy_domain
+                ],
                 published_since=published_since,
             )
         if source_type == SOURCE_CNINFO:

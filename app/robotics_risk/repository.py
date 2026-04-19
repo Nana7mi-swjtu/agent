@@ -49,6 +49,9 @@ class RoboticsEvidenceRepository:
         *,
         cache_key: str,
         keywords: list[str],
+        source_scopes: list[str] | None = None,
+        matched_segments: list[str] | None = None,
+        policy_domains: list[str] | None = None,
         published_since: datetime | None,
     ) -> list[RoboticsPolicyDocument]:
         stmt = select(RoboticsPolicyDocument).where(RoboticsPolicyDocument.status.notin_(NEGATIVE_STATUSES))
@@ -60,7 +63,17 @@ class RoboticsEvidenceRepository:
                     RoboticsPolicyDocument.published_at >= published_since,
                 )
             )
-        return list(self.db.execute(stmt.order_by(RoboticsPolicyDocument.published_at.desc())).scalars().all())
+        rows = list(self.db.execute(stmt.order_by(RoboticsPolicyDocument.published_at.desc())).scalars().all())
+        return [
+            row
+            for row in rows
+            if _policy_row_matches_metadata(
+                row,
+                source_scopes=source_scopes or [],
+                matched_segments=matched_segments or [],
+                policy_domains=policy_domains or [],
+            )
+        ]
 
     def query_cninfo_announcements(
         self,
@@ -217,7 +230,13 @@ class RoboticsEvidenceRepository:
             row.content_text = document.content
             row.content_hash = _hash_text(document.content)
         row.matched_keywords_json = {"keywords": _clean_values(metadata.get("matchedKeywords") or [])}
-        row.relevance_segments_json = {"segments": _clean_values(metadata.get("relevanceSegments") or [])}
+        row.relevance_segments_json = {
+            "segments": _clean_values(
+                metadata.get("relevanceSegments")
+                or metadata.get("matchedSegments")
+                or []
+            )
+        }
         row.metadata_json = metadata
         row.status = str(metadata.get("status") or "fetched")
         row.error_message = _first_text(metadata, "errorMessage", "error_message")
@@ -391,6 +410,10 @@ def policy_row_to_source_document(row: RoboticsPolicyDocument) -> SourceDocument
         {
             "policyId": row.policy_id,
             "cacheKey": row.cache_key,
+            "issuingAgency": row.issuing_agency,
+            "documentNumber": row.document_number,
+            "matchedKeywords": (row.matched_keywords_json or {}).get("keywords", []),
+            "relevanceSegments": (row.relevance_segments_json or {}).get("segments", []),
             "fetchedAt": _format_datetime(row.fetched_at),
             "expiresAt": _format_datetime(row.expires_at),
             "status": row.status,
@@ -484,6 +507,38 @@ def _policy_lookup_filter(*, cache_key: str, keywords: list[str]):
         clauses.append(RoboticsPolicyDocument.title.like(pattern))
         clauses.append(RoboticsPolicyDocument.content_text.like(pattern))
     return or_(*clauses)
+
+
+def _policy_row_matches_metadata(
+    row: RoboticsPolicyDocument,
+    *,
+    source_scopes: list[str],
+    matched_segments: list[str],
+    policy_domains: list[str],
+) -> bool:
+    metadata = dict(row.metadata_json or {})
+    if source_scopes:
+        scope = str(metadata.get("sourceScope") or "").strip()
+        if scope and scope not in set(source_scopes):
+            return False
+    wanted_segments = set(_clean_values(matched_segments))
+    if wanted_segments:
+        row_segments = set(
+            _clean_values(
+                (row.relevance_segments_json or {}).get("segments", [])
+                or metadata.get("matchedSegments")
+                or metadata.get("relevanceSegments")
+                or []
+            )
+        )
+        if row_segments and row_segments.isdisjoint(wanted_segments):
+            return False
+    wanted_domains = set(_clean_values(policy_domains))
+    if wanted_domains:
+        row_domains = set(_clean_values(metadata.get("matchedPolicyDomains") or []))
+        if row_domains and row_domains.isdisjoint(wanted_domains):
+            return False
+    return True
 
 
 def _cninfo_lookup_filter(*, cache_key: str, request: RoboticsInsightRequest, keywords: list[str]):

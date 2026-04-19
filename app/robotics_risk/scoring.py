@@ -12,6 +12,13 @@ _EVENT_STRENGTH = {
     "winning_bid": 0.88,
     "policy_support": 0.84,
     "equipment_upgrade": 0.82,
+    "government_procurement": 0.84,
+    "standardization": 0.78,
+    "subsidy_tax_support": 0.82,
+    "ai_plus_policy": 0.84,
+    "industrial_upgrading": 0.8,
+    "data_security": 0.82,
+    "quality_supervision": 0.8,
     "capacity_expansion": 0.78,
     "new_product": 0.76,
     "earnings_growth": 0.82,
@@ -69,7 +76,8 @@ def _build_signal(
     direct = any(item.relevance_scope == "enterprise" for item in source_docs)
     industry = any(item.relevance_scope == "industry" for item in source_docs)
     market = any(item.relevance_scope == "market_demand" for item in source_docs)
-    confidence = min(0.98, max(0.35, (impact / 100) + (0.08 if direct and (industry or market) else 0.0)))
+    reinforced = direct and (industry or market)
+    confidence = min(0.98, max(0.35, (impact / 100) + (0.08 if reinforced else 0.0)))
     label = "机会" if direction == "opportunity" else "风险"
     digest = sha1("|".join([direction, dimension, *source_ids]).encode("utf-8")).hexdigest()[:8]
     return InsightSignal(
@@ -79,7 +87,15 @@ def _build_signal(
         title=f"{profile.name}{dimension}{label}信号",
         impact_score=impact,
         confidence=round(confidence, 2),
-        reasoning=_reasoning(direction=direction, dimension=dimension, direct=direct, industry=industry, market=market, profile=profile),
+        reasoning=_reasoning(
+            direction=direction,
+            dimension=dimension,
+            direct=direct,
+            industry=industry,
+            market=market,
+            source_docs=source_docs,
+            profile=profile,
+        ),
         event_ids=[event.id for event in events],
         source_ids=source_ids,
     )
@@ -123,6 +139,7 @@ def _reasoning(
     direct: bool,
     industry: bool,
     market: bool,
+    source_docs: list[SourceDocument],
     profile: EnterpriseProfile,
 ) -> str:
     basis: list[str] = []
@@ -135,7 +152,36 @@ def _reasoning(
     if not basis:
         basis.append("公开来源证据")
     verb = "利好" if direction == "opportunity" else "可能冲击"
-    return f"该判断基于{'、'.join(basis)}，结合{profile.name}的{', '.join(profile.segments)}画像，{dimension}因素{verb}企业后续经营表现。"
+    matched_terms = _matched_terms(source_docs, profile)
+    inference = "直接企业证据与行业政策/市场证据共同支持" if direct and (industry or market) else (
+        "直接企业证据支持" if direct else "行业层面证据推断"
+    )
+    match_text = f"，匹配画像关键词：{', '.join(matched_terms[:5])}" if matched_terms else ""
+    industry_limit = "；该信号尚需企业后续公告或经营数据验证" if industry and not direct else ""
+    return (
+        f"该判断基于{'、'.join(basis)}，证据层级为{inference}，结合{profile.name}的"
+        f"{', '.join(profile.segments)}画像{match_text}，{dimension}因素{verb}企业后续经营表现{industry_limit}。"
+    )
+
+
+def _matched_terms(source_docs: list[SourceDocument], profile: EnterpriseProfile) -> list[str]:
+    terms = [*profile.segments, *profile.keywords]
+    seen: set[str] = set()
+    result: list[str] = []
+    text = "\n".join(f"{source.title}\n{source.content}" for source in source_docs)
+    for term in terms:
+        clean = str(term or "").strip()
+        if clean and clean not in seen and clean in text:
+            seen.add(clean)
+            result.append(clean)
+    for source in source_docs:
+        metadata = source.metadata or {}
+        for value in metadata.get("matchedSegments") or metadata.get("relevanceSegments") or []:
+            clean = str(value or "").strip()
+            if clean and clean not in seen:
+                seen.add(clean)
+                result.append(clean)
+    return result
 
 
 def _dedupe(values: Iterable[str]) -> list[str]:
