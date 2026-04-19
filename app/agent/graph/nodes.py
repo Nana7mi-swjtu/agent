@@ -8,6 +8,12 @@ from pydantic import BaseModel, Field
 from ...rag.errors import RAGContractError
 from ...rag.schemas import RetrievalHit
 from ...rag.service import build_cited_response
+from .analysis_modules import (
+    AnalysisModuleContract,
+    build_analysis_handoff_bundle,
+    get_analysis_module_registry,
+    normalize_analysis_module_output,
+)
 from .mcp import build_mcp_graph
 from .search import build_search_graph
 from .source_intent import has_explicit_public_web_intent, has_fresh_public_info_intent, has_mixed_source_intent
@@ -138,15 +144,182 @@ def _search_strategy(message: str, *, rag_enabled: bool, web_enabled: bool) -> s
     return "private_only"
 
 
+def _enabled_analysis_modules(state: AgentState) -> list[str]:
+    value = state.get("enabled_analysis_modules", [])
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _analysis_shared_inputs(state: AgentState) -> dict[str, Any]:
+    value = state.get("analysis_shared_inputs", {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _analysis_module_inputs(state: AgentState) -> dict[str, dict[str, Any]]:
+    value = state.get("analysis_module_inputs", {})
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(module_id): dict(payload)
+        for module_id, payload in value.items()
+        if str(module_id).strip() and isinstance(payload, dict)
+    }
+
+
+def _analysis_contracts(enabled_modules: list[str]) -> tuple[list[AnalysisModuleContract], list[str]]:
+    registry = get_analysis_module_registry()
+    contracts: list[AnalysisModuleContract] = []
+    unsupported: list[str] = []
+    for module_id in enabled_modules:
+        contract = registry.get(module_id)
+        if contract is None:
+            unsupported.append(module_id)
+            continue
+        contracts.append(contract)
+    return contracts, unsupported
+
+
+def _has_analysis_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return bool(value)
+    if isinstance(value, dict):
+        return bool(value)
+    return value is not None
+
+
+def _analysis_missing_field_id(item: dict[str, Any]) -> str:
+    scope = str(item.get("scope", "")).strip()
+    module_id = str(item.get("moduleId", "")).strip()
+    field_name = str(item.get("field", "")).strip()
+    if scope == "module" and module_id:
+        return f"analysis.{module_id}.{field_name}"
+    return f"analysis.shared.{field_name}"
+
+
+def _analysis_shared_question(missing_fields: list[dict[str, Any]]) -> str:
+    labels = [str(item.get("label", "")).strip() for item in missing_fields if str(item.get("label", "")).strip()]
+    return "为继续已开启的分析模块，请先补充共享信息：" + "、".join(labels) + "。"
+
+
+def _analysis_module_question(missing_fields: list[dict[str, Any]]) -> str:
+    grouped: dict[str, list[str]] = {}
+    names: dict[str, str] = {}
+    for item in missing_fields:
+        module_id = str(item.get("moduleId", "")).strip()
+        label = str(item.get("label", "")).strip()
+        module_name = str(item.get("moduleName", module_id)).strip() or module_id
+        if not module_id or not label:
+            continue
+        grouped.setdefault(module_id, [])
+        if label not in grouped[module_id]:
+            grouped[module_id].append(label)
+        names[module_id] = module_name
+    parts = [f"{names[module_id]}：{'、'.join(labels)}" for module_id, labels in grouped.items() if labels]
+    return "共享信息已收到，请继续补充模块信息：" + "；".join(parts) + "。"
+
+
+def _analysis_need_input_question(module_result: dict[str, Any], contract: AnalysisModuleContract) -> str:
+    limitations = module_result.get("limitations", [])
+    if isinstance(limitations, list):
+        first = next((str(item).strip() for item in limitations if str(item).strip()), "")
+        if first:
+            return f"{contract.display_name} 仍需补充信息：{first}"
+    error_message = str(module_result.get("errorMessage", "")).strip()
+    if error_message:
+        return f"{contract.display_name} 仍需补充信息：{error_message}"
+    return f"{contract.display_name} 仍需补充必要输入后才能继续。"
+
+
+def _analysis_bundle_system_section(state: AgentState) -> str:
+    bundle = state.get("analysis_handoff_bundle", {})
+    if not isinstance(bundle, dict) or not bundle:
+        return ""
+    lines = ["分析模块编排结果："]
+    enabled_modules = bundle.get("enabledModules", [])
+    if isinstance(enabled_modules, list) and enabled_modules:
+        lines.append("已启用模块：" + ", ".join(str(item).strip() for item in enabled_modules if str(item).strip()))
+    shared_summary = bundle.get("sharedInputSummary", {})
+    if isinstance(shared_summary, dict) and shared_summary:
+        shared_lines = []
+        for key, label in (
+            ("enterpriseName", "企业"),
+            ("stockCode", "股票代码"),
+            ("timeRange", "时间范围"),
+            ("reportGoal", "报告目标"),
+        ):
+            value = str(shared_summary.get(key, "")).strip()
+            if value:
+                shared_lines.append(f"{label}={value}")
+        if shared_lines:
+            lines.append("共享输入：" + "；".join(shared_lines))
+    module_results = bundle.get("moduleResults", [])
+    if isinstance(module_results, list) and module_results:
+        lines.append("模块结果：")
+        for index, item in enumerate(module_results, start=1):
+            if not isinstance(item, dict):
+                continue
+            module_id = str(item.get("moduleId", "")).strip()
+            display_name = str(item.get("displayName", module_id)).strip() or module_id
+            status = str(item.get("status", "")).strip()
+            run_id = str(item.get("runId", "")).strip()
+            summary = str(item.get("summary", "")).strip()
+            header = f"[{index}] module={module_id} name={display_name} status={status}"
+            if run_id:
+                header += f" runId={run_id}"
+            lines.append(header)
+            if summary:
+                lines.append(summary)
+    limitations = bundle.get("limitations", [])
+    if isinstance(limitations, list) and limitations:
+        lines.append("限制说明：" + "；".join(str(item).strip() for item in limitations if str(item).strip()))
+    return "\n".join(lines)
+
+
 def plan_route_node(state: AgentState):
     user_message = str(state.get("user_message", "")).strip()
     entity = str(state.get("entity", "")).strip()
     graph_intent = str(state.get("graph_intent", "")).strip()
+    enabled_analysis_modules = _enabled_analysis_modules(state)
     kg_enabled = bool(state.get("kg_enabled", False))
     rag_enabled = bool(state.get("rag_enabled", False))
     web_enabled = bool(state.get("web_enabled", False))
     mcp_enabled = bool(state.get("mcp_enabled", False))
     conversation_context = _conversation_context(state)
+
+    if enabled_analysis_modules:
+        return {
+            "intent": "analysis",
+            "needs_search": False,
+            "needs_mcp": False,
+            "needs_clarification": False,
+            "clarification_question": "",
+            "missing_fields": [],
+            "search_request": {},
+            "mcp_request": {},
+            "search_result": {},
+            "mcp_result": {},
+            "analysis_results": {},
+            "analysis_handoff_bundle": {},
+            "analysis_missing_fields": [],
+            "analysis_completed": False,
+            "analysis_unsupported_modules": [],
+            "search_completed": False,
+            "mcp_completed": False,
+            "rag_chunks": [],
+            "rag_citations": [],
+            "rag_no_evidence": False,
+            "rag_debug": {},
+            "debug": {
+                **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
+                "analysisPlanner": {
+                    "enabledModules": enabled_analysis_modules,
+                    "conversationContextPresent": bool(conversation_context),
+                },
+            },
+        }
 
     if not user_message:
         return {
@@ -244,6 +417,8 @@ def plan_route_node(state: AgentState):
 def route_after_plan(state: AgentState) -> str:
     if state.get("needs_clarification", False):
         return "clarify"
+    if _enabled_analysis_modules(state):
+        return "analysis_intake"
     if state.get("needs_search", False) and not state.get("search_completed", False):
         return "search_subagent"
     if state.get("needs_mcp", False) and not state.get("mcp_completed", False):
@@ -263,6 +438,155 @@ def route_after_mcp(state: AgentState) -> str:
     if state.get("needs_clarification", False):
         return "clarify"
     return "compose_answer"
+
+
+def route_after_analysis_intake(state: AgentState) -> str:
+    if state.get("needs_clarification", False):
+        return "clarify"
+    if bool(state.get("analysis_completed", False)):
+        return "compose_answer"
+    return "analysis_modules"
+
+
+def route_after_analysis_modules(state: AgentState) -> str:
+    if state.get("needs_clarification", False):
+        return "clarify"
+    return "compose_answer"
+
+
+def analysis_intake_node(state: AgentState):
+    enabled_modules = _enabled_analysis_modules(state)
+    shared_inputs = _analysis_shared_inputs(state)
+    module_inputs = _analysis_module_inputs(state)
+    contracts, unsupported_modules = _analysis_contracts(enabled_modules)
+
+    shared_missing: list[dict[str, Any]] = []
+    seen_shared_fields: set[str] = set()
+    for contract in contracts:
+        for field in contract.shared_fields:
+            if not field.required or field.field in seen_shared_fields:
+                continue
+            seen_shared_fields.add(field.field)
+            if not _has_analysis_value(shared_inputs.get(field.field)):
+                shared_missing.append(
+                    {
+                        "scope": "shared",
+                        "field": field.field,
+                        "label": field.label,
+                    }
+                )
+
+    module_missing: list[dict[str, Any]] = []
+    if not shared_missing:
+        for contract in contracts:
+            current_inputs = module_inputs.get(contract.module_id, {})
+            for field in contract.module_fields:
+                if not field.required:
+                    continue
+                if not _has_analysis_value(current_inputs.get(field.field)):
+                    module_missing.append(
+                        {
+                            "scope": "module",
+                            "moduleId": contract.module_id,
+                            "moduleName": contract.display_name,
+                            "field": field.field,
+                            "label": field.label,
+                        }
+                    )
+
+    missing_fields = shared_missing or module_missing
+    clarification_question = ""
+    if shared_missing:
+        clarification_question = _analysis_shared_question(shared_missing)
+    elif module_missing:
+        clarification_question = _analysis_module_question(module_missing)
+
+    debug_payload = {
+        "enabledModules": enabled_modules,
+        "supportedModules": [contract.module_id for contract in contracts],
+        "unsupportedModules": unsupported_modules,
+        "missingSharedFields": [item["field"] for item in shared_missing],
+        "missingModuleFields": {
+            contract.module_id: [
+                item["field"]
+                for item in module_missing
+                if str(item.get("moduleId", "")).strip() == contract.module_id
+            ]
+            for contract in contracts
+            if any(str(item.get("moduleId", "")).strip() == contract.module_id for item in module_missing)
+        },
+        "sharedInputsReady": not bool(shared_missing),
+    }
+    return {
+        "needs_clarification": bool(missing_fields),
+        "clarification_question": clarification_question,
+        "missing_fields": [_analysis_missing_field_id(item) for item in missing_fields],
+        "analysis_missing_fields": missing_fields,
+        "analysis_unsupported_modules": unsupported_modules,
+        "analysis_completed": False,
+        "debug": {
+            **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
+            "analysisIntake": debug_payload,
+        },
+    }
+
+
+def analysis_modules_node(state: AgentState):
+    enabled_modules = _enabled_analysis_modules(state)
+    shared_inputs = _analysis_shared_inputs(state)
+    module_inputs = _analysis_module_inputs(state)
+    contracts, unsupported_modules = _analysis_contracts(enabled_modules)
+    context = {
+        "conversationContext": _conversation_context(state),
+        "userMessage": str(state.get("user_message", "")).strip(),
+    }
+    results: dict[str, dict[str, Any]] = {}
+    needs_clarification = False
+    clarification_question = ""
+
+    for contract in contracts:
+        runtime_input = contract.build_input(shared_inputs, module_inputs.get(contract.module_id, {}), context)
+        normalized_result = normalize_analysis_module_output(contract, contract.run(runtime_input))
+        results[contract.module_id] = normalized_result
+        if normalized_result.get("status") == "need_input" and not clarification_question:
+            needs_clarification = True
+            clarification_question = _analysis_need_input_question(normalized_result, contract)
+
+    bundle = build_analysis_handoff_bundle(
+        enabled_modules=enabled_modules,
+        shared_inputs=shared_inputs,
+        module_results=results,
+        unsupported_modules=unsupported_modules,
+    )
+    debug_payload = {
+        "enabledModules": enabled_modules,
+        "completedModules": [module_id for module_id, result in results.items() if result.get("status") in {"done", "partial"}],
+        "statuses": {
+            module_id: str(result.get("status", "")).strip()
+            for module_id, result in results.items()
+            if isinstance(result, dict)
+        },
+        "runIds": {
+            module_id: str(result.get("runId", "")).strip()
+            for module_id, result in results.items()
+            if isinstance(result, dict) and str(result.get("runId", "")).strip()
+        },
+        "unsupportedModules": unsupported_modules,
+        "bundleLimitations": list(bundle.get("limitations", [])) if isinstance(bundle.get("limitations", []), list) else [],
+    }
+    return {
+        "analysis_results": results,
+        "analysis_handoff_bundle": bundle,
+        "analysis_completed": not needs_clarification,
+        "analysis_unsupported_modules": unsupported_modules,
+        "needs_clarification": needs_clarification,
+        "clarification_question": clarification_question,
+        "missing_fields": ["analysis.modules"] if needs_clarification else [],
+        "debug": {
+            **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
+            "analysisModules": debug_payload,
+        },
+    }
 
 
 def search_subagent_node(state: AgentState):
@@ -442,6 +766,9 @@ def _build_system_content(state: AgentState) -> str:
         summary = str(mcp_result.get("summary", "")).strip()
         if summary:
             system_content = f"{system_content}\n\nMCP Subagent summary:\n{summary}"
+    analysis_section = _analysis_bundle_system_section(state)
+    if analysis_section:
+        system_content = f"{system_content}\n\n{analysis_section}"
     return system_content
 
 
