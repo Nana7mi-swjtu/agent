@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from app.agent.analysis_session import create_transient_analysis_session
-from app.agent.graph.analysis_modules import AnalysisModuleContract
+from app.agent.graph import analysis_modules as analysis_module_graph
+from app.agent.graph.analysis_modules import AnalysisModuleContract, normalize_analysis_module_output
 from app.agent.graph.analysis_slots import (
     AnalysisSlotDefinition,
     SHARED_ANALYSIS_FOCUS_TAGS,
@@ -15,12 +16,14 @@ from app.agent.graph.analysis_slots import (
     shared_slot_catalog,
 )
 from app.agent.graph.nodes import (
+    _analysis_bundle_system_section,
     analysis_intake_node,
     analysis_modules_node,
     mcp_subagent_node,
     plan_route_node,
     search_subagent_node,
 )
+from app.robotics_risk.cache import RoboticsEvidenceCache
 
 
 def test_shared_slot_catalog_exposes_v1_baseline():
@@ -93,6 +96,81 @@ def test_plan_route_preserves_public_only_strategy_for_explicit_web_request():
     assert result["needs_search"] is True
     assert result["needs_clarification"] is False
     assert result["search_request"]["preferred_strategy"] == "public_only"
+
+
+def test_robotics_module_runtime_uses_db_backed_cache_in_app_context(app, monkeypatch):
+    captured = {}
+
+    def _fake_run(payload, **kwargs):
+        captured["payload"] = dict(payload)
+        captured["db"] = kwargs.get("db")
+        captured["evidence_cache"] = kwargs.get("evidence_cache")
+        return {
+            "status": "partial",
+            "runId": "rrisk-cache-001",
+            "limitations": ["未检索到可用于风险机会洞察的来源文档。"],
+        }
+
+    monkeypatch.setattr(analysis_module_graph, "run_robotics_risk_subagent", _fake_run)
+
+    with app.app_context():
+        output = analysis_module_graph._run_robotics_risk_module({"enterpriseName": "优必选"})
+
+    assert output["runId"] == "rrisk-cache-001"
+    assert captured["payload"]["enterpriseName"] == "优必选"
+    assert captured["db"] is not None
+    assert isinstance(captured["evidence_cache"], RoboticsEvidenceCache)
+
+
+def test_partial_analysis_module_without_sources_summarizes_evidence_gap():
+    contract = AnalysisModuleContract(
+        module_id="robotics_risk",
+        display_name="机器人风险机会洞察",
+        required_slots=(),
+    )
+
+    output = normalize_analysis_module_output(
+        contract,
+        {
+            "status": "partial",
+            "runId": "rrisk-empty",
+            "result": {
+                "summary": {
+                    "opportunity": "未发现明确机会信号。",
+                    "risk": "未发现明确风险信号。",
+                }
+            },
+            "documentHandoff": {"executiveSummary": {"sourceCount": 0}},
+            "limitations": ["未检索到可用于风险机会洞察的来源文档。"],
+            "sourceReferences": [],
+        },
+    )
+
+    assert output["summary"] == "未检索到可用于风险机会洞察的来源文档。"
+
+
+def test_analysis_bundle_system_section_blocks_no_evidence_inference():
+    section = _analysis_bundle_system_section(
+        {
+            "analysis_handoff_bundle": {
+                "enabledModules": ["robotics_risk"],
+                "moduleResults": [
+                    {
+                        "moduleId": "robotics_risk",
+                        "displayName": "机器人风险机会洞察",
+                        "status": "partial",
+                        "summary": "未检索到可用于风险机会洞察的来源文档。",
+                        "sourceReferences": [],
+                        "documentHandoff": {"executiveSummary": {"sourceCount": 0}},
+                    }
+                ],
+                "limitations": ["未检索到可用于风险机会洞察的来源文档。"],
+            }
+        }
+    )
+
+    assert "sourceCount=0" in section
+    assert "不得基于行业常识" in section
 
 
 def test_analysis_intake_deduplicates_shared_slots_before_module_specific(monkeypatch):

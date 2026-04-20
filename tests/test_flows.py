@@ -504,10 +504,12 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
     app.config["AI_BASE_URL"] = ""
     monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
 
-    def _fake_run_robotics(payload):
+    def _fake_run_robotics(payload, **kwargs):
         assert payload["enterpriseName"] == "石头科技"
         assert payload["timeRange"] == "近30天"
         assert payload["focus"] == "订单与政策"
+        assert kwargs.get("db") is not None
+        assert kwargs.get("evidence_cache") is not None
         return {
             "status": "done",
             "runId": "rrisk_parent_001",

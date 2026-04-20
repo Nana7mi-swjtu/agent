@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted } from "vue";
+import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { storeToRefs } from "pinia";
 
@@ -17,6 +17,7 @@ const { ready, agentTraceDebugDetailsEnabled } = storeToRefs(workspaceStore);
 const {
   input,
   selectedRole,
+  selectedAnalysisModule,
   selectedRoleName,
   systemPrompt,
   sending,
@@ -42,6 +43,13 @@ const {
   loadRagDebugSnapshot,
   send,
 } = useChatWorkspace();
+
+const analysisModuleOptions = computed(() => [
+  {
+    value: "robotics_risk",
+    label: uiStore.t("analysisModuleRoboticsRisk"),
+  },
+]);
 
 const sendMessage = async () => {
   const result = await send();
@@ -143,10 +151,14 @@ const traceDetailsEntries = (step) =>
 
       <ChatComposer
         v-model="input"
+        v-model:analysis-module-value="selectedAnalysisModule"
         :sending="sending"
         :error="chatError"
         :placeholder="uiStore.t('inputPlaceholder')"
         :send-label="uiStore.t('send')"
+        :analysis-module-options="analysisModuleOptions"
+        :analysis-module-label="uiStore.t('analysisModuleSelector')"
+        :no-analysis-module-label="uiStore.t('analysisModuleNone')"
         @submit="sendMessage"
       />
     </section>

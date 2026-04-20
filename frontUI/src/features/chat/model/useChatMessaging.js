@@ -59,6 +59,23 @@ export const useChatMessaging = () => {
     selectedRole.value ? uiStore.getRoleDisplayName(selectedRole.value) : "",
   );
 
+  const activeAnalysisModules = computed(() =>
+    Array.isArray(activeSession.value?.selectedAnalysisModules)
+      ? activeSession.value.selectedAnalysisModules
+      : [],
+  );
+
+  const selectedAnalysisModule = computed({
+    get: () => activeAnalysisModules.value[0] || "",
+    set: (moduleId) => {
+      const cleanModuleId = String(moduleId || "").trim();
+      if (!activeSession.value && selectedRole.value) {
+        chatStore.createSession(selectedRole.value, uiStore.getRoleDisplayName, workspaceId.value);
+      }
+      chatStore.setActiveSessionAnalysisModules(cleanModuleId ? [cleanModuleId] : []);
+    },
+  });
+
   const channelName = computed(() => {
     const title = activeSession.value?.title?.trim();
     if (title) {
@@ -236,8 +253,15 @@ export const useChatMessaging = () => {
     });
   };
 
-  const tryStreamReply = async (text, conversationId, pendingMessageId) => {
-    const response = await postWorkspaceChatStream(text, workspaceId.value, conversationId);
+  const requestOptionsForModules = (moduleIds = []) => {
+    const enabledAnalysisModules = Array.isArray(moduleIds)
+      ? moduleIds.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    return enabledAnalysisModules.length ? { enabledAnalysisModules } : {};
+  };
+
+  const tryStreamReply = async (text, conversationId, pendingMessageId, options = {}) => {
+    const response = await postWorkspaceChatStream(text, workspaceId.value, conversationId, options);
     if (!response.ok) {
       const errorPayload = await response.json().catch(() => ({}));
       return {
@@ -314,6 +338,9 @@ export const useChatMessaging = () => {
 
     const current = chatStore.ensureSession(selectedRole.value, uiStore.getRoleDisplayName, workspaceId.value);
     chatStore.setSessionScope({ workspaceId: workspaceId.value, role: selectedRole.value });
+    const selectedModules = Array.isArray(current.selectedAnalysisModules) ? current.selectedAnalysisModules : [];
+    const hasSelectedAnalysisModules = selectedModules.length > 0;
+    const requestOptions = requestOptionsForModules(selectedModules);
     if (agentChatJobsEnabled.value && conversationHasActiveJob(current)) {
       error.value = uiStore.t("assistantWorking");
       return { ok: false, activeJob: true };
@@ -327,7 +354,7 @@ export const useChatMessaging = () => {
 
     sending.value = true;
     try {
-      if (agentChatJobsEnabled.value) {
+      if (agentChatJobsEnabled.value && !hasSelectedAnalysisModules) {
         const jobResult = await postWorkspaceChatJob(text, workspaceId.value, current.conversationId);
         if (!jobResult.ok) {
           return restoreFailedRequest(pendingMessageId, text, jobResult.data?.error || uiStore.t("sendFailed"), current.id);
@@ -345,7 +372,7 @@ export const useChatMessaging = () => {
       }
 
       if (chatStreamingEnabled.value) {
-        const streamResult = await tryStreamReply(text, current.conversationId, pendingMessageId);
+        const streamResult = await tryStreamReply(text, current.conversationId, pendingMessageId, requestOptions);
         if (streamResult.ok) {
           finalizeAssistantMessage(pendingMessageId, streamResult.payload);
           return { ok: true, data: { data: streamResult.payload } };
@@ -355,7 +382,7 @@ export const useChatMessaging = () => {
         }
       }
 
-      const result = await postWorkspaceChat(text, workspaceId.value, current.conversationId);
+      const result = await postWorkspaceChat(text, workspaceId.value, current.conversationId, requestOptions);
       if (!result.ok) {
         return restoreFailedRequest(pendingMessageId, text, result.data?.error || uiStore.t("sendFailed"));
       }
@@ -385,6 +412,8 @@ export const useChatMessaging = () => {
     selectedRole,
     sessions,
     activeSessionId,
+    activeAnalysisModules,
+    selectedAnalysisModule,
     selectedRoleName,
     systemPrompt,
     chatStreamingEnabled,
@@ -397,6 +426,7 @@ export const useChatMessaging = () => {
     displayTime,
     send,
     hydrateConversationJobs,
+    clearActiveAnalysisModules: chatStore.clearActiveSessionAnalysisModules,
     setActiveSession: chatStore.setActiveSession,
     createSession: () => chatStore.createSession(selectedRole.value, uiStore.getRoleDisplayName, workspaceId.value),
   };

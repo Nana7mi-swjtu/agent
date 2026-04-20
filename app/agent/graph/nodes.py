@@ -597,16 +597,41 @@ def _analysis_bundle_system_section(state: AgentState) -> str:
             status = str(item.get("status", "")).strip()
             run_id = str(item.get("runId", "")).strip()
             summary = str(item.get("summary", "")).strip()
+            source_count = _analysis_module_source_count(item)
             header = f"[{index}] module={module_id} name={display_name} status={status}"
             if run_id:
                 header += f" runId={run_id}"
+            header += f" sourceCount={source_count}"
             lines.append(header)
             if summary:
                 lines.append(summary)
+            if source_count <= 0:
+                lines.append(
+                    "证据边界：该模块未返回可引用来源。主回答不得基于行业常识、公开基本面、模型记忆或未列明来源生成风险/机会判断；只能说明当前没有证据、列出失败/空结果状态，并建议补采或重试。"
+                )
     limitations = bundle.get("limitations", [])
     if isinstance(limitations, list) and limitations:
         lines.append("限制说明：" + "；".join(str(item).strip() for item in limitations if str(item).strip()))
     return "\n".join(lines)
+
+
+def _analysis_module_source_count(module_result: dict[str, Any]) -> int:
+    source_references = module_result.get("sourceReferences", [])
+    if isinstance(source_references, list) and source_references:
+        return len(source_references)
+    handoff = module_result.get("documentHandoff", {})
+    if not isinstance(handoff, dict):
+        return 0
+    executive_summary = handoff.get("executiveSummary", {})
+    if isinstance(executive_summary, dict):
+        try:
+            return max(0, int(executive_summary.get("sourceCount", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+    evidence_table = handoff.get("evidenceTable", [])
+    if isinstance(evidence_table, list):
+        return len(evidence_table)
+    return 0
 
 
 def plan_route_node(state: AgentState):

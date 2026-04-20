@@ -1,6 +1,9 @@
 export const buildConversationId = () => `c_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 export const buildMessageId = () => `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
+export const SUPPORTED_ANALYSIS_MODULE_IDS = ["robotics_risk"];
+const SUPPORTED_ANALYSIS_MODULE_ID_SET = new Set(SUPPORTED_ANALYSIS_MODULE_IDS);
+
 const normalizeTrace = (raw) => (raw && typeof raw === "object" ? raw : null);
 const normalizeSources = (raw) => (Array.isArray(raw) ? raw.filter((item) => item && typeof item === "object") : []);
 const normalizeGraph = (raw) => {
@@ -11,6 +14,17 @@ const normalizeGraph = (raw) => {
   return { nodes, edges };
 };
 const normalizeGraphMeta = (raw) => (raw && typeof raw === "object" ? raw : null);
+export const normalizeSelectedAnalysisModules = (raw) => {
+  if (!Array.isArray(raw)) return [];
+  const result = [];
+  raw.forEach((item) => {
+    const moduleId = String(item || "").trim();
+    if (SUPPORTED_ANALYSIS_MODULE_ID_SET.has(moduleId) && !result.includes(moduleId)) {
+      result.push(moduleId);
+    }
+  });
+  return result;
+};
 
 export const normalizeChatMessage = (raw) => ({
   id: String(raw?.id || buildMessageId()),
@@ -61,6 +75,7 @@ export const normalizeChatSession = (raw) => ({
   role: typeof raw?.role === "string" ? raw.role : "",
   title: String(raw?.title || "新对话"),
   messages: Array.isArray(raw?.messages) ? raw.messages.map(normalizeChatMessage) : [],
+  selectedAnalysisModules: normalizeSelectedAnalysisModules(raw?.selectedAnalysisModules),
   updatedAt: typeof raw?.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
 });
 
@@ -73,5 +88,6 @@ export const serializeChatSession = (session) => ({
   messages: Array.isArray(session?.messages)
     ? session.messages.filter((message) => !message?.pending || message?.jobId).map(serializeChatMessage)
     : [],
+  selectedAnalysisModules: normalizeSelectedAnalysisModules(session?.selectedAnalysisModules),
   updatedAt: typeof session?.updatedAt === "string" ? session.updatedAt : new Date().toISOString(),
 });

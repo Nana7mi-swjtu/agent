@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from flask import has_app_context
+
 from ...robotics_risk import run_robotics_risk_subagent
 from .analysis_slots import (
     AnalysisSlotDefinition,
@@ -207,12 +209,26 @@ def normalize_analysis_module_output(
         handoff_payload = {}
     limitations = _normalize_string_list(payload.get("limitations"))
     run_id = _clean_text(payload.get("runId") or payload.get("run_id"))
-    summary = _build_module_summary(result_payload=result_payload, handoff_payload=handoff_payload, limitations=limitations)
+    source_references = (
+        payload.get("sourceReferences")
+        if isinstance(payload.get("sourceReferences"), list)
+        else payload.get("source_references", [])
+    )
+    if not isinstance(source_references, list):
+        source_references = []
+    status = _clean_text(payload.get("status")) or "failed"
+    summary = _build_module_summary(
+        result_payload=result_payload,
+        handoff_payload=handoff_payload,
+        limitations=limitations,
+        status=status,
+        source_reference_count=len(source_references),
+    )
     normalized = _drop_empty(
         {
             "moduleId": contract.module_id,
             "displayName": contract.display_name,
-            "status": _clean_text(payload.get("status")) or "failed",
+            "status": status,
             "summary": summary,
             "limitations": limitations,
             "runId": run_id,
@@ -224,9 +240,7 @@ def normalize_analysis_module_output(
             "normalizedInput": payload.get("normalizedInput")
             if isinstance(payload.get("normalizedInput"), dict)
             else payload.get("normalized_input", {}),
-            "sourceReferences": payload.get("sourceReferences")
-            if isinstance(payload.get("sourceReferences"), list)
-            else payload.get("source_references", []),
+            "sourceReferences": source_references,
             "errorMessage": _clean_text(payload.get("errorMessage") or payload.get("error_message")),
         }
     )
@@ -301,7 +315,15 @@ def build_analysis_handoff_bundle(
 
 
 def _run_robotics_risk_module(payload: dict[str, Any]) -> Any:
-    return run_robotics_risk_subagent(payload)
+    if not has_app_context():
+        return run_robotics_risk_subagent(payload)
+
+    from ...db import session_scope
+    from ...robotics_risk.cache import RoboticsEvidenceCache
+
+    with session_scope() as db:
+        evidence_cache = RoboticsEvidenceCache(db)
+        return run_robotics_risk_subagent(payload, db=db, evidence_cache=evidence_cache)
 
 
 def _map_robotics_risk_runtime_input(
@@ -350,7 +372,13 @@ def _build_module_summary(
     result_payload: dict[str, Any],
     handoff_payload: dict[str, Any],
     limitations: list[str],
+    status: str = "",
+    source_reference_count: int = 0,
 ) -> str:
+    if status in {"partial", "failed"} and source_reference_count <= 0:
+        no_evidence = _first_no_evidence_limitation(limitations)
+        if no_evidence:
+            return _truncate(no_evidence, limit=300)
     summary_payload = result_payload.get("summary", {})
     if isinstance(summary_payload, dict):
         summary_lines = [
@@ -374,6 +402,15 @@ def _build_module_summary(
         return _truncate(brief_markdown, limit=300)
     if limitations:
         return _truncate(limitations[0], limit=300)
+    return ""
+
+
+def _first_no_evidence_limitation(limitations: list[str]) -> str:
+    markers = ("未检索到", "未返回", "暂无可引用证据", "来源不可用", "不可用", "失败", "受限")
+    for item in limitations:
+        clean = _clean_text(item)
+        if clean and any(marker in clean for marker in markers):
+            return clean
     return ""
 
 
