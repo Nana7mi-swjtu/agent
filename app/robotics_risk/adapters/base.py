@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from ..schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument
+from ..schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument, SourceRetrievalDiagnostic
 
 
 class SourceUnavailableError(RuntimeError):
@@ -16,6 +16,7 @@ class SourceUnavailableError(RuntimeError):
 class SourceCollectionResult:
     documents: list[SourceDocument] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
+    diagnostics: list[SourceRetrievalDiagnostic] = field(default_factory=list)
 
 
 class EvidenceSourceAdapter(Protocol):

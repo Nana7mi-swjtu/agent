@@ -133,6 +133,19 @@ class FakeCninfoClient:
         return list(self.records)
 
 
+class PlanAwareCninfoClient:
+    def __init__(self, records_by_query_type: dict[str, list[CninfoAnnouncementRecord]]) -> None:
+        self.records_by_query_type = {
+            key: list(value) for key, value in records_by_query_type.items()
+        }
+        self.plans: list[CninfoQueryPlan] = []
+
+    def query_announcements(self, plan: CninfoQueryPlan) -> list[CninfoAnnouncementRecord]:
+        self.plans.append(plan)
+        key = f"{plan.query_type}:{plan.search_key}"
+        return list(self.records_by_query_type.get(key, self.records_by_query_type.get(plan.query_type, [])))
+
+
 class FakeGovPolicyClient:
     def __init__(
         self,
@@ -140,17 +153,20 @@ class FakeGovPolicyClient:
         search_html: str = "",
         list_html: str = "",
         detail_pages: dict[str, str] | None = None,
+        json_pages: dict[str, str] | None = None,
         fail_search: Exception | None = None,
         fail_detail_urls: set[str] | None = None,
     ) -> None:
         self.search_html = search_html
         self.list_html = list_html
         self.detail_pages = dict(detail_pages or {})
+        self.json_pages = dict(json_pages or {})
         self.fail_search = fail_search
         self.fail_detail_urls = set(fail_detail_urls or set())
         self.searches: list[tuple[str, str, int]] = []
         self.lists: list[tuple[str, int]] = []
         self.details: list[str] = []
+        self.jsons: list[str] = []
 
     def fetch_search_page(self, *, query: str, scope: str, page: int):
         self.searches.append((query, scope, page))
@@ -167,6 +183,10 @@ class FakeGovPolicyClient:
         if url in self.fail_detail_urls:
             raise SourceUnavailableError("gov_policy", "detail blocked")
         return GovPolicyPage(url=url, html=self.detail_pages.get(url, ""))
+
+    def fetch_json_page(self, url: str):
+        self.jsons.append(url)
+        return GovPolicyPage(url=url, html=self.json_pages.get(url, "[]"))
 
 
 class FakeCebBiddingClient:
@@ -373,6 +393,38 @@ def test_gov_policy_adapter_uses_list_fallback_and_reports_detail_failure():
     assert any("详情页不可用" in item for item in result.limitations)
 
 
+def test_gov_policy_adapter_handles_redirect_shell_and_json_list_fallback():
+    policy_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/2026-04/03/content_json.htm"
+    redirect_html = '<script>window.location.href="https://sousuo.www.gov.cn/zcwjk/policyDocumentLibrary?q=&t=zhengcelibrary"</script>'
+    list_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/TONGYONGGAILAN.json"
+    list_html = '<script>$.ajax({ url: "./TONGYONGGAILAN.json", success: function(resultP){ FY_DATA = resultP; } })</script>'
+    json_payload = f'[{{"TITLE":"国务院办公厅关于推进机器人应用的意见","URL":"{policy_url}","DOCRELPUBTIME":"2026-04-03","DOCID":"content_json"}}]'
+    detail_html = '<h1>国务院办公厅关于推进机器人应用的意见</h1><div class="pages_content">政策鼓励服务机器人和工业机器人应用。</div>'
+    client = FakeGovPolicyClient(
+        search_html=redirect_html,
+        list_html=list_html,
+        json_pages={
+            list_url: json_payload,
+            "https://www.gov.cn/zhengce/zhengceku/state_council/TONGYONGGAILAN.json": json_payload,
+            "https://www.gov.cn/zhengce/zhengceku/department/TONGYONGGAILAN.json": "[]",
+        },
+        detail_pages={policy_url: detail_html},
+    )
+    adapter = GovPolicyAdapter(client=client, max_queries=1, detail_fetch_limit=1)
+
+    result = adapter.collect(
+        request=RoboticsInsightRequest(enterprise_name="埃斯顿", context="工业机器人"),
+        profile=EnterpriseProfile(name="埃斯顿", segments=["工业机器人"], keywords=["工业机器人"]),
+    )
+
+    assert client.jsons
+    assert any(item.endswith("TONGYONGGAILAN.json") for item in client.jsons)
+    assert result.documents
+    assert any("跳转壳" in item for item in result.limitations)
+    assert result.diagnostics[0].status == "done"
+    assert result.diagnostics[0].raw_count == 1
+
+
 def test_ceb_bidding_candidate_and_detail_parsing_records_metadata_and_attachments():
     list_html = """
     <html><body>
@@ -459,6 +511,29 @@ def test_bidding_adapter_degrades_blocked_and_empty_source():
     assert not result.documents
     assert any("反爬限制" in item for item in result.limitations)
     assert any("未返回" in item for item in result.limitations)
+    assert result.diagnostics[0].status == "blocked"
+
+
+def test_bidding_parser_rejects_navigation_false_positives_and_detects_encrypted_block():
+    nav_html = """
+    <a href="/xxgk/index.html">信息公开</a>
+    <a href="/notice/index.html">公告公示</a>
+    <a href="/bulletin/notice-robot.html">广东清洁机器人采购项目招标公告</a>
+    """
+    candidates = parse_bidding_candidates_page(nav_html, "http://www.cebpubservice.com/")
+
+    assert [item.title for item in candidates] == ["广东清洁机器人采购项目招标公告"]
+
+    blocked = BiddingProcurementAdapter(
+        client=FakeCebBiddingClient(search_html="<script>eval(function(){})</script>ctbpsp.com/cutominfoapi"),
+        max_queries=1,
+    ).collect(
+        request=RoboticsInsightRequest(enterprise_name="石头科技", context="扫地机器人"),
+        profile=EnterpriseProfile(name="石头科技", segments=["扫地机器人"], keywords=["清洁机器人"]),
+    )
+
+    assert not blocked.documents
+    assert blocked.diagnostics[0].status == "blocked"
 
 
 def test_metadata_only_bidding_notice_is_attributed_and_limited():
@@ -555,6 +630,9 @@ def test_document_handoff_handles_empty_sections_and_metadata_limitations():
     )
     empty_handoff = build_document_handoff(empty_result)
 
+    assert empty_result.status == "no_evidence"
+    assert not empty_result.opportunities
+    assert not empty_result.risks
     empty_section_by_id = {section["id"]: section for section in empty_handoff["recommendedSections"]}
     assert empty_section_by_id["opportunities"].get("emptyState") == "未发现高置信度机会信号。"
     assert empty_section_by_id["risks"].get("emptyState") == "未发现高置信度风险信号。"
@@ -631,14 +709,18 @@ def test_robotics_subagent_valid_input_persists_run_and_handoff_without_rag_rows
     assert payload["status"] == "done"
     assert payload["runId"] == "run-subagent-001"
     assert payload["documentHandoff"]["runId"] == "run-subagent-001"
+    assert payload["sourceDiagnostics"]
+    assert payload["documentHandoff"]["sourceDiagnostics"]
     assert payload["normalizedInput"]["upstreamEvidence"][0]["title"] == "搜索摘要"
     row = db_session.query(RoboticsInsightRun).filter_by(run_id="run-subagent-001").one()
     assert row.status == "done"
     assert row.request_json["enterprise"]["name"] == "石头科技"
     assert row.result_json["targetCompany"]["stockCode"] == "688169"
+    assert row.result_json["sourceDiagnostics"]
     assert row.handoff_json["documentType"] == "robotics_risk_opportunity_brief"
     stored = RoboticsInsightRunRepository(db_session).get_run_payload("run-subagent-001")
     assert stored["documentHandoff"]["title"] == "石头科技风险与机会洞察简报"
+    assert stored["sourceDiagnostics"]
     assert RoboticsInsightRunRepository(db_session).get_run_payload("missing-run") is None
     assert db_session.query(RagDocument).count() == 0
     assert db_session.query(RagChunk).count() == 0
@@ -849,6 +931,33 @@ def test_bidding_negative_cache_reuses_empty_source_result(db_session):
 
     assert any("未返回" in item for item in first.limitations)
     assert any("未返回" in item for item in second.limitations)
+    assert first.source_diagnostics[0].cache_decision == "live_fetch"
+    assert second.source_diagnostics[0].cache_decision == "negative_hit"
+
+
+def test_strategy_version_change_ignores_obsolete_negative_cache(db_session):
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    request = RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天")
+    repository = RoboticsEvidenceRepository(db_session)
+    repository.record_source_state(
+        source_type="gov_policy",
+        cache_key="legacy-stock-only-empty-cache-key",
+        status="empty",
+        message="旧策略空结果",
+        fetched_at=now,
+        expires_at=now + timedelta(hours=1),
+    )
+    adapter = CountingAdapter(source_type="gov_policy", documents=[_policy_doc()])
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        request,
+        adapters=[adapter],
+        evidence_cache=RoboticsEvidenceCache(db_session, now_factory=lambda: now),
+    )
+
+    assert adapter.calls == 1
+    assert result.sources
+    assert result.source_diagnostics[0].cache_decision == "live_fetch"
 
 
 def test_cache_miss_calls_adapter_and_persists_returned_evidence(db_session):
@@ -1276,6 +1385,7 @@ def test_cninfo_adapter_builds_stock_query_and_normalizes_metadata():
     assert document.metadata["announcementId"] == "ann-001"
     assert document.metadata["secCode"] == "688169"
     assert document.authority_score == 0.95
+    assert result.diagnostics[0].status == "done"
 
 
 def test_cninfo_adapter_uses_name_fallback_and_reports_empty_result():
@@ -1290,6 +1400,41 @@ def test_cninfo_adapter_uses_name_fallback_and_reports_empty_result():
     assert client.plans[0].query_type == "name"
     assert any("企业名称搜索" in item for item in result.limitations)
     assert any("未返回" in item for item in result.limitations)
+    assert result.diagnostics[0].status == "empty"
+
+
+def test_cninfo_stock_only_empty_falls_back_to_name_search_and_cleans_markup():
+    record = CninfoAnnouncementRecord(
+        announcement_id="ann-green",
+        title="<em>绿的谐波</em>关于获得客户订单的公告",
+        announcement_time="2026-04-18",
+        sec_code="688017",
+        sec_name="<em>绿的谐波</em>",
+        pdf_url="https://static.cninfo.com.cn/ann-green.pdf",
+    )
+    client = PlanAwareCninfoClient(
+        {
+            "stock_code": [],
+            "name_fallback:绿的谐波": [record],
+        }
+    )
+    adapter = CninfoAnnouncementAdapter(client=client, pdf_parse_limit=0)
+
+    result = adapter.collect(
+        request=RoboticsInsightRequest(enterprise_name="绿的谐波", stock_code="688017"),
+        profile=EnterpriseProfile(
+            name="绿的谐波",
+            stock_code="688017",
+            metadata={"securityName": "绿的谐波", "companyName": "苏州绿的谐波传动科技股份有限公司"},
+        ),
+    )
+
+    assert [plan.query_type for plan in client.plans[:2]] == ["stock_code", "name_fallback"]
+    assert result.documents
+    assert result.documents[0].title == "绿的谐波关于获得客户订单的公告"
+    assert result.documents[0].metadata["secName"] == "绿的谐波"
+    assert "stock_only" in result.diagnostics[0].query_strategy
+    assert "name_fallback" in result.diagnostics[0].query_strategy
 
 
 def test_cninfo_adapter_downloads_selected_pdf_and_persists_parse_status(db_session, monkeypatch):

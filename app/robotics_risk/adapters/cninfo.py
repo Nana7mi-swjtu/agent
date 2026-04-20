@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from ..pdf_text import PdfTextExtractionResult
-from ..schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument
+from ..schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument, SourceRetrievalDiagnostic
 from .base import SourceCollectionResult, SourceUnavailableError
 
 PdfTextExtractor = Callable[[Path], PdfTextExtractionResult | str]
@@ -82,8 +82,10 @@ class UrlopenCninfoClient:
         return records
 
     def _payload(self, plan: CninfoQueryPlan, *, page_num: int) -> dict[str, str]:
-        stock = plan.stock_code.strip()
-        search_key = stock or plan.search_key.strip()
+        stock_query_types = {"stock_code", "stock_org"}
+        is_stock_query = plan.query_type in stock_query_types
+        stock = plan.stock_code.strip() if is_stock_query else ""
+        search_key = stock if is_stock_query else plan.search_key.strip()
         payload = {
             "pageNum": str(page_num),
             "pageSize": str(max(1, plan.page_size)),
@@ -100,7 +102,7 @@ class UrlopenCninfoClient:
             "sortType": "",
             "isHLtitle": "true",
         }
-        if plan.org_id and stock:
+        if plan.org_id and stock and is_stock_query:
             payload["secid"] = f"{stock},{plan.org_id}"
         return payload
 
@@ -158,18 +160,48 @@ class CninfoAnnouncementAdapter:
         if self._documents:
             return SourceCollectionResult(documents=[_normalize_cninfo_document(item) for item in self._documents])
 
-        plan, limitations = self._build_query_plan(request=request, profile=profile)
+        started_at = _now_iso()
+        plans, limitations = self._build_query_plans(request=request, profile=profile)
+        attempted: list[str] = []
+        all_records: list[CninfoAnnouncementRecord] = []
+        relevant: list[CninfoAnnouncementRecord] = []
+        final_plan = plans[0]
         try:
-            records = self._client.query_announcements(plan)
+            for plan in plans:
+                attempted.append(_strategy_id(plan))
+                records = self._client.query_announcements(plan)
+                all_records.extend(records)
+                plan_relevant = _filter_relevant(records, request=request, profile=profile)
+                if plan_relevant:
+                    relevant = plan_relevant
+                    final_plan = plan
+                    break
         except SourceUnavailableError:
             raise
         except Exception as exc:
             raise SourceUnavailableError(self.source_type, str(exc)) from exc
 
-        relevant = _filter_relevant(records, request=request, profile=profile)
         if not relevant:
-            limitations.append("巨潮资讯网未返回可用于该企业和时间范围的公告证据。")
-            return SourceCollectionResult(documents=[], limitations=limitations)
+            message = "巨潮资讯网未返回可用于该企业和时间范围的公告证据。"
+            limitations.append(message)
+            return SourceCollectionResult(
+                documents=[],
+                limitations=limitations,
+                diagnostics=[
+                    SourceRetrievalDiagnostic(
+                        source_type=self.source_type,
+                        status="empty",
+                        query_strategy=">".join(attempted),
+                        cache_decision="live_fetch",
+                        raw_count=len(all_records),
+                        filtered_count=0,
+                        document_count=0,
+                        failure_reason=message,
+                        started_at=started_at,
+                        completed_at=_now_iso(),
+                    )
+                ],
+            )
 
         parsed_ids = {record.announcement_id for record in _select_pdf_records(relevant, self._pdf_parse_limit)}
         documents: list[SourceDocument] = []
@@ -181,40 +213,91 @@ class CninfoAnnouncementAdapter:
                 _record_to_document(
                     record,
                     parsed_result=parsed_result,
-                    query_plan=plan,
+                    query_plan=final_plan,
+                    attempted_strategies=attempted,
                 )
             )
-        return SourceCollectionResult(documents=documents, limitations=limitations)
+        return SourceCollectionResult(
+            documents=documents,
+            limitations=limitations,
+            diagnostics=[
+                SourceRetrievalDiagnostic(
+                    source_type=self.source_type,
+                    status="done",
+                    query_strategy=">".join(attempted),
+                    cache_decision="live_fetch",
+                    raw_count=len(all_records),
+                    filtered_count=len(relevant),
+                    document_count=len(documents),
+                    started_at=started_at,
+                    completed_at=_now_iso(),
+                )
+            ],
+        )
 
     def extract_pdf_text(self, pdf_url: str) -> str:
         result = self._extract_pdf(CninfoAnnouncementRecord(announcement_id="", title="", pdf_url=pdf_url))
         return result.text
 
-    def _build_query_plan(
+    def _build_query_plans(
         self,
         *,
         request: RoboticsInsightRequest,
         profile: EnterpriseProfile,
-    ) -> tuple[CninfoQueryPlan, list[str]]:
+    ) -> tuple[list[CninfoQueryPlan], list[str]]:
         metadata = getattr(profile, "metadata", {}) if hasattr(profile, "metadata") else {}
         stock_code = request.stock_code.strip() or profile.stock_code.strip()
         limitations: list[str] = []
-        query_type = "stock_code" if stock_code else "name"
         if not stock_code:
             limitations.append("未解析到可靠 A 股股票代码，巨潮资讯网公告检索退回企业名称搜索。")
         start_date, end_date = _date_window(request.time_range)
-        plan = CninfoQueryPlan(
-            search_key=request.enterprise_name.strip(),
-            stock_code=stock_code,
-            column=str(metadata.get("cninfoColumn") or _column_for_stock(stock_code) or "szse"),
-            org_id=str(metadata.get("cninfoOrgId") or ""),
-            start_date=start_date,
-            end_date=end_date,
-            page_size=self._page_size,
-            max_pages=self._max_pages,
-            query_type=query_type,
-        )
-        return plan, limitations
+        column = str(metadata.get("cninfoColumn") or _column_for_stock(stock_code) or "szse")
+        org_id = str(metadata.get("cninfoOrgId") or "")
+        terms = _fallback_terms(request=request, profile=profile, metadata=metadata)
+        plans: list[CninfoQueryPlan] = []
+        if stock_code:
+            plans.append(
+                CninfoQueryPlan(
+                    search_key=request.enterprise_name.strip(),
+                    stock_code=stock_code,
+                    column=column,
+                    org_id=org_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    page_size=self._page_size,
+                    max_pages=self._max_pages,
+                    query_type="stock_org" if org_id else "stock_code",
+                )
+            )
+            if not org_id:
+                limitations.append("巨潮资讯网缺少 cninfoOrgId，若股票代码检索为空将尝试企业名称回退搜索。")
+        for term in terms:
+            plans.append(
+                CninfoQueryPlan(
+                    search_key=term,
+                    stock_code=stock_code,
+                    column=column,
+                    org_id=org_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    page_size=self._page_size,
+                    max_pages=self._max_pages,
+                    query_type="name_fallback" if stock_code else "name",
+                )
+            )
+        if not plans:
+            plans.append(
+                CninfoQueryPlan(
+                    search_key=request.enterprise_name.strip(),
+                    column=column,
+                    start_date=start_date,
+                    end_date=end_date,
+                    page_size=self._page_size,
+                    max_pages=self._max_pages,
+                    query_type="name",
+                )
+            )
+        return plans, limitations
 
     def _extract_pdf(self, record: CninfoAnnouncementRecord) -> PdfTextExtractionResult:
         if self._pdf_text_extractor is None or not record.pdf_url:
@@ -265,7 +348,7 @@ def _records_from_payload(payload: dict[str, Any], *, static_pdf_base_url: str) 
                 title=title or "未命名公告",
                 announcement_time=_format_cninfo_time(item.get("announcementTime") or item.get("announcement_time")),
                 sec_code=str(item.get("secCode") or item.get("sec_code") or "").strip(),
-                sec_name=str(item.get("secName") or item.get("sec_name") or "").strip(),
+                sec_name=_clean_title(str(item.get("secName") or item.get("sec_name") or "")),
                 org_id=str(item.get("orgId") or item.get("org_id") or "").strip(),
                 adjunct_url=adjunct_url,
                 pdf_url=pdf_url,
@@ -281,6 +364,7 @@ def _record_to_document(
     *,
     parsed_result: PdfTextExtractionResult | None,
     query_plan: CninfoQueryPlan,
+    attempted_strategies: list[str] | None = None,
 ) -> SourceDocument:
     parse_metadata: dict[str, Any] = {}
     content = ""
@@ -305,13 +389,15 @@ def _record_to_document(
         **parse_metadata,
         "announcementId": record.announcement_id,
         "secCode": record.sec_code,
-        "secName": record.sec_name,
+        "secName": _clean_title(record.sec_name),
         "orgId": record.org_id,
         "announcementTime": record.announcement_time,
         "announcementType": record.announcement_type,
         "adjunctUrl": record.adjunct_url,
         "pdfUrl": record.pdf_url,
         "queryType": query_plan.query_type,
+        "queryStrategy": _strategy_id(query_plan),
+        "attemptedQueryStrategies": list(attempted_strategies or [_strategy_id(query_plan)]),
         "parseStatus": parse_status,
         "status": status,
     }
@@ -319,11 +405,11 @@ def _record_to_document(
         id=f"cninfo:{record.announcement_id}",
         source_type="cninfo_announcement",
         source_name=CninfoAnnouncementAdapter.source_name,
-        title=record.title,
+        title=_clean_title(record.title),
         content=content or record.title,
         url=record.pdf_url or record.adjunct_url,
         published_at=record.announcement_time,
-        authority_score=0.95 if query_plan.query_type == "stock_code" else 0.82,
+        authority_score=0.95 if query_plan.query_type in {"stock_code", "stock_org"} else 0.82,
         relevance_scope="enterprise",
         metadata=metadata,
     )
@@ -393,7 +479,43 @@ def _pdf_url(adjunct_url: str, *, static_pdf_base_url: str) -> str:
 
 
 def _clean_title(value: str) -> str:
-    return value.replace("<em>", "").replace("</em>", "").strip()
+    return re.sub(r"</?em[^>]*>", "", value or "", flags=re.I).strip()
+
+
+def _fallback_terms(
+    *,
+    request: RoboticsInsightRequest,
+    profile: EnterpriseProfile,
+    metadata: dict[str, Any],
+) -> list[str]:
+    values = [
+        str(metadata.get("securityName") or ""),
+        str(metadata.get("companyName") or ""),
+        request.enterprise_name,
+        profile.name,
+    ]
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = _clean_title(str(value or "")).strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            result.append(clean)
+    return result
+
+
+def _strategy_id(plan: CninfoQueryPlan) -> str:
+    if plan.query_type == "stock_org":
+        return "cninfo.stock_org.v1"
+    if plan.query_type == "stock_code":
+        return "cninfo.stock_only.v1"
+    if plan.query_type == "name_fallback":
+        return f"cninfo.name_fallback.v1:{plan.search_key}"
+    return f"cninfo.name.v1:{plan.search_key}"
+
+
+def _now_iso() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat()
 
 
 def _format_cninfo_time(value: Any) -> str:

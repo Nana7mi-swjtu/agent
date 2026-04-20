@@ -57,6 +57,7 @@ class EnterpriseProfile:
     chain_positions: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return _drop_empty(self)
@@ -77,6 +78,38 @@ class SourceDocument:
 
     def to_dict(self) -> dict[str, Any]:
         return _drop_empty(self)
+
+
+@dataclass
+class SourceRetrievalDiagnostic:
+    source_type: str
+    status: str
+    query_strategy: str = ""
+    cache_decision: str = ""
+    raw_count: int | None = None
+    filtered_count: int | None = None
+    document_count: int | None = None
+    failure_reason: str = ""
+    started_at: str = ""
+    completed_at: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "sourceType": self.source_type,
+                "status": self.status,
+                "queryStrategy": self.query_strategy,
+                "cacheDecision": self.cache_decision,
+                "rawCount": self.raw_count,
+                "filteredCount": self.filtered_count,
+                "documentCount": self.document_count,
+                "failureReason": self.failure_reason,
+                "startedAt": self.started_at,
+                "completedAt": self.completed_at,
+                "metadata": dict(self.metadata or {}),
+            }
+        )
 
 
 @dataclass
@@ -126,6 +159,7 @@ class RoboticsInsightResult:
     limitations: list[str]
     brief_markdown: str
     status: str = "done"
+    source_diagnostics: list[SourceRetrievalDiagnostic] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -140,6 +174,7 @@ class RoboticsInsightResult:
             "events": [item.to_dict() for item in self.events],
             "sources": [item.to_dict() for item in self.sources],
             "limitations": list(self.limitations),
+            "sourceDiagnostics": [item.to_dict() for item in self.source_diagnostics],
             "briefMarkdown": self.brief_markdown,
         }
         return _drop_empty(payload)

@@ -16,7 +16,7 @@ from ..bidding_planning import (
     BiddingSearchPlan,
     build_bidding_search_plan,
 )
-from ..schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument
+from ..schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument, SourceRetrievalDiagnostic
 from .base import SourceCollectionResult, SourceUnavailableError
 
 
@@ -71,7 +71,7 @@ class CebBiddingClient(Protocol):
 
 
 class UrlopenCebBiddingClient:
-    base_url = "https://custominfo.cebpubservice.com"
+    base_url = "http://www.cebpubservice.com"
     search_path = "/ctpsp_iiss/searchbusinesstypebeforedooraction/getSearch.do"
 
     def __init__(
@@ -149,8 +149,25 @@ class BiddingProcurementAdapter:
         request: RoboticsInsightRequest,
         profile: EnterpriseProfile,
     ) -> SourceCollectionResult:
+        started_at = _now_iso()
         if self._documents:
-            return SourceCollectionResult(documents=[_normalize_bidding_document(item) for item in self._documents])
+            documents = [_normalize_bidding_document(item) for item in self._documents]
+            return SourceCollectionResult(
+                documents=documents,
+                diagnostics=[
+                    SourceRetrievalDiagnostic(
+                        source_type=self.source_type,
+                        status="done",
+                        query_strategy="cebpubservice.injected.v1",
+                        cache_decision="cache_bypass",
+                        raw_count=len(documents),
+                        filtered_count=len(documents),
+                        document_count=len(documents),
+                        started_at=started_at,
+                        completed_at=_now_iso(),
+                    )
+                ],
+            )
 
         plan = self._planner(
             request=request,
@@ -160,11 +177,30 @@ class BiddingProcurementAdapter:
             detail_fetch_limit=self._detail_fetch_limit,
         )
         limitations = list(getattr(plan, "limitations", []) or [])
-        candidates, source_limitations = self._collect_candidates(plan)
+        candidates, source_limitations, stats = self._collect_candidates(plan)
         limitations.extend(source_limitations)
         if not candidates:
-            limitations.append("中国招标投标公共服务平台未返回可用于该企业机器人行业分析的招投标证据。")
-            return SourceCollectionResult(documents=[], limitations=_dedupe(limitations))
+            message = "中国招标投标公共服务平台未返回可用于该企业机器人行业分析的招投标证据。"
+            limitations.append(message)
+            status = "blocked" if stats.get("blocked") else "unavailable" if stats.get("unavailable") else "empty"
+            return SourceCollectionResult(
+                documents=[],
+                limitations=_dedupe(limitations),
+                diagnostics=[
+                    SourceRetrievalDiagnostic(
+                        source_type=self.source_type,
+                        status=status,
+                        query_strategy="cebpubservice.live_entrypoint.v1",
+                        cache_decision="live_fetch",
+                        raw_count=int(stats.get("raw_count") or 0),
+                        filtered_count=0,
+                        document_count=0,
+                        failure_reason=message if status == "empty" else "; ".join(source_limitations),
+                        started_at=started_at,
+                        completed_at=_now_iso(),
+                    )
+                ],
+            )
 
         documents: list[SourceDocument] = []
         target_terms = _target_terms(request=request, profile=profile)
@@ -187,11 +223,29 @@ class BiddingProcurementAdapter:
                 limitations.append(f"中国招标投标公共服务平台公告正文提取受限：{detail.title}")
             documents.append(_detail_to_document(detail, plan=plan, query_term=query_term, candidate=candidate, target_terms=target_terms))
 
-        return SourceCollectionResult(documents=_dedupe_documents(documents), limitations=_dedupe(limitations))
+        documents = _dedupe_documents(documents)
+        return SourceCollectionResult(
+            documents=documents,
+            limitations=_dedupe(limitations),
+            diagnostics=[
+                SourceRetrievalDiagnostic(
+                    source_type=self.source_type,
+                    status="done" if documents else "parser_error",
+                    query_strategy="cebpubservice.live_entrypoint.v1",
+                    cache_decision="live_fetch",
+                    raw_count=int(stats.get("raw_count") or len(candidates)),
+                    filtered_count=len(candidates),
+                    document_count=len(documents),
+                    started_at=started_at,
+                    completed_at=_now_iso(),
+                )
+            ],
+        )
 
-    def _collect_candidates(self, plan: BiddingSearchPlan) -> tuple[list[BiddingNoticeCandidate], list[str]]:
+    def _collect_candidates(self, plan: BiddingSearchPlan) -> tuple[list[BiddingNoticeCandidate], list[str], dict[str, Any]]:
         candidates: list[BiddingNoticeCandidate] = []
         limitations: list[str] = []
+        stats: dict[str, Any] = {"raw_count": 0, "blocked": False, "unavailable": False}
         for term in plan.query_terms:
             for category in plan.notice_categories:
                 for page_num in range(1, plan.max_pages + 1):
@@ -199,12 +253,15 @@ class BiddingProcurementAdapter:
                         page = self._client.fetch_search_page(query=term.keyword, notice_category=category, page=page_num)
                     except SourceUnavailableError as exc:
                         limitations.append(f"中国招标投标公共服务平台搜索不可用：{term.keyword}：{exc}")
+                        stats["unavailable"] = True
                         break
                     except Exception as exc:
                         limitations.append(f"中国招标投标公共服务平台搜索失败：{term.keyword}：{exc}")
+                        stats["unavailable"] = True
                         break
                     if is_blocked_bidding_page(page.html):
                         limitations.append(f"中国招标投标公共服务平台搜索可能被反爬限制：{term.keyword}")
+                        stats["blocked"] = True
                         break
                     page_candidates = parse_bidding_candidates_page(
                         page.html,
@@ -212,10 +269,11 @@ class BiddingProcurementAdapter:
                         notice_category=category,
                         query_term=term,
                     )
+                    stats["raw_count"] += len(page_candidates)
                     candidates.extend(page_candidates)
                     if not page_candidates:
                         break
-        return dedupe_bidding_candidates(candidates), limitations
+        return dedupe_bidding_candidates(candidates), limitations, stats
 
 
 def parse_bidding_candidates_page(
@@ -351,7 +409,20 @@ def is_blocked_bidding_page(raw_html: str) -> bool:
     lowered = text.lower()
     if not text:
         return True
-    blocked_terms = ("captcha", "验证码", "访问过于频繁", "安全验证", "禁止访问", "forbidden", "service unavailable", "blocked")
+    blocked_terms = (
+        "captcha",
+        "验证码",
+        "访问过于频繁",
+        "安全验证",
+        "禁止访问",
+        "forbidden",
+        "service unavailable",
+        "blocked",
+        "anti",
+        "waf",
+        "eval(function",
+        "ctbpsp.com/cutominfoapi",
+    )
     if any(term in lowered or term in text for term in blocked_terms):
         return True
     return len(text) < 20 and "<html" in (raw_html or "").lower()
@@ -548,10 +619,13 @@ def _candidate_query_term(candidate: BiddingNoticeCandidate, plan: BiddingSearch
 def _looks_like_bidding_link(title: str, url: str) -> bool:
     if not title or len(title) < 4:
         return False
-    if any(skip in title for skip in ("首页", "登录", "注册", "帮助", "联系我们", "客户端下载")):
+    if any(skip in title for skip in ("首页", "登录", "注册", "帮助", "联系我们", "客户端下载", "信息公开", "公告公示", "政策法规", "服务指南", "交易平台", "平台介绍")):
         return False
     text = f"{title} {url}".lower()
-    return any(term in text for term in ("招标", "采购", "中标", "成交", "候选", "变更", "澄清", "cebpubservice", "bulletin", "notice"))
+    title_terms = ("招标", "采购", "中标", "成交", "候选", "变更", "澄清", "资格预审")
+    if any(term in title for term in title_terms):
+        return True
+    return bool(re.search(r"/(?:bulletin|notice|result|tender|bid)[/\-_]", url, flags=re.I))
 
 
 def _content_html(raw_html: str) -> str:
@@ -749,6 +823,12 @@ def _encoding_from_headers(headers: Any) -> str:
 
 def _hash_text(value: str | None) -> str:
     return hashlib.sha1(str(value or "").encode("utf-8")).hexdigest()
+
+
+def _now_iso() -> str:
+    from datetime import datetime, UTC
+
+    return datetime.now(UTC).replace(microsecond=0, tzinfo=None).isoformat()
 
 
 def _dedupe(values: list[str]) -> list[str]:

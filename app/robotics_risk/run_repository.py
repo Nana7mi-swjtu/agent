@@ -102,14 +102,18 @@ class RoboticsInsightRunRepository:
 
 
 def run_to_payload(row: RoboticsInsightRun) -> dict[str, Any]:
+    result_payload = row.result_json or {}
+    handoff_payload = row.handoff_json or {}
+    source_diagnostics = result_payload.get("sourceDiagnostics") or handoff_payload.get("sourceDiagnostics") or []
     return {
         "runId": row.run_id,
         "enterpriseName": row.enterprise_name,
         "stockCode": row.stock_code or "",
         "status": row.status,
         "request": row.request_json or {},
-        "result": row.result_json or {},
-        "documentHandoff": row.handoff_json or {},
+        "result": result_payload,
+        "documentHandoff": handoff_payload,
+        "sourceDiagnostics": source_diagnostics,
         "errorMessage": row.error_message or "",
         "createdAt": _format_datetime(row.created_at),
         "startedAt": _format_datetime(row.started_at),

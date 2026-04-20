@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from .schemas import AnalysisScope, EnterpriseProfile, InsightEvent, InsightSignal, RoboticsInsightResult, SourceDocument
+from .schemas import (
+    AnalysisScope,
+    EnterpriseProfile,
+    InsightEvent,
+    InsightSignal,
+    RoboticsInsightResult,
+    SourceDocument,
+    SourceRetrievalDiagnostic,
+)
 
 MODULE_ID = "robotics_enterprise_risk_opportunity"
 
@@ -15,6 +23,7 @@ def build_result(
     events: list[InsightEvent],
     sources: list[SourceDocument],
     limitations: list[str],
+    source_diagnostics: list[SourceRetrievalDiagnostic] | None = None,
 ) -> RoboticsInsightResult:
     summary = {
         "opportunity": _summary_line(opportunities, "机会"),
@@ -30,6 +39,7 @@ def build_result(
     )
     return RoboticsInsightResult(
         module=MODULE_ID,
+        status="no_evidence" if not sources else "done",
         target_company=target_company,
         analysis_scope=analysis_scope,
         enterprise_profile=profile,
@@ -40,6 +50,7 @@ def build_result(
         sources=sources,
         limitations=limitations,
         brief_markdown=brief,
+        source_diagnostics=list(source_diagnostics or []),
     )
 
 

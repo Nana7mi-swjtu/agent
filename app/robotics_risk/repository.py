@@ -21,6 +21,11 @@ SOURCE_POLICY = "gov_policy"
 SOURCE_CNINFO = "cninfo_announcement"
 SOURCE_BIDDING = "bidding_procurement"
 NEGATIVE_STATUSES = {"failed", "empty"}
+RETRIEVAL_STRATEGY_VERSIONS = {
+    SOURCE_POLICY: "gov_policy.json_list.v1",
+    SOURCE_CNINFO: "cninfo.multi_strategy.v1",
+    SOURCE_BIDDING: "cebpubservice.live_entrypoint.v1",
+}
 
 
 def build_cache_key(
@@ -31,6 +36,7 @@ def build_cache_key(
 ) -> str:
     parts = [
         source_type,
+        retrieval_strategy_version(source_type),
         request.enterprise_name.strip(),
         request.stock_code.strip(),
         request.time_range.strip(),
@@ -38,6 +44,10 @@ def build_cache_key(
         "|".join(sorted(_clean_values([*request.dimensions, *profile.keywords]))),
     ]
     return _hash_text("\n".join(parts))
+
+
+def retrieval_strategy_version(source_type: str) -> str:
+    return RETRIEVAL_STRATEGY_VERSIONS.get(source_type, f"{source_type}.default.v1")
 
 
 class RoboticsEvidenceRepository:
@@ -168,7 +178,7 @@ class RoboticsEvidenceRepository:
             source_name=_source_name(source_type),
             title="来源暂无可用证据" if status == "empty" else "来源不可用",
             content="",
-            metadata={"status": status, "errorMessage": message},
+            metadata={"status": status, "errorMessage": message, "retrievalStrategy": retrieval_strategy_version(source_type)},
         )
         return self.upsert_source_document(synthetic, cache_key=cache_key, fetched_at=fetched_at, expires_at=expires_at)
 
@@ -222,6 +232,7 @@ class RoboticsEvidenceRepository:
         expires_at: datetime | None,
     ) -> RoboticsPolicyDocument:
         metadata = dict(document.metadata or {})
+        metadata.setdefault("retrievalStrategy", retrieval_strategy_version(SOURCE_POLICY))
         policy_id = _first_text(metadata, "policyId", "policy_id", "sourceDocumentId") or _stable_id(
             prefix="policy",
             document=document,
@@ -265,6 +276,7 @@ class RoboticsEvidenceRepository:
         expires_at: datetime | None,
     ) -> RoboticsCninfoAnnouncement:
         metadata = dict(document.metadata or {})
+        metadata.setdefault("retrievalStrategy", retrieval_strategy_version(SOURCE_CNINFO))
         announcement_id = _first_text(metadata, "announcementId", "announcement_id", "sourceDocumentId") or _stable_id(
             prefix="cninfo",
             document=document,
@@ -320,6 +332,7 @@ class RoboticsEvidenceRepository:
         expires_at: datetime | None,
     ) -> RoboticsBiddingDocument:
         metadata = dict(document.metadata or {})
+        metadata.setdefault("retrievalStrategy", retrieval_strategy_version(SOURCE_BIDDING))
         notice_id = _first_text(metadata, "noticeId", "notice_id", "sourceDocumentId") or _stable_id(
             prefix="bidding",
             document=document,

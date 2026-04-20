@@ -14,7 +14,7 @@ from .adapters import (
 from .extraction import extract_events
 from .profiling import build_enterprise_profile
 from .rendering import build_result
-from .schemas import AnalysisScope, RoboticsInsightRequest, RoboticsInsightResult, SourceDocument
+from .schemas import AnalysisScope, RoboticsInsightRequest, RoboticsInsightResult, SourceDocument, SourceRetrievalDiagnostic
 from .scoring import build_signals
 
 
@@ -44,11 +44,12 @@ def analyze_robotics_enterprise_risk_opportunity(
     )
     profile = build_enterprise_profile(normalized_request)
     if resolution is not None:
+        profile.metadata.update(resolution.to_metadata())
         profile.limitations.extend(resolution.limitations)
         if resolution.profile is not None:
             profile.segments = _dedupe([*profile.segments, *resolution.profile.industry_segments])
             profile.keywords = _dedupe([*profile.keywords, *resolution.profile.robotics_keywords])
-    documents, source_limitations = _collect_documents(
+    documents, source_limitations, source_diagnostics = _collect_documents(
         request=normalized_request,
         profile=profile,
         adapters=list(adapters) if adapters is not None else _default_adapters(),
@@ -74,6 +75,7 @@ def analyze_robotics_enterprise_risk_opportunity(
         events=events,
         sources=documents,
         limitations=_dedupe(limitations),
+        source_diagnostics=source_diagnostics,
     )
 
 
@@ -99,29 +101,57 @@ def _collect_documents(
     profile,
     adapters: list[EvidenceSourceAdapter],
     evidence_cache: Any | None = None,
-) -> tuple[list[SourceDocument], list[str]]:
+) -> tuple[list[SourceDocument], list[str], list[SourceRetrievalDiagnostic]]:
     if evidence_cache is not None:
         try:
             result = evidence_cache.collect(request=request, profile=profile, adapters=adapters)
         except Exception as exc:
-            return [], [f"机器人风险机会证据缓存不可用：{exc}"]
-        return _dedupe_documents(result.documents), _dedupe(result.limitations)
+            return [], [f"机器人风险机会证据缓存不可用：{exc}"], [
+                SourceRetrievalDiagnostic(
+                    source_type="evidence_cache",
+                    status="unavailable",
+                    cache_decision="cache_bypass",
+                    document_count=0,
+                    failure_reason=str(exc),
+                )
+            ]
+        return _dedupe_documents(result.documents), _dedupe(result.limitations), list(result.diagnostics)
 
     documents: list[SourceDocument] = []
     limitations: list[str] = []
+    diagnostics: list[SourceRetrievalDiagnostic] = []
     for adapter in adapters:
         source_type = str(getattr(adapter, "source_type", "unknown"))
         try:
             result = adapter.collect(request=request, profile=profile)
         except SourceUnavailableError as exc:
             limitations.append(f"{exc.source_type}来源不可用：{exc}")
+            diagnostics.append(
+                SourceRetrievalDiagnostic(
+                    source_type=exc.source_type,
+                    status="unavailable",
+                    cache_decision="cache_bypass",
+                    document_count=0,
+                    failure_reason=str(exc),
+                )
+            )
             continue
         except Exception as exc:
             limitations.append(f"{source_type}来源不可用：{exc}")
+            diagnostics.append(
+                SourceRetrievalDiagnostic(
+                    source_type=source_type,
+                    status="unavailable",
+                    cache_decision="cache_bypass",
+                    document_count=0,
+                    failure_reason=str(exc),
+                )
+            )
             continue
         documents.extend(result.documents)
         limitations.extend(result.limitations)
-    return _dedupe_documents(documents), _dedupe(limitations)
+        diagnostics.extend(result.diagnostics)
+    return _dedupe_documents(documents), _dedupe(limitations), diagnostics
 
 
 def _resolve_company(

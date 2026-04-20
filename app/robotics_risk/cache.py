@@ -16,9 +16,10 @@ from .repository import (
     SOURCE_POLICY,
     RoboticsEvidenceRepository,
     build_cache_key,
+    retrieval_strategy_version,
     rows_to_source_documents,
 )
-from .schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument
+from .schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument, SourceRetrievalDiagnostic
 
 
 @dataclass(frozen=True)
@@ -63,18 +64,20 @@ class RoboticsEvidenceCache:
     ) -> SourceCollectionResult:
         documents: list[SourceDocument] = []
         limitations: list[str] = []
+        diagnostics: list[SourceRetrievalDiagnostic] = []
         for adapter in adapters:
             source_type = str(getattr(adapter, "source_type", "unknown"))
             if source_type not in self._policies:
-                adapter_documents, adapter_limitations = self._collect_uncached_adapter(
+                adapter_documents, adapter_limitations, adapter_diagnostics = self._collect_uncached_adapter(
                     adapter=adapter,
                     request=request,
                     profile=profile,
                 )
                 documents.extend(adapter_documents)
                 limitations.extend(adapter_limitations)
+                diagnostics.extend(adapter_diagnostics)
                 continue
-            source_documents, source_limitations = self._collect_source(
+            source_documents, source_limitations, source_diagnostics = self._collect_source(
                 source_type=source_type,
                 adapter=adapter,
                 request=request,
@@ -82,7 +85,8 @@ class RoboticsEvidenceCache:
             )
             documents.extend(source_documents)
             limitations.extend(source_limitations)
-        return SourceCollectionResult(documents=documents, limitations=_dedupe(limitations))
+            diagnostics.extend(source_diagnostics)
+        return SourceCollectionResult(documents=documents, limitations=_dedupe(limitations), diagnostics=diagnostics)
 
     def _collect_source(
         self,
@@ -91,7 +95,7 @@ class RoboticsEvidenceCache:
         adapter: EvidenceSourceAdapter,
         request: RoboticsInsightRequest,
         profile: EnterpriseProfile,
-    ) -> tuple[list[SourceDocument], list[str]]:
+    ) -> tuple[list[SourceDocument], list[str], list[SourceRetrievalDiagnostic]]:
         now = self._now_factory()
         policy = self._policies[source_type]
         cache_key = build_cache_key(source_type=source_type, request=request, profile=profile)
@@ -105,11 +109,31 @@ class RoboticsEvidenceCache:
         )
         fresh_rows = [row for row in cached_rows if self._row_is_fresh(row, now=now, ttl=policy.positive_ttl)]
         if fresh_rows:
-            return rows_to_source_documents(fresh_rows), []
+            documents = rows_to_source_documents(fresh_rows)
+            return documents, [], [
+                _diagnostic(
+                    source_type=source_type,
+                    status="done",
+                    cache_decision="fresh_hit",
+                    document_count=len(documents),
+                    raw_count=len(fresh_rows),
+                    filtered_count=len(fresh_rows),
+                )
+            ]
 
         negative_rows = self.repository.query_negative_records(source_type=source_type, cache_key=cache_key, now=now)
         if negative_rows and not cached_rows:
-            return [], [_negative_limitation(source_type, negative_rows[0])]
+            row = negative_rows[0]
+            status = "empty" if getattr(row, "status", "") == "empty" else "unavailable"
+            return [], [_negative_limitation(source_type, row)], [
+                _diagnostic(
+                    source_type=source_type,
+                    status=status,
+                    cache_decision="negative_hit",
+                    document_count=0,
+                    failure_reason=str(getattr(row, "error_message", "") or ""),
+                )
+            ]
 
         limitations: list[str] = []
         if cached_rows:
@@ -119,17 +143,44 @@ class RoboticsEvidenceCache:
         except SourceUnavailableError as exc:
             message = f"{exc.source_type}来源不可用：{exc}"
             self._record_negative(source_type, cache_key, "failed", message, now, policy.negative_ttl)
-            return rows_to_source_documents(cached_rows), [*limitations, message]
+            documents = rows_to_source_documents(cached_rows)
+            return documents, [*limitations, message], [
+                _diagnostic(
+                    source_type=source_type,
+                    status="unavailable",
+                    cache_decision="stale_refresh" if cached_rows else "live_fetch",
+                    document_count=len(documents),
+                    failure_reason=message,
+                )
+            ]
         except Exception as exc:
             message = f"{source_type}来源不可用：{exc}"
             self._record_negative(source_type, cache_key, "failed", message, now, policy.negative_ttl)
-            return rows_to_source_documents(cached_rows), [*limitations, message]
+            documents = rows_to_source_documents(cached_rows)
+            return documents, [*limitations, message], [
+                _diagnostic(
+                    source_type=source_type,
+                    status="unavailable",
+                    cache_decision="stale_refresh" if cached_rows else "live_fetch",
+                    document_count=len(documents),
+                    failure_reason=message,
+                )
+            ]
 
         limitations.extend(result.limitations)
+        cache_decision = "stale_refresh" if cached_rows else "live_fetch"
         if not result.documents:
             message = _empty_result_message(source_type, result.limitations)
             self._record_negative(source_type, cache_key, "empty", message, now, policy.negative_ttl)
-            return rows_to_source_documents(cached_rows), limitations
+            documents = rows_to_source_documents(cached_rows)
+            return documents, limitations, _diagnostics_with_cache_decision(
+                result.diagnostics,
+                source_type=source_type,
+                cache_decision=cache_decision,
+                fallback_status="empty" if not documents else "partial",
+                document_count=len(documents),
+                failure_reason=message,
+            )
 
         rows = []
         expires_at = now + policy.positive_ttl
@@ -142,7 +193,14 @@ class RoboticsEvidenceCache:
                     expires_at=expires_at,
                 )
             )
-        return rows_to_source_documents(rows), limitations
+        documents = rows_to_source_documents(rows)
+        return documents, limitations, _diagnostics_with_cache_decision(
+            result.diagnostics,
+            source_type=source_type,
+            cache_decision=cache_decision,
+            fallback_status="done",
+            document_count=len(documents),
+        )
 
     def _query_rows(
         self,
@@ -218,15 +276,23 @@ class RoboticsEvidenceCache:
         adapter: EvidenceSourceAdapter,
         request: RoboticsInsightRequest,
         profile: EnterpriseProfile,
-    ) -> tuple[list[SourceDocument], list[str]]:
+    ) -> tuple[list[SourceDocument], list[str], list[SourceRetrievalDiagnostic]]:
         source_type = str(getattr(adapter, "source_type", "unknown"))
         try:
             result = adapter.collect(request=request, profile=profile)
         except SourceUnavailableError as exc:
-            return [], [f"{exc.source_type}来源不可用：{exc}"]
+            message = f"{exc.source_type}来源不可用：{exc}"
+            return [], [message], [_diagnostic(source_type=exc.source_type, status="unavailable", cache_decision="cache_bypass", failure_reason=message)]
         except Exception as exc:
-            return [], [f"{source_type}来源不可用：{exc}"]
-        return result.documents, result.limitations
+            message = f"{source_type}来源不可用：{exc}"
+            return [], [message], [_diagnostic(source_type=source_type, status="unavailable", cache_decision="cache_bypass", failure_reason=message)]
+        return result.documents, result.limitations, _diagnostics_with_cache_decision(
+            result.diagnostics,
+            source_type=source_type,
+            cache_decision="cache_bypass",
+            fallback_status="done" if result.documents else "empty",
+            document_count=len(result.documents),
+        )
 
     def _ensure_company_profiles_seeded(self) -> None:
         if not self._seed_company_profiles or self._company_profiles_seeded:
@@ -271,6 +337,67 @@ def _source_label(source_type: str) -> str:
     if source_type == SOURCE_BIDDING:
         return "中国招标投标公共服务平台"
     return source_type
+
+
+def _diagnostic(
+    *,
+    source_type: str,
+    status: str,
+    cache_decision: str,
+    document_count: int = 0,
+    raw_count: int | None = None,
+    filtered_count: int | None = None,
+    failure_reason: str = "",
+) -> SourceRetrievalDiagnostic:
+    return SourceRetrievalDiagnostic(
+        source_type=source_type,
+        status=status,
+        query_strategy=retrieval_strategy_version(source_type),
+        cache_decision=cache_decision,
+        raw_count=raw_count,
+        filtered_count=filtered_count,
+        document_count=document_count,
+        failure_reason=failure_reason,
+    )
+
+
+def _diagnostics_with_cache_decision(
+    diagnostics: list[SourceRetrievalDiagnostic],
+    *,
+    source_type: str,
+    cache_decision: str,
+    fallback_status: str,
+    document_count: int,
+    failure_reason: str = "",
+) -> list[SourceRetrievalDiagnostic]:
+    if not diagnostics:
+        return [
+            _diagnostic(
+                source_type=source_type,
+                status=fallback_status,
+                cache_decision=cache_decision,
+                document_count=document_count,
+                failure_reason=failure_reason,
+            )
+        ]
+    result: list[SourceRetrievalDiagnostic] = []
+    for item in diagnostics:
+        result.append(
+            SourceRetrievalDiagnostic(
+                source_type=item.source_type or source_type,
+                status=item.status or fallback_status,
+                query_strategy=item.query_strategy or retrieval_strategy_version(source_type),
+                cache_decision=cache_decision,
+                raw_count=item.raw_count,
+                filtered_count=item.filtered_count,
+                document_count=item.document_count if item.document_count is not None else document_count,
+                failure_reason=item.failure_reason or failure_reason,
+                started_at=item.started_at,
+                completed_at=item.completed_at,
+                metadata=dict(item.metadata or {}),
+            )
+        )
+    return result
 
 
 def _dedupe(values: list[str]) -> list[str]:

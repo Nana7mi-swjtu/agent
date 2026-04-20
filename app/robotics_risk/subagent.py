@@ -152,6 +152,7 @@ class RoboticsRiskSubagentOutput:
     document_handoff: dict[str, Any] = field(default_factory=dict)
     limitations: list[str] = field(default_factory=list)
     source_references: list[dict[str, Any]] = field(default_factory=list)
+    source_diagnostics: list[dict[str, Any]] = field(default_factory=list)
     normalized_input: dict[str, Any] = field(default_factory=dict)
     error_message: str = ""
 
@@ -166,6 +167,7 @@ class RoboticsRiskSubagentOutput:
                 "documentHandoff": self.document_handoff,
                 "limitations": list(self.limitations),
                 "sourceReferences": list(self.source_references),
+                "sourceDiagnostics": list(self.source_diagnostics),
                 "normalizedInput": self.normalized_input,
                 "errorMessage": self.error_message,
             }
@@ -246,6 +248,7 @@ def run_robotics_risk_subagent(
             document_handoff=handoff_payload,
             limitations=list(result.limitations),
             source_references=_source_references(result),
+            source_diagnostics=[item.to_dict() for item in result.source_diagnostics],
             normalized_input=normalized_payload,
         )
     except RoboticsInsightValidationError as exc:

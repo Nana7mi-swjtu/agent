@@ -72,6 +72,7 @@ def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
             "evidenceTable": evidence_rows,
             "citationMap": citation_map,
             "limitations": limitations,
+            "sourceDiagnostics": [item.to_dict() for item in result.source_diagnostics],
             "compactMarkdown": _compact_markdown(result.brief_markdown),
         }
     )
