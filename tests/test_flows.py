@@ -8,7 +8,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.agent import services as agent_services
 from app.agent.services import AgentServiceError
-from app.models import AgentChatJob, AgentConversationMessage, AgentConversationThread, AnalysisSession, User
+from app.models import AgentChatJob, AgentConversationMessage, AgentConversationThread, AnalysisReport, AnalysisSession, User
 
 
 def _auth_headers(client, user_id: int) -> dict[str, str]:
@@ -549,6 +549,8 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
 
     assert payload["reply"] == "主 agent 汇总了分析模块结果"
     assert payload["analysisResults"]["robotics_risk"]["runId"] == "rrisk_parent_001"
+    assert payload["analysisReport"]["reportId"].startswith("arpt_")
+    assert payload["analysisReport"]["downloadUrls"]["markdown"].endswith("/download?format=markdown")
     assert payload["analysisHandoffBundle"]["enabledModules"] == ["robotics_risk"]
     assert payload["analysisHandoffBundle"]["documentHandoffs"]["robotics_risk"]["title"] == "石头科技风险机会简报"
     assert "分析模块编排结果" in captured["system_content"]
@@ -556,6 +558,7 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
         "planner",
         "analysis_intake",
         "analysis_modules",
+        "analysis_report_generation",
         "compose_answer",
         "citations",
     ]
@@ -658,6 +661,93 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
     assert captured_kwargs["analysis_module_inputs"]["robotics_risk"]["focus"] == "订单与政策"
     assert payload["analysisHandoffBundle"]["enabledModules"] == ["robotics_risk"]
     assert payload["analysisResults"]["robotics_risk"]["runId"] == "rrisk_001"
+
+
+def test_workspace_chat_persists_report_and_supports_downloads(client, db_session, monkeypatch):
+    user = User(email="chat-report@example.com", nickname="ChatReport", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    def _fake_generate_reply_payload(**kwargs):
+        return {
+            "reply": "报告已生成。",
+            "citations": [],
+            "sources": [],
+            "noEvidence": False,
+            "analysisSession": {
+                "sessionId": "asess_report_001",
+                "status": "completed",
+                "revision": 3,
+                "enabledModules": ["robotics_risk"],
+            },
+            "analysisReportArtifact": {
+                "schemaVersion": "analysis_report_artifact.v1",
+                "reportId": "arpt_test_001",
+                "title": "石头科技定制化分析报告",
+                "status": "completed",
+                "scope": {
+                    "enabledModules": ["robotics_risk"],
+                    "analysisSessionRevision": 3,
+                    "moduleRunIds": {"robotics_risk": "rrisk_001"},
+                },
+                "preview": "# 石头科技定制化分析报告\n\n报告正文预览。",
+                "markdownBody": "# 石头科技定制化分析报告\n\n报告正文。",
+                "htmlBody": "<!doctype html><html><body><h1>石头科技定制化分析报告</h1></body></html>",
+                "visualAssets": [
+                    {
+                        "assetId": "chart_001",
+                        "moduleId": "robotics_risk",
+                        "type": "chart",
+                        "title": "风险矩阵",
+                        "contentType": "text/plain",
+                        "inlineContent": "chart payload",
+                    }
+                ],
+                "limitations": [],
+            },
+            "graph": {},
+            "graphMeta": {},
+        }
+
+    monkeypatch.setattr("app.workspace.routes.generate_reply_payload", _fake_generate_reply_payload)
+
+    response = client.post(
+        "/api/workspace/chat",
+        json=_chat_payload("生成报告", "report-conv", workspaceId="ws-report"),
+        headers=headers,
+    )
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["analysisReport"]["reportId"] == "arpt_test_001"
+    assert payload["analysisReport"]["downloadUrls"]["html"].endswith("/download?format=html")
+
+    db_session.expire_all()
+    row = db_session.execute(select(AnalysisReport).where(AnalysisReport.report_id == "arpt_test_001")).scalar_one()
+    assert row.workspace_id == "ws-report"
+    assert row.analysis_session_id == payload["analysisSession"]["sessionId"]
+
+    markdown = client.get("/api/workspace/reports/arpt_test_001/download?format=markdown&workspaceId=ws-report", headers=headers)
+    assert markdown.status_code == 200
+    assert "text/markdown" in markdown.headers["Content-Type"]
+    assert "报告正文" in markdown.get_data(as_text=True)
+
+    html_download = client.get("/api/workspace/reports/arpt_test_001/download?format=html&workspaceId=ws-report", headers=headers)
+    assert html_download.status_code == 200
+    assert "text/html" in html_download.headers["Content-Type"]
+
+    unsupported = client.get("/api/workspace/reports/arpt_test_001/download?format=pdf&workspaceId=ws-report", headers=headers)
+    assert unsupported.status_code == 400
+
+    asset = client.get("/api/workspace/reports/arpt_test_001/assets/chart_001/download?workspaceId=ws-report", headers=headers)
+    assert asset.status_code == 200
+    assert asset.get_data(as_text=True) == "chart payload"
+
+    blocked = client.get("/api/workspace/reports/arpt_test_001/download?format=markdown&workspaceId=other", headers=headers)
+    assert blocked.status_code == 404
 
 
 def test_workspace_chat_restores_persisted_analysis_session_between_turns(client, db_session, monkeypatch):

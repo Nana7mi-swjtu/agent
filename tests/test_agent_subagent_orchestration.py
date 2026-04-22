@@ -23,6 +23,12 @@ from app.agent.graph.nodes import (
     plan_route_node,
     search_subagent_node,
 )
+from app.agent.reporting import (
+    ReportContributionValidationError,
+    generate_analysis_report,
+    normalize_visual_asset,
+    validate_report_contribution_traceability,
+)
 from app.robotics_risk.cache import RoboticsEvidenceCache
 
 
@@ -455,6 +461,123 @@ def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
     assert bundle["moduleRunIds"]["robotics_risk"] == "run-robotics-001"
     assert bundle["documentHandoffs"]["robotics_risk"]["title"] == "石头科技风险机会简报"
     assert bundle["limitations"] == ["公告样本有限"]
+    assert result["analysis_results"]["robotics_risk"]["domainAnalysis"]["moduleId"] == "robotics_risk"
+    assert result["analysis_results"]["robotics_risk"]["reportContribution"]["moduleId"] == "robotics_risk"
+
+
+def test_report_contribution_traceability_validation_rejects_unknown_refs():
+    contribution = {
+        "findings": [
+            {
+                "id": "finding_1",
+                "title": "未追溯发现",
+                "traceRefs": {"domainOutputIds": ["missing"]},
+            }
+        ]
+    }
+    domain_analysis = {"domainOutputs": [{"id": "known"}]}
+
+    try:
+        validate_report_contribution_traceability(contribution, domain_analysis)
+    except ReportContributionValidationError as exc:
+        assert "unknown trace ids" in str(exc)
+    else:
+        raise AssertionError("expected traceability validation error")
+
+
+def test_generate_analysis_report_omits_unselected_modules_and_renders_visuals():
+    visual_asset = normalize_visual_asset(
+        {
+            "assetId": "shap_001",
+            "type": "chart",
+            "subtype": "shap_summary_plot",
+            "title": "SHAP特征贡献",
+            "altText": "模型特征贡献图",
+            "renderPayload": {"text": "feature_a=0.42"},
+            "traceRefs": {"modelOutputIds": ["model_001"], "findingIds": ["bankruptcy_finding_1"]},
+            "limitations": ["模型贡献不等于现实因果。"],
+        },
+        module_id="bankruptcy_risk",
+    )
+    module_results = {
+        "bankruptcy_risk": {
+            "moduleId": "bankruptcy_risk",
+            "displayName": "企业破产风险分析",
+            "status": "done",
+            "runId": "bankruptcy_run_001",
+            "summary": "模型输出显示风险偏高。",
+            "domainAnalysis": {
+                "moduleId": "bankruptcy_risk",
+                "domainOutputs": [{"id": "domain_risk_score", "summary": "风险偏高"}],
+                "modelOutputs": [{"id": "model_001", "summary": "probability=0.78"}],
+                "visualAssets": [visual_asset],
+            },
+            "reportContribution": {
+                "moduleId": "bankruptcy_risk",
+                "displayName": "企业破产风险分析",
+                "status": "done",
+                "findings": [
+                    {
+                        "id": "bankruptcy_finding_1",
+                        "title": "破产风险偏高",
+                        "summary": "模型输出显示风险偏高。",
+                        "traceRefs": {"domainOutputIds": ["domain_risk_score"], "modelOutputIds": ["model_001"]},
+                    }
+                ],
+                "modelOutputs": [{"id": "model_001", "title": "破产概率", "summary": "probability=0.78"}],
+                "visualAssets": [visual_asset],
+                "limitations": ["模型贡献不等于现实因果。"],
+            },
+        },
+        "unselected_policy": {
+            "moduleId": "unselected_policy",
+            "displayName": "未选择政策分析",
+            "status": "done",
+            "summary": "不应进入报告。",
+        },
+    }
+
+    artifact = generate_analysis_report(
+        analysis_session={"sessionId": "asess_001", "revision": 4, "enabledModules": ["bankruptcy_risk"]},
+        handoff_bundle={
+            "analysisSession": {"sessionId": "asess_001", "revision": 4},
+            "enabledModules": ["bankruptcy_risk"],
+            "sharedInputSummary": {"enterpriseName": "测试公司", "reportGoal": "评估破产风险"},
+            "moduleRunIds": {"bankruptcy_risk": "bankruptcy_run_001"},
+        },
+        module_results=module_results,
+    )
+
+    assert artifact["status"] == "completed"
+    assert artifact["scope"]["enabledModules"] == ["bankruptcy_risk"]
+    assert "破产风险偏高" in artifact["markdownBody"]
+    assert "未选择政策分析" not in artifact["markdownBody"]
+    assert artifact["visualAssets"][0]["downloadUrl"].endswith("/assets/shap_001/download")
+    assert "模型贡献不等于现实因果" in artifact["markdownBody"]
+
+
+def test_generate_analysis_report_marks_stale_modules_as_degraded():
+    artifact = generate_analysis_report(
+        analysis_session={"sessionId": "asess_stale", "revision": 2, "enabledModules": ["robotics_risk"]},
+        handoff_bundle={
+            "analysisSession": {"sessionId": "asess_stale", "revision": 2},
+            "enabledModules": ["robotics_risk"],
+            "sharedInputSummary": {"enterpriseName": "石头科技"},
+            "staleModules": ["robotics_risk"],
+            "limitations": ["输入已更新，模块结果过期。"],
+        },
+        module_results={
+            "robotics_risk": {
+                "moduleId": "robotics_risk",
+                "displayName": "机器人风险机会洞察",
+                "status": "stale",
+                "limitations": ["输入已更新，模块结果过期。"],
+            }
+        },
+    )
+
+    assert artifact["status"] == "degraded"
+    assert "报告只能作为降级快照使用" in artifact["markdownBody"]
 
 
 def test_analysis_session_marks_stale_and_reruns_module_when_shared_slot_changes(monkeypatch):
