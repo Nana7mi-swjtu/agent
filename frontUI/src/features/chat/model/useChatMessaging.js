@@ -2,6 +2,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 
 import { useChatStore } from "@/entities/chat/model/store";
+import { normalizeSelectedAnalysisModules } from "@/entities/chat/lib/session";
 import {
   getWorkspaceChatJob,
   listWorkspaceChatJobs,
@@ -60,19 +61,16 @@ export const useChatMessaging = () => {
   );
 
   const activeAnalysisModules = computed(() =>
-    Array.isArray(activeSession.value?.selectedAnalysisModules)
-      ? activeSession.value.selectedAnalysisModules
-      : [],
+    normalizeSelectedAnalysisModules(activeSession.value?.selectedAnalysisModules),
   );
 
-  const selectedAnalysisModule = computed({
-    get: () => activeAnalysisModules.value[0] || "",
-    set: (moduleId) => {
-      const cleanModuleId = String(moduleId || "").trim();
+  const selectedAnalysisModules = computed({
+    get: () => activeAnalysisModules.value,
+    set: (moduleIds) => {
       if (!activeSession.value && selectedRole.value) {
         chatStore.createSession(selectedRole.value, uiStore.getRoleDisplayName, workspaceId.value);
       }
-      chatStore.setActiveSessionAnalysisModules(cleanModuleId ? [cleanModuleId] : []);
+      chatStore.setActiveSessionAnalysisModules(normalizeSelectedAnalysisModules(moduleIds));
     },
   });
 
@@ -254,9 +252,7 @@ export const useChatMessaging = () => {
   };
 
   const requestOptionsForModules = (moduleIds = []) => {
-    const enabledAnalysisModules = Array.isArray(moduleIds)
-      ? moduleIds.map((item) => String(item || "").trim()).filter(Boolean)
-      : [];
+    const enabledAnalysisModules = normalizeSelectedAnalysisModules(moduleIds);
     return enabledAnalysisModules.length ? { enabledAnalysisModules } : {};
   };
 
@@ -338,7 +334,7 @@ export const useChatMessaging = () => {
 
     const current = chatStore.ensureSession(selectedRole.value, uiStore.getRoleDisplayName, workspaceId.value);
     chatStore.setSessionScope({ workspaceId: workspaceId.value, role: selectedRole.value });
-    const selectedModules = Array.isArray(current.selectedAnalysisModules) ? current.selectedAnalysisModules : [];
+    const selectedModules = normalizeSelectedAnalysisModules(current.selectedAnalysisModules);
     const hasSelectedAnalysisModules = selectedModules.length > 0;
     const requestOptions = requestOptionsForModules(selectedModules);
     if (agentChatJobsEnabled.value && conversationHasActiveJob(current)) {
@@ -413,7 +409,7 @@ export const useChatMessaging = () => {
     sessions,
     activeSessionId,
     activeAnalysisModules,
-    selectedAnalysisModule,
+    selectedAnalysisModules,
     selectedRoleName,
     systemPrompt,
     chatStreamingEnabled,

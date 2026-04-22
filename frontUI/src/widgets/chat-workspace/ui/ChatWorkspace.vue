@@ -3,6 +3,7 @@ import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { storeToRefs } from "pinia";
 
+import { ANALYSIS_MODULE_DEFINITIONS } from "@/entities/analysis-module/model/registry";
 import { useWorkspaceStore } from "@/entities/workspace/model/store";
 import { useChatWorkspace } from "@/features/chat/model/useChatWorkspace";
 import ChatComposer from "@/features/chat/ui/ChatComposer.vue";
@@ -17,7 +18,7 @@ const { ready, agentTraceDebugDetailsEnabled } = storeToRefs(workspaceStore);
 const {
   input,
   selectedRole,
-  selectedAnalysisModule,
+  selectedAnalysisModules,
   selectedRoleName,
   systemPrompt,
   sending,
@@ -45,10 +46,10 @@ const {
 } = useChatWorkspace();
 
 const analysisModuleOptions = computed(() => [
-  {
-    value: "robotics_risk",
-    label: uiStore.t("analysisModuleRoboticsRisk"),
-  },
+  ...ANALYSIS_MODULE_DEFINITIONS.map((module) => ({
+    value: module.id,
+    label: uiStore.t(module.labelKey),
+  })),
 ]);
 
 const sendMessage = async () => {
@@ -151,14 +152,13 @@ const traceDetailsEntries = (step) =>
 
       <ChatComposer
         v-model="input"
-        v-model:analysis-module-value="selectedAnalysisModule"
+        v-model:analysis-module-values="selectedAnalysisModules"
         :sending="sending"
         :error="chatError"
         :placeholder="uiStore.t('inputPlaceholder')"
         :send-label="uiStore.t('send')"
         :analysis-module-options="analysisModuleOptions"
         :analysis-module-label="uiStore.t('analysisModuleSelector')"
-        :no-analysis-module-label="uiStore.t('analysisModuleNone')"
         @submit="sendMessage"
       />
     </section>

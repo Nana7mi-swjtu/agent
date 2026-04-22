@@ -1,8 +1,11 @@
+import {
+  SUPPORTED_ANALYSIS_MODULE_IDS,
+  normalizeAnalysisModuleIds,
+} from "../../analysis-module/model/registry.js";
+
 export const buildConversationId = () => `c_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 export const buildMessageId = () => `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-export const SUPPORTED_ANALYSIS_MODULE_IDS = ["robotics_risk"];
-const SUPPORTED_ANALYSIS_MODULE_ID_SET = new Set(SUPPORTED_ANALYSIS_MODULE_IDS);
+export { SUPPORTED_ANALYSIS_MODULE_IDS };
 
 const normalizeTrace = (raw) => (raw && typeof raw === "object" ? raw : null);
 const normalizeSources = (raw) => (Array.isArray(raw) ? raw.filter((item) => item && typeof item === "object") : []);
@@ -14,17 +17,7 @@ const normalizeGraph = (raw) => {
   return { nodes, edges };
 };
 const normalizeGraphMeta = (raw) => (raw && typeof raw === "object" ? raw : null);
-export const normalizeSelectedAnalysisModules = (raw) => {
-  if (!Array.isArray(raw)) return [];
-  const result = [];
-  raw.forEach((item) => {
-    const moduleId = String(item || "").trim();
-    if (SUPPORTED_ANALYSIS_MODULE_ID_SET.has(moduleId) && !result.includes(moduleId)) {
-      result.push(moduleId);
-    }
-  });
-  return result;
-};
+export const normalizeSelectedAnalysisModules = (raw) => normalizeAnalysisModuleIds(raw);
 
 export const normalizeChatMessage = (raw) => ({
   id: String(raw?.id || buildMessageId()),
