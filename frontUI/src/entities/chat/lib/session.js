@@ -18,6 +18,24 @@ const normalizeGraph = (raw) => {
 };
 const normalizeGraphMeta = (raw) => (raw && typeof raw === "object" ? raw : null);
 export const normalizeSelectedAnalysisModules = (raw) => normalizeAnalysisModuleIds(raw);
+const normalizeAnalysisReport = (raw) => {
+  if (!raw || typeof raw !== "object") return null;
+  const reportId = String(raw.reportId || "").trim();
+  if (!reportId) return null;
+  const downloadUrls = raw.downloadUrls && typeof raw.downloadUrls === "object" ? raw.downloadUrls : {};
+  return {
+    reportId,
+    title: String(raw.title || ""),
+    status: String(raw.status || ""),
+    preview: String(raw.preview || ""),
+    availableFormats: Array.isArray(raw.availableFormats) ? raw.availableFormats.map((item) => String(item)) : [],
+    downloadUrls: {
+      markdown: String(downloadUrls.markdown || ""),
+      html: String(downloadUrls.html || ""),
+    },
+    limitations: Array.isArray(raw.limitations) ? raw.limitations.filter((item) => item && typeof item === "object") : [],
+  };
+};
 
 export const normalizeChatMessage = (raw) => ({
   id: String(raw?.id || buildMessageId()),
@@ -31,6 +49,7 @@ export const normalizeChatMessage = (raw) => ({
   trace: normalizeTrace(raw?.trace),
   graph: normalizeGraph(raw?.graph),
   graphMeta: normalizeGraphMeta(raw?.graphMeta),
+  analysisReport: normalizeAnalysisReport(raw?.analysisReport),
   memoryInfo: raw?.memoryInfo && typeof raw.memoryInfo === "object" ? raw.memoryInfo : null,
   jobId: raw?.jobId ? String(raw.jobId) : "",
   jobStatus: typeof raw?.jobStatus === "string" ? raw.jobStatus : "",
@@ -52,6 +71,7 @@ export const serializeChatMessage = (message) => ({
   trace: normalizeTrace(message?.trace),
   graph: normalizeGraph(message?.graph),
   graphMeta: normalizeGraphMeta(message?.graphMeta),
+  analysisReport: normalizeAnalysisReport(message?.analysisReport),
   memoryInfo: message?.memoryInfo && typeof message.memoryInfo === "object" ? message.memoryInfo : null,
   jobId: message?.jobId ? String(message.jobId) : "",
   jobStatus: typeof message?.jobStatus === "string" ? message.jobStatus : "",

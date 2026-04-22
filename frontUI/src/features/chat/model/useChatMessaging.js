@@ -123,6 +123,7 @@ export const useChatMessaging = () => {
       trace: trace,
       graph: payload.graph || null,
       graphMeta: payload.graphMeta || null,
+      analysisReport: payload.analysisReport || null,
       memoryInfo: memoryInfo,
       jobId: jobId ? String(jobId) : "",
       jobStatus: "succeeded",
@@ -276,6 +277,7 @@ export const useChatMessaging = () => {
       trace: null,
       graph: null,
       graphMeta: null,
+      analysisReport: null,
       systemPrompt: "",
     };
     let streamError = "";
@@ -305,6 +307,7 @@ export const useChatMessaging = () => {
         finalPayload.trace = event.trace && typeof event.trace === "object" ? event.trace : null;
         finalPayload.graph = event.graph && typeof event.graph === "object" ? event.graph : null;
         finalPayload.graphMeta = event.graphMeta && typeof event.graphMeta === "object" ? event.graphMeta : null;
+        finalPayload.analysisReport = event.analysisReport && typeof event.analysisReport === "object" ? event.analysisReport : null;
         finalPayload.systemPrompt = String(event.systemPrompt || "");
         return;
       }

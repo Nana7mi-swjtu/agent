@@ -42,3 +42,12 @@ export const listWorkspaceChatJobs = (workspaceId, conversationId) =>
   apiRequest(
     `/api/workspace/chat/jobs?workspaceId=${encodeURIComponent(workspaceId || "default")}&conversationId=${encodeURIComponent(conversationId || "")}`,
   );
+
+export const getAnalysisReport = (reportId, workspaceId) =>
+  apiRequest(`/api/workspace/reports/${encodeURIComponent(reportId)}?workspaceId=${encodeURIComponent(workspaceId || "default")}`);
+
+export const buildAnalysisReportDownloadUrl = (reportId, format = "markdown", workspaceId = "default") =>
+  `/api/workspace/reports/${encodeURIComponent(reportId)}/download?format=${encodeURIComponent(format)}&workspaceId=${encodeURIComponent(workspaceId || "default")}`;
+
+export const buildAnalysisReportAssetDownloadUrl = (reportId, assetId, workspaceId = "default") =>
+  `/api/workspace/reports/${encodeURIComponent(reportId)}/assets/${encodeURIComponent(assetId)}/download?workspaceId=${encodeURIComponent(workspaceId || "default")}`;

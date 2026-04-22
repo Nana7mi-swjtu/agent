@@ -61,6 +61,16 @@ const ragDebugForMessage = (message) => getMessageRagDebug(message);
 const traceStepsForMessage = (message) => getMessageTraceSteps(message);
 const sourcesForMessage = (message) => getMessageSources(message);
 const memoryInfoForMessage = (message) => getMessageMemoryInfo(message);
+const reportForMessage = (message) =>
+  message?.analysisReport && typeof message.analysisReport === "object" ? message.analysisReport : null;
+const reportDownloadEntries = (message) => {
+  const report = reportForMessage(message);
+  const urls = report?.downloadUrls && typeof report.downloadUrls === "object" ? report.downloadUrls : {};
+  return [
+    { key: "markdown", label: "Markdown", url: String(urls.markdown || "") },
+    { key: "html", label: "HTML", url: String(urls.html || "") },
+  ].filter((item) => item.url);
+};
 const showGroundingMeta = (message) =>
   message?.from === "agent" &&
   (
@@ -108,6 +118,26 @@ const graphMetaForMessage = (message) =>
           <p>{{ uiStore.t("assistantWorkingHint") }}</p>
         </div>
         <MarkdownContent v-else :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
+        <div v-if="message.from === 'agent' && !message.pending && reportForMessage(message)" class="analysis-report-preview">
+          <div class="analysis-report-title">{{ reportForMessage(message).title || "分析报告" }}</div>
+          <MarkdownContent
+            v-if="reportForMessage(message).preview"
+            :source="reportForMessage(message).preview"
+            markdown
+            class="analysis-report-body"
+          />
+          <div v-if="reportDownloadEntries(message).length" class="analysis-report-links">
+            <a
+              v-for="item in reportDownloadEntries(message)"
+              :key="`${message.id}_report_${item.key}`"
+              :href="item.url"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              {{ item.label }}
+            </a>
+          </div>
+        </div>
         <KnowledgeGraphPanel
           v-if="message.from === 'agent' && !message.pending && graphForMessage(message)"
           :graph="graphForMessage(message)"
@@ -155,6 +185,26 @@ const graphMetaForMessage = (message) =>
       <div class="msg-avatar is-empty"></div>
       <div class="msg-body">
         <MarkdownContent :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
+        <div v-if="message.from === 'agent' && !message.pending && reportForMessage(message)" class="analysis-report-preview">
+          <div class="analysis-report-title">{{ reportForMessage(message).title || "分析报告" }}</div>
+          <MarkdownContent
+            v-if="reportForMessage(message).preview"
+            :source="reportForMessage(message).preview"
+            markdown
+            class="analysis-report-body"
+          />
+          <div v-if="reportDownloadEntries(message).length" class="analysis-report-links">
+            <a
+              v-for="item in reportDownloadEntries(message)"
+              :key="`${message.id}_grouped_report_${item.key}`"
+              :href="item.url"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              {{ item.label }}
+            </a>
+          </div>
+        </div>
         <KnowledgeGraphPanel
           v-if="message.from === 'agent' && !message.pending && graphForMessage(message)"
           :graph="graphForMessage(message)"
@@ -274,6 +324,42 @@ const graphMetaForMessage = (message) =>
 
 .msg-content {
   margin-top: 0;
+}
+
+.analysis-report-preview {
+  margin-top: 14px;
+  padding-left: 14px;
+  border-left: 3px solid rgba(31, 157, 116, 0.45);
+}
+
+.analysis-report-title {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.analysis-report-body {
+  max-height: 320px;
+  overflow: hidden;
+}
+
+.analysis-report-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.analysis-report-links a {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.analysis-report-links a:hover {
+  text-decoration: underline;
 }
 
 .msg-pending-card {
