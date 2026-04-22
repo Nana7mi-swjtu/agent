@@ -3,9 +3,12 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
+
+LongText = Text().with_variant(LONGTEXT(), "mysql")
 
 
 class User(Base):
@@ -200,6 +203,244 @@ class BankruptcyAnalysisRecord(Base):
         nullable=False,
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class RoboticsPolicyDocument(Base):
+    __tablename__ = "robotics_policy_documents"
+    __table_args__ = (
+        UniqueConstraint("policy_id", name="uq_robotics_policy_documents_policy_id"),
+        Index("ix_robotics_policy_documents_cache_key", "cache_key"),
+        Index("ix_robotics_policy_documents_url_hash", "url_hash"),
+        Index("ix_robotics_policy_documents_published", "published_at"),
+        Index("ix_robotics_policy_documents_fetched", "fetched_at"),
+        Index("ix_robotics_policy_documents_status", "status"),
+        Index("ix_robotics_policy_documents_content_hash", "content_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    policy_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    cache_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    url_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    issuing_agency: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    document_number: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    content_text: Mapped[str | None] = mapped_column(LongText, nullable=True)
+    matched_keywords_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    relevance_segments_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="fetched")
+    error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class AnalysisSession(Base):
+    __tablename__ = "analysis_sessions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "workspace_id", "role", "conversation_id", name="uq_analysis_sessions_scope"),
+        UniqueConstraint("session_id", name="uq_analysis_sessions_session_id"),
+        Index("ix_analysis_sessions_scope_status", "user_id", "workspace_id", "role", "conversation_id", "status"),
+        Index("ix_analysis_sessions_updated", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="collecting", index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    enabled_modules_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    slot_values_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    slot_states_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    missing_slots_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    question_plan_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    module_states_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    module_results_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    compatibility_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    bundle_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class RoboticsCninfoAnnouncement(Base):
+    __tablename__ = "robotics_cninfo_announcements"
+    __table_args__ = (
+        UniqueConstraint("announcement_id", name="uq_robotics_cninfo_announcements_announcement_id"),
+        Index("ix_robotics_cninfo_announcements_cache_key", "cache_key"),
+        Index("ix_robotics_cninfo_announcements_adjunct_hash", "adjunct_url_hash"),
+        Index("ix_robotics_cninfo_announcements_pdf_hash", "pdf_url_hash"),
+        Index("ix_robotics_cninfo_announcements_sec_code_time", "sec_code", "announcement_time"),
+        Index("ix_robotics_cninfo_announcements_sec_name", "sec_name"),
+        Index("ix_robotics_cninfo_announcements_fetched", "fetched_at"),
+        Index("ix_robotics_cninfo_announcements_status", "status"),
+        Index("ix_robotics_cninfo_announcements_parse_status", "parse_status"),
+        Index("ix_robotics_cninfo_announcements_content_hash", "content_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    announcement_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    cache_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sec_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    sec_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    org_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    announcement_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    announcement_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    adjunct_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    adjunct_url_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pdf_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    pdf_url_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pdf_storage_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    content_text: Mapped[str | None] = mapped_column(LongText, nullable=True)
+    matched_keywords_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="fetched")
+    error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    extraction_method: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ocr_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    parse_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    parse_error: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class RoboticsBiddingDocument(Base):
+    __tablename__ = "robotics_bidding_documents"
+    __table_args__ = (
+        UniqueConstraint("notice_id", name="uq_robotics_bidding_documents_notice_id"),
+        Index("ix_robotics_bidding_documents_cache_key", "cache_key"),
+        Index("ix_robotics_bidding_documents_url_hash", "url_hash"),
+        Index("ix_robotics_bidding_documents_published", "published_at"),
+        Index("ix_robotics_bidding_documents_fetched", "fetched_at"),
+        Index("ix_robotics_bidding_documents_status", "status"),
+        Index("ix_robotics_bidding_documents_region", "region"),
+        Index("ix_robotics_bidding_documents_enterprise", "matched_enterprise_name"),
+        Index("ix_robotics_bidding_documents_content_hash", "content_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    notice_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    cache_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    url_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    notice_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    project_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    project_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    buyer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    winning_bidder: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    amount: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    region: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    content_text: Mapped[str | None] = mapped_column(LongText, nullable=True)
+    matched_enterprise_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    matched_keywords_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="fetched")
+    error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class RoboticsListedCompanyProfile(Base):
+    __tablename__ = "robotics_listed_company_profiles"
+    __table_args__ = (
+        UniqueConstraint("profile_key", name="uq_robotics_listed_company_profiles_key"),
+        Index("ix_robotics_listed_company_profiles_stock_code", "stock_code"),
+        Index("ix_robotics_listed_company_profiles_company_name", "company_name"),
+        Index("ix_robotics_listed_company_profiles_security_name", "security_name"),
+        Index("ix_robotics_listed_company_profiles_supported", "is_supported"),
+        Index("ix_robotics_listed_company_profiles_updated", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    profile_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    stock_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    exchange: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    market: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    security_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    aliases_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    industry_segments_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    robotics_keywords_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    cninfo_column: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cninfo_org_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    is_supported: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    unsupported_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class RoboticsInsightRun(Base):
+    __tablename__ = "robotics_insight_runs"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_robotics_insight_runs_run_id"),
+        Index("ix_robotics_insight_runs_enterprise", "enterprise_name"),
+        Index("ix_robotics_insight_runs_stock_code", "stock_code"),
+        Index("ix_robotics_insight_runs_status", "status"),
+        Index("ix_robotics_insight_runs_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    enterprise_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    stock_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    request_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    handoff_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
 
 
 class RagChunk(Base):

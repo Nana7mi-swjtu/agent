@@ -1,6 +1,60 @@
 from __future__ import annotations
 
-from app.agent.graph.nodes import mcp_subagent_node, plan_route_node, search_subagent_node
+from app.agent.analysis_session import create_transient_analysis_session
+from app.agent.graph import analysis_modules as analysis_module_graph
+from app.agent.graph.analysis_modules import AnalysisModuleContract, normalize_analysis_module_output
+from app.agent.graph.analysis_slots import (
+    AnalysisSlotDefinition,
+    SHARED_ANALYSIS_FOCUS_TAGS,
+    SHARED_ENTERPRISE_NAME,
+    SHARED_REPORT_GOAL,
+    SHARED_STOCK_CODE,
+    SHARED_TIME_RANGE,
+    SCOPE_MODULE,
+    VALUE_KIND_TEXT,
+    parse_answer_for_group,
+    shared_slot_catalog,
+)
+from app.agent.graph.nodes import (
+    _analysis_bundle_system_section,
+    analysis_intake_node,
+    analysis_modules_node,
+    mcp_subagent_node,
+    plan_route_node,
+    search_subagent_node,
+)
+from app.robotics_risk.cache import RoboticsEvidenceCache
+
+
+def test_shared_slot_catalog_exposes_v1_baseline():
+    catalog = shared_slot_catalog()
+
+    assert {
+        SHARED_ENTERPRISE_NAME,
+        SHARED_STOCK_CODE,
+        SHARED_TIME_RANGE,
+        SHARED_REPORT_GOAL,
+        SHARED_ANALYSIS_FOCUS_TAGS,
+        "region_scope",
+    }.issubset(set(catalog))
+    assert catalog[SHARED_ENTERPRISE_NAME].normalizer == "enterprise_name"
+    assert catalog[SHARED_ANALYSIS_FOCUS_TAGS].value_kind == "multi_choice"
+    assert catalog[SHARED_ANALYSIS_FOCUS_TAGS].normalizer == "choice_tags"
+
+
+def test_parse_answer_for_enterprise_identity_group_normalizes_name_and_stock_code():
+    catalog = shared_slot_catalog()
+
+    updates = parse_answer_for_group(
+        slot_ids=[SHARED_ENTERPRISE_NAME, SHARED_STOCK_CODE],
+        slot_catalog=catalog,
+        user_message="石头科技 688169",
+    )
+
+    assert updates == {
+        SHARED_ENTERPRISE_NAME: "石头科技",
+        SHARED_STOCK_CODE: "688169",
+    }
 
 
 def test_plan_route_requests_clarification_for_vague_search():
@@ -16,6 +70,20 @@ def test_plan_route_requests_clarification_for_vague_search():
     assert "具体主题" in result["clarification_question"]
 
 
+def test_plan_route_prefers_analysis_intake_when_modules_enabled():
+    result = plan_route_node(
+        {
+            "user_message": "请开始做报告",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "debug": {},
+        }
+    )
+    assert result["intent"] == "analysis"
+    assert result["needs_search"] is False
+    assert result["needs_mcp"] is False
+    assert result["analysis_completed"] is False
+
+
 def test_plan_route_preserves_public_only_strategy_for_explicit_web_request():
     result = plan_route_node(
         {
@@ -28,6 +96,462 @@ def test_plan_route_preserves_public_only_strategy_for_explicit_web_request():
     assert result["needs_search"] is True
     assert result["needs_clarification"] is False
     assert result["search_request"]["preferred_strategy"] == "public_only"
+
+
+def test_robotics_module_runtime_uses_db_backed_cache_in_app_context(app, monkeypatch):
+    captured = {}
+
+    def _fake_run(payload, **kwargs):
+        captured["payload"] = dict(payload)
+        captured["db"] = kwargs.get("db")
+        captured["evidence_cache"] = kwargs.get("evidence_cache")
+        return {
+            "status": "partial",
+            "runId": "rrisk-cache-001",
+            "limitations": ["未检索到可用于风险机会洞察的来源文档。"],
+        }
+
+    monkeypatch.setattr(analysis_module_graph, "run_robotics_risk_subagent", _fake_run)
+
+    with app.app_context():
+        output = analysis_module_graph._run_robotics_risk_module({"enterpriseName": "优必选"})
+
+    assert output["runId"] == "rrisk-cache-001"
+    assert captured["payload"]["enterpriseName"] == "优必选"
+    assert captured["db"] is not None
+    assert isinstance(captured["evidence_cache"], RoboticsEvidenceCache)
+
+
+def test_partial_analysis_module_without_sources_summarizes_evidence_gap():
+    contract = AnalysisModuleContract(
+        module_id="robotics_risk",
+        display_name="机器人风险机会洞察",
+        required_slots=(),
+    )
+
+    output = normalize_analysis_module_output(
+        contract,
+        {
+            "status": "partial",
+            "runId": "rrisk-empty",
+            "result": {
+                "summary": {
+                    "opportunity": "未发现明确机会信号。",
+                    "risk": "未发现明确风险信号。",
+                }
+            },
+            "documentHandoff": {"executiveSummary": {"sourceCount": 0}},
+            "limitations": ["未检索到可用于风险机会洞察的来源文档。"],
+            "sourceReferences": [],
+        },
+    )
+
+    assert output["summary"] == "未检索到可用于风险机会洞察的来源文档。"
+
+
+def test_analysis_bundle_system_section_blocks_no_evidence_inference():
+    section = _analysis_bundle_system_section(
+        {
+            "analysis_handoff_bundle": {
+                "enabledModules": ["robotics_risk"],
+                "moduleResults": [
+                    {
+                        "moduleId": "robotics_risk",
+                        "displayName": "机器人风险机会洞察",
+                        "status": "partial",
+                        "summary": "未检索到可用于风险机会洞察的来源文档。",
+                        "sourceReferences": [],
+                        "documentHandoff": {"executiveSummary": {"sourceCount": 0}},
+                    }
+                ],
+                "limitations": ["未检索到可用于风险机会洞察的来源文档。"],
+            }
+        }
+    )
+
+    assert "sourceCount=0" in section
+    assert "不得基于行业常识" in section
+
+
+def test_analysis_intake_deduplicates_shared_slots_before_module_specific(monkeypatch):
+    robotics_contract = AnalysisModuleContract(
+        module_id="robotics_risk",
+        display_name="机器人风险机会洞察",
+        required_slots=(
+            SHARED_ENTERPRISE_NAME,
+            SHARED_TIME_RANGE,
+            SHARED_REPORT_GOAL,
+            SHARED_ANALYSIS_FOCUS_TAGS,
+        ),
+        slot_mapping=lambda slots, compatibility, context: {},
+        run=lambda payload: {},
+    )
+    operations_contract = AnalysisModuleContract(
+        module_id="enterprise_operations",
+        display_name="企业运营分析",
+        required_slots=(
+            SHARED_ENTERPRISE_NAME,
+            SHARED_TIME_RANGE,
+            SHARED_REPORT_GOAL,
+            "enterprise_operations.metrics",
+        ),
+        slot_definitions=(
+            AnalysisSlotDefinition(
+                slot_id="enterprise_operations.metrics",
+                label="经营指标",
+                scope=SCOPE_MODULE,
+                value_kind=VALUE_KIND_TEXT,
+                normalizer="passthrough_text",
+                group_id="enterprise_operations.metrics",
+                priority=80,
+                depends_on=(SHARED_ENTERPRISE_NAME, SHARED_TIME_RANGE, SHARED_REPORT_GOAL),
+                module_id="enterprise_operations",
+            ),
+        ),
+        slot_mapping=lambda slots, compatibility, context: {},
+        run=lambda payload: {},
+    )
+    monkeypatch.setattr(
+        "app.agent.graph.nodes.get_analysis_module_registry",
+        lambda: {
+            "robotics_risk": robotics_contract,
+            "enterprise_operations": operations_contract,
+        },
+    )
+
+    result = analysis_intake_node(
+        {
+            "user_message": "请开始分析",
+            "enabled_analysis_modules": ["robotics_risk", "enterprise_operations"],
+            "analysis_shared_inputs": {},
+            "analysis_module_inputs": {},
+            "analysis_session": create_transient_analysis_session(
+                enabled_modules=["robotics_risk", "enterprise_operations"]
+            ),
+            "debug": {},
+        }
+    )
+
+    assert result["needs_clarification"] is True
+    assert "企业名称" in result["clarification_question"]
+    assert "经营指标" not in result["clarification_question"]
+    assert result["missing_fields"] == [
+        "analysis.shared.enterprise_name",
+        "analysis.shared.time_range",
+        "analysis.shared.report_goal",
+        "analysis.shared.analysis_focus_tags",
+    ]
+
+
+def test_analysis_intake_ignores_disabled_module_specific_slots(monkeypatch):
+    robotics_contract = AnalysisModuleContract(
+        module_id="robotics_risk",
+        display_name="机器人风险机会洞察",
+        required_slots=(
+            SHARED_ENTERPRISE_NAME,
+            SHARED_TIME_RANGE,
+            SHARED_REPORT_GOAL,
+            "robotics_risk.focus_detail",
+        ),
+        slot_definitions=(
+            AnalysisSlotDefinition(
+                slot_id="robotics_risk.focus_detail",
+                label="机器人关注重点",
+                scope=SCOPE_MODULE,
+                value_kind=VALUE_KIND_TEXT,
+                normalizer="passthrough_text",
+                group_id="robotics_risk.focus_detail",
+                priority=70,
+                depends_on=(SHARED_ENTERPRISE_NAME, SHARED_TIME_RANGE, SHARED_REPORT_GOAL),
+                module_id="robotics_risk",
+            ),
+        ),
+        slot_mapping=lambda slots, compatibility, context: {},
+        run=lambda payload: {},
+    )
+    operations_contract = AnalysisModuleContract(
+        module_id="enterprise_operations",
+        display_name="企业运营分析",
+        required_slots=(
+            SHARED_ENTERPRISE_NAME,
+            SHARED_TIME_RANGE,
+            SHARED_REPORT_GOAL,
+            "enterprise_operations.metrics",
+        ),
+        slot_definitions=(
+            AnalysisSlotDefinition(
+                slot_id="enterprise_operations.metrics",
+                label="经营指标",
+                scope=SCOPE_MODULE,
+                value_kind=VALUE_KIND_TEXT,
+                normalizer="passthrough_text",
+                group_id="enterprise_operations.metrics",
+                priority=80,
+                depends_on=(SHARED_ENTERPRISE_NAME, SHARED_TIME_RANGE, SHARED_REPORT_GOAL),
+                module_id="enterprise_operations",
+            ),
+        ),
+        slot_mapping=lambda slots, compatibility, context: {},
+        run=lambda payload: {},
+    )
+    monkeypatch.setattr(
+        "app.agent.graph.nodes.get_analysis_module_registry",
+        lambda: {
+            "robotics_risk": robotics_contract,
+            "enterprise_operations": operations_contract,
+        },
+    )
+
+    result = analysis_intake_node(
+        {
+            "user_message": "请继续",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_shared_inputs": {
+                "enterpriseName": "石头科技",
+                "timeRange": "近30天",
+                "reportGoal": "识别机器人行业风险与机会",
+            },
+            "analysis_module_inputs": {},
+            "analysis_session": create_transient_analysis_session(enabled_modules=["robotics_risk"]),
+            "debug": {},
+        }
+    )
+
+    assert result["needs_clarification"] is True
+    assert "机器人关注重点" in result["clarification_question"]
+    assert "经营指标" not in result["clarification_question"]
+    assert result["missing_fields"] == ["analysis.robotics_risk.focus_detail"]
+
+
+def test_analysis_intake_groups_same_round_shared_slots(monkeypatch):
+    grouped_contract = AnalysisModuleContract(
+        module_id="grouped_module",
+        display_name="分组测试模块",
+        required_slots=(
+            SHARED_ENTERPRISE_NAME,
+            SHARED_STOCK_CODE,
+            SHARED_REPORT_GOAL,
+        ),
+        slot_mapping=lambda slots, compatibility, context: {},
+        run=lambda payload: {},
+    )
+    monkeypatch.setattr("app.agent.graph.nodes.get_analysis_module_registry", lambda: {"grouped_module": grouped_contract})
+
+    result = analysis_intake_node(
+        {
+            "user_message": "开始",
+            "enabled_analysis_modules": ["grouped_module"],
+            "analysis_shared_inputs": {},
+            "analysis_module_inputs": {},
+            "analysis_session": create_transient_analysis_session(enabled_modules=["grouped_module"]),
+            "debug": {},
+        }
+    )
+
+    question_plan = result["analysis_session"]["questionPlan"]
+    assert result["needs_clarification"] is True
+    assert question_plan[0]["groupId"] == "enterprise_identity"
+    assert question_plan[0]["slotIds"] == [SHARED_ENTERPRISE_NAME, SHARED_STOCK_CODE]
+    assert question_plan[0]["labels"] == ["企业名称", "股票代码"]
+    assert question_plan[1]["groupId"] == "report_goal"
+
+
+def test_analysis_intake_marks_ready_when_required_slots_are_prefilled():
+    result = analysis_intake_node(
+        {
+            "user_message": "请开始机器人风险机会分析",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_shared_inputs": {
+                "enterpriseName": "石头科技",
+                "timeRange": "近30天",
+                "reportGoal": "形成风险机会简报",
+            },
+            "analysis_module_inputs": {
+                "robotics_risk": {
+                    "focus": "政策、订单",
+                }
+            },
+            "analysis_session": create_transient_analysis_session(enabled_modules=["robotics_risk"]),
+            "debug": {},
+        }
+    )
+
+    assert result["needs_clarification"] is False
+    assert result["missing_fields"] == []
+    assert result["analysis_completed"] is False
+    assert result["analysis_session"]["status"] == "ready"
+    assert result["analysis_session"]["slotValues"][SHARED_ANALYSIS_FOCUS_TAGS] == ["政策", "订单"]
+
+
+def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
+    contract = AnalysisModuleContract(
+        module_id="robotics_risk",
+        display_name="机器人风险机会洞察",
+        required_slots=(
+            SHARED_ENTERPRISE_NAME,
+            SHARED_TIME_RANGE,
+            SHARED_REPORT_GOAL,
+            "robotics_risk.focus_detail",
+        ),
+        slot_definitions=(
+            AnalysisSlotDefinition(
+                slot_id="robotics_risk.focus_detail",
+                label="关注重点",
+                scope=SCOPE_MODULE,
+                value_kind=VALUE_KIND_TEXT,
+                normalizer="passthrough_text",
+                group_id="robotics_risk.focus_detail",
+                priority=70,
+                depends_on=(SHARED_ENTERPRISE_NAME, SHARED_TIME_RANGE, SHARED_REPORT_GOAL),
+                module_id="robotics_risk",
+            ),
+        ),
+        slot_mapping=lambda slots, compatibility, context: {
+            "enterpriseName": slots[SHARED_ENTERPRISE_NAME],
+            "focus": slots["robotics_risk.focus_detail"],
+            "conversationContext": context["conversationContext"],
+        },
+        run=lambda payload: {
+            "status": "done",
+            "runId": "run-robotics-001",
+            "result": {
+                "summary": {
+                    "opportunity": "政策和订单侧存在增长信号。",
+                    "risk": "竞争和招投标节奏存在波动。",
+                }
+            },
+            "documentHandoff": {"title": "石头科技风险机会简报"},
+            "limitations": ["公告样本有限"],
+        },
+    )
+    monkeypatch.setattr("app.agent.graph.nodes.get_analysis_module_registry", lambda: {"robotics_risk": contract})
+    analysis_session = create_transient_analysis_session(enabled_modules=["robotics_risk"])
+    analysis_session["revision"] = 2
+    analysis_session["status"] = "ready"
+    analysis_session["slotValues"] = {
+        SHARED_ENTERPRISE_NAME: "石头科技",
+        SHARED_TIME_RANGE: "近30天",
+        SHARED_REPORT_GOAL: "形成风险机会简报",
+        "robotics_risk.focus_detail": "订单与政策",
+    }
+
+    result = analysis_modules_node(
+        {
+            "user_message": "请开始分析",
+            "conversation_context": "最近对话：用户希望关注订单机会。",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_session": analysis_session,
+            "debug": {},
+        }
+    )
+
+    assert result["analysis_completed"] is True
+    assert result["analysis_results"]["robotics_risk"]["runId"] == "run-robotics-001"
+    assert result["analysis_results"]["robotics_risk"]["inputSnapshotRevision"] == 2
+    bundle = result["analysis_handoff_bundle"]
+    assert bundle["enabledModules"] == ["robotics_risk"]
+    assert bundle["analysisSession"]["revision"] == 2
+    assert bundle["sharedInputSummary"]["enterpriseName"] == "石头科技"
+    assert bundle["moduleRunIds"]["robotics_risk"] == "run-robotics-001"
+    assert bundle["documentHandoffs"]["robotics_risk"]["title"] == "石头科技风险机会简报"
+    assert bundle["limitations"] == ["公告样本有限"]
+
+
+def test_analysis_session_marks_stale_and_reruns_module_when_shared_slot_changes(monkeypatch):
+    run_inputs: list[dict[str, str]] = []
+
+    contract = AnalysisModuleContract(
+        module_id="robotics_risk",
+        display_name="机器人风险机会洞察",
+        required_slots=(
+            SHARED_ENTERPRISE_NAME,
+            SHARED_TIME_RANGE,
+            SHARED_REPORT_GOAL,
+            SHARED_ANALYSIS_FOCUS_TAGS,
+        ),
+        slot_mapping=lambda slots, compatibility, context: {
+            "enterpriseName": slots[SHARED_ENTERPRISE_NAME],
+            "timeRange": slots[SHARED_TIME_RANGE],
+            "reportGoal": slots[SHARED_REPORT_GOAL],
+            "focus": "、".join(slots[SHARED_ANALYSIS_FOCUS_TAGS]),
+        },
+        run=lambda payload: (
+            run_inputs.append(dict(payload))
+            or {
+                "status": "done",
+                "runId": f"rerun-{len(run_inputs)}",
+                "result": {
+                    "summary": {
+                        "opportunity": f"{payload['timeRange']} 内的机会信号已汇总。",
+                        "risk": f"{payload['timeRange']} 内的风险信号已汇总。",
+                    }
+                },
+                "documentHandoff": {"title": f"{payload['enterpriseName']}-{payload['timeRange']}"},
+            }
+        ),
+    )
+    monkeypatch.setattr("app.agent.graph.nodes.get_analysis_module_registry", lambda: {"robotics_risk": contract})
+
+    ready_session = create_transient_analysis_session(enabled_modules=["robotics_risk"])
+    ready_session["status"] = "ready"
+    ready_session["revision"] = 1
+    ready_session["slotValues"] = {
+        SHARED_ENTERPRISE_NAME: "石头科技",
+        SHARED_TIME_RANGE: "近30天",
+        SHARED_REPORT_GOAL: "形成风险机会简报",
+        SHARED_ANALYSIS_FOCUS_TAGS: ["政策", "订单"],
+    }
+
+    first_run = analysis_modules_node(
+        {
+            "user_message": "先跑一次",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_session": ready_session,
+            "debug": {},
+        }
+    )
+
+    assert first_run["analysis_session"]["status"] == "completed"
+    assert first_run["analysis_results"]["robotics_risk"]["runId"] == "rerun-1"
+    assert first_run["analysis_results"]["robotics_risk"]["inputSnapshotRevision"] == 1
+
+    updated_intake = analysis_intake_node(
+        {
+            "user_message": "改成近90天",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_shared_inputs": {"timeRange": "近90天"},
+            "analysis_module_inputs": {},
+            "analysis_session": first_run["analysis_session"],
+            "debug": {},
+        }
+    )
+
+    stale_result = updated_intake["analysis_session"]["moduleResults"]["robotics_risk"]
+    stale_state = updated_intake["analysis_session"]["moduleStates"]["robotics_risk"]
+    assert updated_intake["needs_clarification"] is False
+    assert updated_intake["analysis_session"]["status"] == "stale"
+    assert updated_intake["analysis_session"]["revision"] == 2
+    assert stale_result["status"] == "stale"
+    assert stale_result["stale"] is True
+    assert stale_result["staleSlots"] == [SHARED_TIME_RANGE]
+    assert stale_state["status"] == "stale"
+
+    rerun = analysis_modules_node(
+        {
+            "user_message": "重新跑",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_session": updated_intake["analysis_session"],
+            "debug": {},
+        }
+    )
+
+    assert rerun["analysis_session"]["status"] == "completed"
+    assert rerun["analysis_results"]["robotics_risk"]["runId"] == "rerun-2"
+    assert rerun["analysis_results"]["robotics_risk"]["inputSnapshotRevision"] == 2
+    assert rerun["analysis_handoff_bundle"]["analysisSession"]["revision"] == 2
+    assert rerun["analysis_handoff_bundle"]["sharedInputSummary"]["timeRange"] == "近90天"
+    assert rerun["analysis_handoff_bundle"].get("staleModules", []) == []
+    assert [item["timeRange"] for item in run_inputs] == ["近30天", "近90天"]
 
 
 def test_search_subagent_reports_missing_evidence(app):

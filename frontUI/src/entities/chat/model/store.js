@@ -8,6 +8,7 @@ import {
   buildMessageId,
   normalizeChatMessage,
   normalizeChatSession,
+  normalizeSelectedAnalysisModules,
   serializeChatSession,
 } from "@/entities/chat/lib/session";
 
@@ -148,6 +149,21 @@ export const useChatStore = defineStore("chat", () => {
     activeSession.value.updatedAt = new Date().toISOString();
   };
 
+  const setSessionAnalysisModules = (sessionId, moduleIds = []) => {
+    const session = findSession(sessionId);
+    if (!session) return false;
+    session.selectedAnalysisModules = normalizeSelectedAnalysisModules(moduleIds);
+    session.updatedAt = new Date().toISOString();
+    return true;
+  };
+
+  const setActiveSessionAnalysisModules = (moduleIds = []) => {
+    if (!activeSession.value) return false;
+    return setSessionAnalysisModules(activeSession.value.id, moduleIds);
+  };
+
+  const clearActiveSessionAnalysisModules = () => setActiveSessionAnalysisModules([]);
+
   const deleteSession = (sessionId) => {
     const normalizedId = String(sessionId || "");
     const index = sessions.value.findIndex((session) => session.id === normalizedId);
@@ -214,6 +230,9 @@ export const useChatStore = defineStore("chat", () => {
     removeMessageFromSession,
     appendPendingAssistantMessage,
     setSessionScope,
+    setSessionAnalysisModules,
+    setActiveSessionAnalysisModules,
+    clearActiveSessionAnalysisModules,
     deleteSession,
     setSending,
     setError,

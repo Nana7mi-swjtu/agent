@@ -15,6 +15,7 @@ from ..agent.jobs import (
     serialize_job,
     submit_agent_chat_job,
 )
+from ..agent.analysis_session import load_analysis_session_state, save_analysis_session_state
 from ..agent.memory import load_conversation_history, save_conversation_turn
 from ..agent.services import AgentServiceError, generate_reply_payload
 from ..db import session_scope
@@ -75,6 +76,26 @@ def _selected_role(data: dict | None) -> str | None:
     return None
 
 
+def _extract_analysis_request(data: dict | None) -> tuple[list[str], dict, dict]:
+    if not isinstance(data, dict):
+        return [], {}, {}
+    enabled_modules = data.get("enabledAnalysisModules")
+    shared_inputs = data.get("analysisSharedInputs")
+    module_inputs = data.get("analysisModuleInputs")
+    parsed_enabled = [
+        str(item).strip()
+        for item in enabled_modules
+        if isinstance(item, str) and str(item).strip()
+    ] if isinstance(enabled_modules, list) else []
+    parsed_shared = dict(shared_inputs) if isinstance(shared_inputs, dict) else {}
+    parsed_module_inputs = {
+        str(module_id).strip(): dict(payload)
+        for module_id, payload in module_inputs.items()
+        if str(module_id).strip() and isinstance(payload, dict)
+    } if isinstance(module_inputs, dict) else {}
+    return parsed_enabled, parsed_shared, parsed_module_inputs
+
+
 def _upsert_role_preferences(user: User, role: str) -> dict:
     current_preferences = user.preferences if isinstance(user.preferences, dict) else {}
     preferences = dict(current_preferences)
@@ -130,6 +151,12 @@ def _chat_response_data(
         "graph": result.get("graph", {}),
         "graphMeta": result.get("graphMeta", {}),
     }
+    if isinstance(result.get("analysisResults"), dict):
+        data["analysisResults"] = result.get("analysisResults", {})
+    if isinstance(result.get("analysisHandoffBundle"), dict):
+        data["analysisHandoffBundle"] = result.get("analysisHandoffBundle", {})
+    if isinstance(result.get("analysisSession"), dict):
+        data["analysisSession"] = result.get("analysisSession", {})
     if trace_enabled and isinstance(result.get("trace"), dict):
         data["trace"] = result["trace"]
     if debug_enabled:
@@ -218,6 +245,9 @@ def create_workspace_chat_job():
     request_workspace_id = ""
     entity = ""
     intent = ""
+    enabled_analysis_modules: list[str] = []
+    analysis_shared_inputs: dict = {}
+    analysis_module_inputs: dict = {}
     if isinstance(payload, dict):
         raw_workspace_id = payload.get("workspaceId")
         if isinstance(raw_workspace_id, str):
@@ -228,6 +258,7 @@ def create_workspace_chat_job():
         raw_intent = payload.get("intent")
         if isinstance(raw_intent, str):
             intent = raw_intent.strip()
+        enabled_analysis_modules, analysis_shared_inputs, analysis_module_inputs = _extract_analysis_request(payload)
 
     app_obj = current_app._get_current_object()
     with session_scope() as db:
@@ -335,6 +366,9 @@ def workspace_chat():
     request_workspace_id = ""
     entity = ""
     intent = ""
+    enabled_analysis_modules: list[str] = []
+    analysis_shared_inputs: dict = {}
+    analysis_module_inputs: dict = {}
     if isinstance(payload, dict):
         raw_workspace_id = payload.get("workspaceId")
         if isinstance(raw_workspace_id, str):
@@ -345,6 +379,7 @@ def workspace_chat():
         raw_intent = payload.get("intent")
         if isinstance(raw_intent, str):
             intent = raw_intent.strip()
+        enabled_analysis_modules, analysis_shared_inputs, analysis_module_inputs = _extract_analysis_request(payload)
 
     with session_scope() as db:
         user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
@@ -378,6 +413,14 @@ def workspace_chat():
             role=role,
             conversation_id=conversation_id,
         )
+        analysis_session_state = load_analysis_session_state(
+            db,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            role=role,
+            conversation_id=conversation_id,
+            enabled_modules=enabled_analysis_modules,
+        )
         try:
             result = generate_reply_payload(
                 role=role,
@@ -390,6 +433,10 @@ def workspace_chat():
                 rag_debug_enabled=debug_enabled,
                 entity=entity,
                 intent=intent,
+                enabled_analysis_modules=enabled_analysis_modules,
+                analysis_shared_inputs=analysis_shared_inputs,
+                analysis_module_inputs=analysis_module_inputs,
+                analysis_session_state=analysis_session_state,
                 agent_trace_enabled=trace_enabled,
                 agent_trace_debug_details_enabled=trace_details_enabled,
             )
@@ -419,6 +466,16 @@ def workspace_chat():
             intent=str(result.get("intent", intent)).strip(),
             conversation_context=conversation_context,
         )
+        persisted_analysis_session = save_analysis_session_state(
+            db,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            role=role,
+            conversation_id=conversation_id,
+            payload=result.get("analysisSession"),
+        )
+        if persisted_analysis_session:
+            result["analysisSession"] = persisted_analysis_session
 
         return {
             "ok": True,
@@ -449,6 +506,9 @@ def workspace_chat_stream():
     request_workspace_id = ""
     entity = ""
     intent = ""
+    enabled_analysis_modules: list[str] = []
+    analysis_shared_inputs: dict = {}
+    analysis_module_inputs: dict = {}
     if isinstance(payload, dict):
         raw_workspace_id = payload.get("workspaceId")
         if isinstance(raw_workspace_id, str):
@@ -459,6 +519,7 @@ def workspace_chat_stream():
         raw_intent = payload.get("intent")
         if isinstance(raw_intent, str):
             intent = raw_intent.strip()
+        enabled_analysis_modules, analysis_shared_inputs, analysis_module_inputs = _extract_analysis_request(payload)
 
     with session_scope() as db:
         user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
@@ -499,6 +560,14 @@ def workspace_chat_stream():
                     role=role,
                     conversation_id=conversation_id,
                 )
+                analysis_session_state = load_analysis_session_state(
+                    db,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    role=role,
+                    conversation_id=conversation_id,
+                    enabled_modules=enabled_analysis_modules,
+                )
                 result = generate_reply_payload(
                     role=role,
                     system_prompt=preset["systemPrompt"],
@@ -510,6 +579,10 @@ def workspace_chat_stream():
                     rag_debug_enabled=debug_enabled,
                     entity=entity,
                     intent=intent,
+                    enabled_analysis_modules=enabled_analysis_modules,
+                    analysis_shared_inputs=analysis_shared_inputs,
+                    analysis_module_inputs=analysis_module_inputs,
+                    analysis_session_state=analysis_session_state,
                     agent_trace_enabled=trace_enabled,
                     agent_trace_debug_details_enabled=trace_details_enabled,
                 )
@@ -521,6 +594,16 @@ def workspace_chat_stream():
                     intent=str(result.get("intent", intent)).strip(),
                     conversation_context=conversation_context,
                 )
+                persisted_analysis_session = save_analysis_session_state(
+                    db,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    role=role,
+                    conversation_id=conversation_id,
+                    payload=result.get("analysisSession"),
+                )
+                if persisted_analysis_session:
+                    result["analysisSession"] = persisted_analysis_session
         except AgentServiceError:
             log_audit_event(
                 "workspace.chat.failed",

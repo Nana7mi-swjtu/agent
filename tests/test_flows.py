@@ -8,7 +8,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.agent import services as agent_services
 from app.agent.services import AgentServiceError
-from app.models import AgentChatJob, AgentConversationMessage, AgentConversationThread, User
+from app.models import AgentChatJob, AgentConversationMessage, AgentConversationThread, AnalysisSession, User
 
 
 def _auth_headers(client, user_id: int) -> dict[str, str]:
@@ -478,6 +478,89 @@ def test_generate_reply_payload_routes_knowledge_graph_through_search_subagent(a
     assert [step["id"] for step in payload["trace"]["steps"]] == ["planner", "search_subagent", "compose_answer", "citations"]
 
 
+def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app, monkeypatch):
+    captured = {"system_content": ""}
+
+    class _FakeResponse:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _FakeChatOpenAI:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def invoke(self, messages):
+            captured["system_content"] = str(messages[0].content)
+            return _FakeResponse("主 agent 汇总了分析模块结果")
+
+    app.config["AGENT_KNOWLEDGE_GRAPH_ENABLED"] = False
+    app.config["RAG_ENABLED"] = False
+    app.config["AGENT_WEBSEARCH_ENABLED"] = False
+    app.config["AGENT_MCP_ENABLED"] = False
+    app.config["AI_PROVIDER"] = "openai"
+    app.config["AI_MODEL"] = "test-model"
+    app.config["AI_API_KEY"] = "test-key"
+    app.config["AI_TIMEOUT_SECONDS"] = 10
+    app.config["AI_BASE_URL"] = ""
+    monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
+
+    def _fake_run_robotics(payload, **kwargs):
+        assert payload["enterpriseName"] == "石头科技"
+        assert payload["timeRange"] == "近30天"
+        assert payload["focus"] == "订单与政策"
+        assert kwargs.get("db") is not None
+        assert kwargs.get("evidence_cache") is not None
+        return {
+            "status": "done",
+            "runId": "rrisk_parent_001",
+            "result": {
+                "summary": {
+                    "opportunity": "政策支持和订单增长构成主要机会。",
+                    "risk": "竞争节奏和采购兑现存在波动。",
+                }
+            },
+            "documentHandoff": {
+                "schemaVersion": "robotics_document_handoff.v1",
+                "title": "石头科技风险机会简报",
+            },
+            "limitations": ["政策样本窗口有限"],
+        }
+
+    monkeypatch.setattr("app.agent.graph.analysis_modules.run_robotics_risk_subagent", _fake_run_robotics)
+    agent_services.reset_runtime_for_tests()
+
+    with app.app_context():
+        payload = agent_services.generate_reply_payload(
+            role="investor",
+            system_prompt="system",
+            user_message="请开始机器人风险机会分析",
+            user_id=7,
+            workspace_id="ws-analysis",
+            enabled_analysis_modules=["robotics_risk"],
+            analysis_shared_inputs={
+                "enterpriseName": "石头科技",
+                "timeRange": "近30天",
+                "reportGoal": "形成机器人行业风险机会简报",
+            },
+            analysis_module_inputs={"robotics_risk": {"focus": "订单与政策"}},
+            agent_trace_enabled=True,
+            agent_trace_debug_details_enabled=True,
+        )
+
+    assert payload["reply"] == "主 agent 汇总了分析模块结果"
+    assert payload["analysisResults"]["robotics_risk"]["runId"] == "rrisk_parent_001"
+    assert payload["analysisHandoffBundle"]["enabledModules"] == ["robotics_risk"]
+    assert payload["analysisHandoffBundle"]["documentHandoffs"]["robotics_risk"]["title"] == "石头科技风险机会简报"
+    assert "分析模块编排结果" in captured["system_content"]
+    assert [step["id"] for step in payload["trace"]["steps"]] == [
+        "planner",
+        "analysis_intake",
+        "analysis_modules",
+        "compose_answer",
+        "citations",
+    ]
+
+
 def test_workspace_chat_passes_entity_and_intent_hints(client, db_session, monkeypatch):
     user = User(email="chat-kg@example.com", nickname="ChatKg", password_hash=generate_password_hash("password123"))
     db_session.add(user)
@@ -516,6 +599,161 @@ def test_workspace_chat_passes_entity_and_intent_hints(client, db_session, monke
     assert captured_kwargs["intent"] == "股权关系"
     assert payload["graph"]["nodes"][0]["label"] == "京东方"
     assert payload["graphMeta"]["contextSize"] == 1
+
+
+def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monkeypatch):
+    user = User(email="chat-analysis@example.com", nickname="ChatAnalysis", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    captured_kwargs: dict[str, object] = {}
+
+    def _fake_generate_reply_payload(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "reply": "analysis answer",
+            "citations": [],
+            "sources": [],
+            "noEvidence": False,
+            "analysisResults": {
+                "robotics_risk": {
+                    "moduleId": "robotics_risk",
+                    "status": "done",
+                    "runId": "rrisk_001",
+                    "summary": "机器人政策和订单信号已汇总。",
+                }
+            },
+            "analysisHandoffBundle": {
+                "enabledModules": ["robotics_risk"],
+                "sharedInputSummary": {"enterpriseName": "石头科技"},
+            },
+            "graph": {},
+            "graphMeta": {},
+        }
+
+    monkeypatch.setattr("app.workspace.routes.generate_reply_payload", _fake_generate_reply_payload)
+
+    response = client.post(
+        "/api/workspace/chat",
+        json=_chat_payload(
+            "请开始机器人行业风险机会分析",
+            enabledAnalysisModules=["robotics_risk"],
+            analysisSharedInputs={
+                "enterpriseName": "石头科技",
+                "timeRange": "近30天",
+                "reportGoal": "形成风险机会简报",
+            },
+            analysisModuleInputs={"robotics_risk": {"focus": "订单与政策"}},
+        ),
+        headers=headers,
+    )
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert captured_kwargs["enabled_analysis_modules"] == ["robotics_risk"]
+    assert captured_kwargs["analysis_shared_inputs"]["enterpriseName"] == "石头科技"
+    assert captured_kwargs["analysis_module_inputs"]["robotics_risk"]["focus"] == "订单与政策"
+    assert payload["analysisHandoffBundle"]["enabledModules"] == ["robotics_risk"]
+    assert payload["analysisResults"]["robotics_risk"]["runId"] == "rrisk_001"
+
+
+def test_workspace_chat_restores_persisted_analysis_session_between_turns(client, db_session, monkeypatch):
+    user = User(email="chat-analysis-session@example.com", nickname="ChatAnalysisSession", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    captured_calls: list[dict[str, object]] = []
+
+    def _fake_generate_reply_payload(**kwargs):
+        captured_calls.append(kwargs)
+        restored_session = kwargs.get("analysis_session_state")
+        if isinstance(restored_session, dict) and restored_session.get("slotValues"):
+            return {
+                "reply": "second analysis answer",
+                "citations": [],
+                "sources": [],
+                "noEvidence": False,
+                "analysisSession": restored_session,
+                "graph": {},
+                "graphMeta": {},
+            }
+        return {
+            "reply": "first analysis answer",
+            "citations": [],
+            "sources": [],
+            "noEvidence": False,
+            "analysisSession": {
+                "status": "collecting",
+                "revision": 1,
+                "enabledModules": ["robotics_risk"],
+                "slotValues": {"enterprise_name": "石头科技"},
+                "slotStates": {
+                    "enterprise_name": {
+                        "status": "resolved",
+                        "updatedRevision": 1,
+                        "value": "石头科技",
+                    }
+                },
+                "missingSlots": ["time_range"],
+                "questionPlan": [
+                    {
+                        "groupId": "time_range",
+                        "slotIds": ["time_range"],
+                        "requiredSlotIds": ["time_range"],
+                        "labels": ["时间范围"],
+                        "question": "请补充时间范围。",
+                    }
+                ],
+                "moduleStates": {},
+                "moduleResults": {},
+                "compatibility": {
+                    "legacySharedInputs": {"enterpriseName": "石头科技"},
+                    "legacyModuleInputs": {},
+                },
+                "handoffBundle": {},
+            },
+            "graph": {},
+            "graphMeta": {},
+        }
+
+    monkeypatch.setattr("app.workspace.routes.generate_reply_payload", _fake_generate_reply_payload)
+
+    first = client.post(
+        "/api/workspace/chat",
+        json=_chat_payload(
+            "开始做机器人行业分析",
+            "analysis-session-conv",
+            enabledAnalysisModules=["robotics_risk"],
+        ),
+        headers=headers,
+    )
+    assert first.status_code == 200
+    first_payload = first.get_json()["data"]
+    assert first_payload["analysisSession"]["sessionId"].startswith("asess_")
+    assert first_payload["analysisSession"]["slotValues"]["enterprise_name"] == "石头科技"
+
+    second = client.post(
+        "/api/workspace/chat",
+        json=_chat_payload("继续", "analysis-session-conv"),
+        headers=headers,
+    )
+    assert second.status_code == 200
+    second_payload = second.get_json()["data"]
+    assert captured_calls[1]["analysis_session_state"]["sessionId"] == first_payload["analysisSession"]["sessionId"]
+    assert captured_calls[1]["analysis_session_state"]["slotValues"]["enterprise_name"] == "石头科技"
+    assert second_payload["analysisSession"]["sessionId"] == first_payload["analysisSession"]["sessionId"]
+
+    db_session.expire_all()
+    rows = db_session.execute(select(AnalysisSession).where(AnalysisSession.user_id == user.id)).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].session_id == first_payload["analysisSession"]["sessionId"]
 
 
 def test_workspace_chat_stream_emits_deltas_and_final_metadata(client, app, db_session, monkeypatch):

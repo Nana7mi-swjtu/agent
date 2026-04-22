@@ -27,6 +27,15 @@ class AgentState(TypedDict):
     search_result: dict[str, Any]
     mcp_request: dict[str, Any]
     mcp_result: dict[str, Any]
+    enabled_analysis_modules: list[str]
+    analysis_shared_inputs: dict[str, Any]
+    analysis_module_inputs: dict[str, dict[str, Any]]
+    analysis_session: dict[str, Any]
+    analysis_missing_fields: list[dict[str, Any]]
+    analysis_results: dict[str, dict[str, Any]]
+    analysis_handoff_bundle: dict[str, Any]
+    analysis_completed: bool
+    analysis_unsupported_modules: list[str]
     search_completed: bool
     mcp_completed: bool
     kg_enabled: bool
