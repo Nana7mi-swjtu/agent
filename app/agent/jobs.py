@@ -15,6 +15,7 @@ from ..models import AgentChatJob, User
 from ..workspace.roles import ROLE_PRESETS
 from .analysis_session import load_analysis_session_state, save_analysis_session_state
 from .memory import load_conversation_history, save_conversation_turn
+from .reporting import analysis_report_to_payload, save_analysis_report_artifact
 from .services import AgentServiceError, generate_reply_payload
 
 logger = logging.getLogger(__name__)
@@ -305,6 +306,25 @@ def run_agent_chat_job(app: Flask, job_id: int) -> None:
                 )
                 if persisted_analysis_session:
                     result["analysisSession"] = persisted_analysis_session
+                artifact = result.get("analysisReportArtifact")
+                if isinstance(artifact, dict) and artifact:
+                    scope = dict(artifact.get("scope", {})) if isinstance(artifact.get("scope"), dict) else {}
+                    if persisted_analysis_session and persisted_analysis_session.get("sessionId") and not scope.get("analysisSessionId"):
+                        scope["analysisSessionId"] = str(persisted_analysis_session.get("sessionId"))
+                    if persisted_analysis_session and persisted_analysis_session.get("revision") is not None:
+                        scope["analysisSessionRevision"] = int(persisted_analysis_session.get("revision") or 0)
+                    artifact["scope"] = scope
+                    row = save_analysis_report_artifact(
+                        db,
+                        user_id=job.user_id,
+                        workspace_id=job.workspace_id,
+                        role=job.role,
+                        conversation_id=job.conversation_id,
+                        artifact=artifact,
+                    )
+                    if row is not None:
+                        result["analysisReport"] = analysis_report_to_payload(row)
+                        result.pop("analysisReportArtifact", None)
                 _mark_succeeded(db, job, result)
                 log_audit_event(
                     "workspace.chat.job.completed",

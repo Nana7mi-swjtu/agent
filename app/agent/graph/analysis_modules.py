@@ -6,6 +6,12 @@ from typing import Any, Callable
 from flask import has_app_context
 
 from ...robotics_risk import run_robotics_risk_subagent
+from ..reporting import (
+    build_robotics_domain_analysis,
+    build_robotics_report_contribution,
+    normalize_report_contribution,
+    validate_report_contribution_traceability,
+)
 from .analysis_slots import (
     AnalysisSlotDefinition,
     AnalysisSlotOption,
@@ -244,6 +250,26 @@ def normalize_analysis_module_output(
             "errorMessage": _clean_text(payload.get("errorMessage") or payload.get("error_message")),
         }
     )
+    domain_analysis = payload.get("domainAnalysis") if isinstance(payload.get("domainAnalysis"), dict) else {}
+    report_contribution = (
+        payload.get("reportContribution") if isinstance(payload.get("reportContribution"), dict) else {}
+    )
+    if contract.module_id == "robotics_risk" and not domain_analysis:
+        domain_analysis = build_robotics_domain_analysis(normalized)
+    if contract.module_id == "robotics_risk" and not report_contribution:
+        report_contribution = build_robotics_report_contribution(normalized, domain_analysis)
+    elif report_contribution:
+        report_contribution = normalize_report_contribution(
+            report_contribution,
+            module_id=contract.module_id,
+            display_name=contract.display_name,
+            status=status,
+        )
+        validate_report_contribution_traceability(report_contribution, domain_analysis)
+    if domain_analysis:
+        normalized["domainAnalysis"] = domain_analysis
+    if report_contribution:
+        normalized["reportContribution"] = report_contribution
     if input_revision is not None:
         normalized["inputSnapshotRevision"] = int(input_revision)
     return normalized

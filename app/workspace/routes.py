@@ -17,6 +17,15 @@ from ..agent.jobs import (
 )
 from ..agent.analysis_session import load_analysis_session_state, save_analysis_session_state
 from ..agent.memory import load_conversation_history, save_conversation_turn
+from ..agent.reporting import (
+    SUPPORTED_REPORT_DOWNLOAD_FORMATS,
+    analysis_report_to_payload,
+    find_report_asset,
+    get_analysis_report,
+    inline_asset_response_payload,
+    safe_report_filename,
+    save_analysis_report_artifact,
+)
 from ..agent.services import AgentServiceError, generate_reply_payload
 from ..db import session_scope
 from ..logging_utils import bind_log_context, log_audit_event
@@ -157,11 +166,47 @@ def _chat_response_data(
         data["analysisHandoffBundle"] = result.get("analysisHandoffBundle", {})
     if isinstance(result.get("analysisSession"), dict):
         data["analysisSession"] = result.get("analysisSession", {})
+    if isinstance(result.get("analysisReport"), dict):
+        data["analysisReport"] = result.get("analysisReport", {})
     if trace_enabled and isinstance(result.get("trace"), dict):
         data["trace"] = result["trace"]
     if debug_enabled:
         data["debug"] = result.get("debug", {})
     return data
+
+
+def _persist_analysis_report_result(
+    db,
+    *,
+    result: dict,
+    user_id: int,
+    workspace_id: str,
+    role: str,
+    conversation_id: str,
+    analysis_session: dict | None = None,
+) -> None:
+    artifact = result.get("analysisReportArtifact")
+    if not isinstance(artifact, dict) or not artifact:
+        return
+    if isinstance(analysis_session, dict):
+        scope = dict(artifact.get("scope", {})) if isinstance(artifact.get("scope"), dict) else {}
+        if analysis_session.get("sessionId") and not scope.get("analysisSessionId"):
+            scope["analysisSessionId"] = str(analysis_session.get("sessionId"))
+        if analysis_session.get("revision") is not None:
+            scope["analysisSessionRevision"] = int(analysis_session.get("revision") or 0)
+        artifact["scope"] = scope
+    row = save_analysis_report_artifact(
+        db,
+        user_id=user_id,
+        workspace_id=workspace_id,
+        role=role,
+        conversation_id=conversation_id,
+        artifact=artifact,
+    )
+    if row is None:
+        return
+    result["analysisReport"] = analysis_report_to_payload(row)
+    result.pop("analysisReportArtifact", None)
 
 
 def _job_response_data(job) -> dict:
@@ -349,6 +394,68 @@ def get_workspace_chat_job(job_id: int):
         return {"ok": True, "data": _job_response_data(job)}
 
 
+@workspace_bp.get("/reports/<report_id>")
+def get_workspace_report(report_id: str):
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+    workspace_id = str(request.args.get("workspaceId", "") or "").strip() or None
+
+    with session_scope() as db:
+        row = get_analysis_report(db, user_id=user_id, workspace_id=workspace_id, report_id=str(report_id))
+        if row is None:
+            return _json_error("report not found", 404)
+        return {"ok": True, "data": analysis_report_to_payload(row, include_body=True)}
+
+
+@workspace_bp.get("/reports/<report_id>/download")
+def download_workspace_report(report_id: str):
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+    workspace_id = str(request.args.get("workspaceId", "") or "").strip() or None
+    report_format = str(request.args.get("format", "markdown") or "markdown").strip().lower()
+    if report_format in {"md"}:
+        report_format = "markdown"
+    if report_format not in SUPPORTED_REPORT_DOWNLOAD_FORMATS:
+        return _json_error("unsupported report format: only markdown and html are supported", 400)
+
+    with session_scope() as db:
+        row = get_analysis_report(db, user_id=user_id, workspace_id=workspace_id, report_id=str(report_id))
+        if row is None:
+            return _json_error("report not found", 404)
+        body = row.markdown_body if report_format == "markdown" else row.html_body
+        mimetype = "text/markdown; charset=utf-8" if report_format == "markdown" else "text/html; charset=utf-8"
+        response = Response(body or "", mimetype=mimetype)
+        response.headers["Content-Disposition"] = f'attachment; filename="{safe_report_filename(row, report_format)}"'
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+
+@workspace_bp.get("/reports/<report_id>/assets/<asset_id>/download")
+def download_workspace_report_asset(report_id: str, asset_id: str):
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+    workspace_id = str(request.args.get("workspaceId", "") or "").strip() or None
+
+    with session_scope() as db:
+        row = get_analysis_report(db, user_id=user_id, workspace_id=workspace_id, report_id=str(report_id))
+        if row is None:
+            return _json_error("report not found", 404)
+        asset = find_report_asset(row, asset_id)
+        if asset is None:
+            return _json_error("report asset not found", 404)
+        payload = inline_asset_response_payload(asset)
+        if payload is None:
+            return _json_error("report asset storage is unavailable", 404)
+        content, content_type, filename = payload
+        response = Response(content, mimetype=content_type)
+        response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+
 @workspace_bp.post("/chat")
 def workspace_chat():
     user_id = _current_user_id()
@@ -476,6 +583,15 @@ def workspace_chat():
         )
         if persisted_analysis_session:
             result["analysisSession"] = persisted_analysis_session
+        _persist_analysis_report_result(
+            db,
+            result=result,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            role=role,
+            conversation_id=conversation_id,
+            analysis_session=result.get("analysisSession"),
+        )
 
         return {
             "ok": True,
@@ -604,6 +720,15 @@ def workspace_chat_stream():
                 )
                 if persisted_analysis_session:
                     result["analysisSession"] = persisted_analysis_session
+                _persist_analysis_report_result(
+                    db,
+                    result=result,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    role=role,
+                    conversation_id=conversation_id,
+                    analysis_session=result.get("analysisSession"),
+                )
         except AgentServiceError:
             log_audit_event(
                 "workspace.chat.failed",

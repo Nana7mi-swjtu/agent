@@ -36,6 +36,9 @@ class AgentState(TypedDict):
     analysis_handoff_bundle: dict[str, Any]
     analysis_completed: bool
     analysis_unsupported_modules: list[str]
+    analysis_report: dict[str, Any]
+    analysis_report_artifact: dict[str, Any]
+    analysis_report_generated: bool
     search_completed: bool
     mcp_completed: bool
     kg_enabled: bool
