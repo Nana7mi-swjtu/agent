@@ -550,10 +550,59 @@ def test_generate_analysis_report_omits_unselected_modules_and_renders_visuals()
 
     assert artifact["status"] == "completed"
     assert artifact["scope"]["enabledModules"] == ["bankruptcy_risk"]
+    assert artifact["semanticModel"]["schemaVersion"] == "report_semantic_model.v1"
+    assert artifact["semanticModel"]["keyFindings"][0]["title"] == "破产风险偏高"
+    assert artifact["semanticModel"]["modelExplanations"][0]["interpretationBoundary"]
+    assert artifact["semanticModel"]["visualNarratives"][0]["interpretationBoundary"]
+    assert artifact["internalTraceIndex"]["items"]
     assert "破产风险偏高" in artifact["markdownBody"]
     assert "未选择政策分析" not in artifact["markdownBody"]
+    assert "bankruptcy_risk" not in artifact["markdownBody"]
+    assert "企业破产风险分析" not in artifact["markdownBody"]
+    assert "moduleId" not in artifact["markdownBody"]
+    assert "domainOutputIds" not in artifact["markdownBody"]
+    assert "modelOutputIds" not in artifact["markdownBody"]
     assert artifact["visualAssets"][0]["downloadUrl"].endswith("/assets/shap_001/download")
     assert "模型贡献不等于现实因果" in artifact["markdownBody"]
+
+
+def test_generate_analysis_report_blocks_published_internal_field_leakage():
+    artifact = generate_analysis_report(
+        analysis_session={"sessionId": "asess_leak", "revision": 1, "enabledModules": ["leaky_module"]},
+        handoff_bundle={
+            "analysisSession": {"sessionId": "asess_leak", "revision": 1},
+            "enabledModules": ["leaky_module"],
+            "sharedInputSummary": {"enterpriseName": "测试公司", "reportGoal": "验证泄露校验"},
+            "moduleRunIds": {"leaky_module": "run_leak_001"},
+        },
+        module_results={
+            "leaky_module": {
+                "moduleId": "leaky_module",
+                "displayName": "泄露测试模块",
+                "status": "done",
+                "runId": "run_leak_001",
+                "domainAnalysis": {"domainOutputs": [{"id": "domain_001", "summary": "已知输出"}]},
+                "reportContribution": {
+                    "moduleId": "leaky_module",
+                    "displayName": "泄露测试模块",
+                    "status": "done",
+                    "findings": [
+                        {
+                            "id": "finding_001",
+                            "title": "moduleId 不应进入正文",
+                            "summary": "traceRefs 不应进入正文。",
+                            "traceRefs": {"domainOutputIds": ["domain_001"]},
+                        }
+                    ],
+                },
+            }
+        },
+    )
+
+    assert artifact["status"] == "failed"
+    assert "发布报告未通过内部字段泄露校验" in artifact["markdownBody"]
+    assert "moduleId 不应进入正文" not in artifact["markdownBody"]
+    assert any(flag["type"] == "published_output" for flag in artifact["qualityFlags"])
 
 
 def test_generate_analysis_report_marks_stale_modules_as_degraded():
@@ -578,6 +627,7 @@ def test_generate_analysis_report_marks_stale_modules_as_degraded():
 
     assert artifact["status"] == "degraded"
     assert "报告只能作为降级快照使用" in artifact["markdownBody"]
+    assert "robotics_risk" not in artifact["markdownBody"]
 
 
 def test_analysis_session_marks_stale_and_reruns_module_when_shared_slot_changes(monkeypatch):

@@ -697,6 +697,26 @@ def test_workspace_chat_persists_report_and_supports_downloads(client, db_sessio
                 "preview": "# 石头科技定制化分析报告\n\n报告正文预览。",
                 "markdownBody": "# 石头科技定制化分析报告\n\n报告正文。",
                 "htmlBody": "<!doctype html><html><body><h1>石头科技定制化分析报告</h1></body></html>",
+                "semanticModel": {
+                    "schemaVersion": "report_semantic_model.v1",
+                    "keyFindings": [{"id": "sem_finding_001", "title": "风险矩阵", "readerSummary": "报告正文。"}],
+                    "internalTraceIndex": {
+                        "items": {
+                            "sem_finding_001": {
+                                "moduleId": "robotics_risk",
+                                "runId": "rrisk_001",
+                            }
+                        }
+                    },
+                },
+                "internalTraceIndex": {
+                    "items": {
+                        "sem_finding_001": {
+                            "moduleId": "robotics_risk",
+                            "runId": "rrisk_001",
+                        }
+                    }
+                },
                 "visualAssets": [
                     {
                         "assetId": "chart_001",
@@ -724,16 +744,20 @@ def test_workspace_chat_persists_report_and_supports_downloads(client, db_sessio
     payload = response.get_json()["data"]
     assert payload["analysisReport"]["reportId"] == "arpt_test_001"
     assert payload["analysisReport"]["downloadUrls"]["html"].endswith("/download?format=html")
+    assert "robotics_risk" not in payload["analysisReport"]["preview"]
 
     db_session.expire_all()
     row = db_session.execute(select(AnalysisReport).where(AnalysisReport.report_id == "arpt_test_001")).scalar_one()
     assert row.workspace_id == "ws-report"
     assert row.analysis_session_id == payload["analysisSession"]["sessionId"]
+    assert row.artifact_json["semanticModel"]["schemaVersion"] == "report_semantic_model.v1"
+    assert row.artifact_json["internalTraceIndex"]["items"]["sem_finding_001"]["moduleId"] == "robotics_risk"
 
     markdown = client.get("/api/workspace/reports/arpt_test_001/download?format=markdown&workspaceId=ws-report", headers=headers)
     assert markdown.status_code == 200
     assert "text/markdown" in markdown.headers["Content-Type"]
     assert "报告正文" in markdown.get_data(as_text=True)
+    assert "robotics_risk" not in markdown.get_data(as_text=True)
 
     html_download = client.get("/api/workspace/reports/arpt_test_001/download?format=html&workspaceId=ws-report", headers=headers)
     assert html_download.status_code == 200
