@@ -31,6 +31,7 @@ from app.agent.reporting import (
     ReportContributionValidationError,
     generate_analysis_report,
     normalize_visual_asset,
+    render_report_pdf,
     validate_report_contribution_traceability,
 )
 from app.robotics_risk.cache import RoboticsEvidenceCache
@@ -405,6 +406,62 @@ def test_analysis_intake_groups_same_round_shared_slots(monkeypatch):
     assert question_plan[1]["groupId"] == "report_goal"
 
 
+def test_analysis_intake_clarification_marks_shared_vs_module_specific_gaps(monkeypatch):
+    robotics_contract = AnalysisModuleContract(
+        module_id="robotics_risk",
+        display_name="机器人风险机会洞察",
+        required_slots=(
+            SHARED_ENTERPRISE_NAME,
+            SHARED_TIME_RANGE,
+            SHARED_REPORT_GOAL,
+            "robotics_risk.focus_detail",
+        ),
+        slot_definitions=(
+            AnalysisSlotDefinition(
+                slot_id="robotics_risk.focus_detail",
+                label="机器人关注重点",
+                scope=SCOPE_MODULE,
+                value_kind=VALUE_KIND_TEXT,
+                normalizer="passthrough_text",
+                group_id="robotics_risk.focus_detail",
+                priority=70,
+                depends_on=(SHARED_ENTERPRISE_NAME, SHARED_TIME_RANGE, SHARED_REPORT_GOAL),
+                module_id="robotics_risk",
+            ),
+        ),
+        slot_mapping=lambda slots, compatibility, context: {},
+        run=lambda payload: {},
+    )
+    monkeypatch.setattr("app.agent.graph.nodes.get_analysis_module_registry", lambda: {"robotics_risk": robotics_contract})
+
+    shared_gap = analysis_intake_node(
+        {
+            "user_message": "开始",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_shared_inputs": {},
+            "analysis_module_inputs": {},
+            "analysis_session": create_transient_analysis_session(enabled_modules=["robotics_risk"]),
+            "debug": {},
+        }
+    )
+    assert "共享信息" in shared_gap["clarification_question"]
+    assert "模块特有信息" in shared_gap["clarification_question"]
+
+    module_gap = analysis_intake_node(
+        {
+            "user_message": "石头科技，时间范围近30天，报告目标是生成风险机会报告",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_shared_inputs": {},
+            "analysis_module_inputs": {},
+            "analysis_session": create_transient_analysis_session(enabled_modules=["robotics_risk"]),
+            "debug": {},
+        }
+    )
+    assert module_gap["needs_clarification"] is True
+    assert "共享信息已齐备" in module_gap["clarification_question"]
+    assert "机器人关注重点" in module_gap["clarification_question"]
+
+
 def test_analysis_intake_marks_ready_when_required_slots_are_prefilled():
     result = analysis_intake_node(
         {
@@ -751,6 +808,9 @@ def test_generate_analysis_report_omits_unselected_modules_and_renders_visuals()
     assert "modelOutputIds" not in artifact["markdownBody"]
     assert artifact["visualAssets"][0]["downloadUrl"].endswith("/assets/shap_001/download")
     assert "模型贡献不等于现实因果" in artifact["markdownBody"]
+    assert artifact["document"]["schemaVersion"] == "analysis_report_document.v1"
+    assert [page["type"] for page in artifact["document"]["pages"]] == ["cover", "table_of_contents", "body"]
+    assert artifact["document"]["pages"][1]["items"][0]["title"] == "报告范围"
 
 
 def test_generate_analysis_report_uses_valid_llm_writer_content():
@@ -979,6 +1039,22 @@ def test_generate_analysis_report_marks_stale_modules_as_degraded():
     assert artifact["status"] == "degraded"
     assert "报告只能作为降级快照使用" in artifact["markdownBody"]
     assert "robotics_risk" not in artifact["markdownBody"]
+
+
+def test_render_report_pdf_uses_dedicated_cover_and_toc_pages_for_structured_reports():
+    artifact = generate_analysis_report(**_basic_report_inputs())
+
+    import fitz
+
+    pdf_bytes = render_report_pdf(artifact)
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+        page_texts = [page.get_text("text") for page in document]
+
+    assert len(page_texts) >= 3
+    assert "石头科技定制化分析报告" in page_texts[0]
+    assert "目录" not in page_texts[0]
+    assert "目录" in page_texts[1]
+    assert "报告范围" in page_texts[2]
 
 
 def test_analysis_session_marks_stale_and_reruns_module_when_shared_slot_changes(monkeypatch):

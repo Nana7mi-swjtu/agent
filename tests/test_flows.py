@@ -728,9 +728,13 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
     )
     assert detail.status_code == 200
     markdown_body = detail.get_json()["data"]["markdownBody"]
+    artifact_payload = detail.get_json()["data"]["artifact"]
     assert "## 封面" in markdown_body
     assert "## 目录" in markdown_body
     assert "模块原文分析结果" in markdown_body
+    assert artifact_payload["document"]["pages"][0]["type"] == "cover"
+    assert artifact_payload["document"]["pages"][1]["type"] == "table_of_contents"
+    assert artifact_payload["document"]["pages"][2]["type"] == "body"
 
     preview = client.get(
         f"/api/workspace/reports/{generated_report['reportId']}/preview?format=pdf&workspaceId={artifact_row.workspace_id}",
