@@ -928,6 +928,8 @@ def generate_reply_payload(
             "analysis_handoff_bundle": {},
             "analysis_completed": False,
             "analysis_unsupported_modules": [],
+            "analysis_module_artifacts": [],
+            "analysis_report_request": {},
             "analysis_report": {},
             "analysis_report_artifact": {},
             "analysis_report_generated": False,
@@ -982,6 +984,12 @@ def generate_reply_payload(
         analysis_session_payload = output.get("analysis_session", {})
         if not isinstance(analysis_session_payload, dict):
             analysis_session_payload = {}
+        analysis_module_artifacts_payload = output.get("analysis_module_artifacts", [])
+        if not isinstance(analysis_module_artifacts_payload, list):
+            analysis_module_artifacts_payload = []
+        analysis_report_request_payload = output.get("analysis_report_request", {})
+        if not isinstance(analysis_report_request_payload, dict):
+            analysis_report_request_payload = {}
         analysis_report_payload = output.get("analysis_report", {})
         if not isinstance(analysis_report_payload, dict):
             analysis_report_payload = {}
@@ -1018,6 +1026,10 @@ def generate_reply_payload(
         payload["analysisHandoffBundle"] = analysis_handoff_bundle_payload
     if analysis_session_payload:
         payload["analysisSession"] = analysis_session_payload
+    if analysis_module_artifacts_payload:
+        payload["analysisModuleArtifacts"] = analysis_module_artifacts_payload
+    if analysis_report_request_payload:
+        payload["analysisReportRequest"] = analysis_report_request_payload
     if analysis_report_payload:
         payload["analysisReport"] = analysis_report_payload
     if analysis_report_artifact_payload:

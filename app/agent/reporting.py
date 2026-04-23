@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import AnalysisReport
+from ..models import AnalysisModuleArtifact, AnalysisReport
 
 REPORT_ARTIFACT_SCHEMA_VERSION = "analysis_report_artifact.v1"
 REPORT_CONTRIBUTION_SCHEMA_VERSION = "analysis_report_contribution.v1"
@@ -22,6 +22,14 @@ VISUAL_ASSET_SCHEMA_VERSION = "analysis_report_visual_asset.v1"
 REPORT_PREVIEW_LIMIT = 1200
 REPORT_DOWNLOAD_FORMAT = "pdf"
 SUPPORTED_REPORT_DOWNLOAD_FORMATS = {REPORT_DOWNLOAD_FORMAT}
+REPORT_PREVIEW_FORMAT = "pdf"
+REPORT_RENDER_STYLES = (
+    {"id": "professional", "label": "专业白底"},
+    {"id": "dark_research", "label": "深色投研"},
+    {"id": "brand_cover", "label": "品牌封面"},
+    {"id": "chart_focus", "label": "图表强化"},
+)
+DEFAULT_REPORT_RENDER_STYLE = "professional"
 VISUAL_ASSET_TYPES = {"image", "chart", "table", "graph", "timeline", "heatmap"}
 REPORT_PDF_PAGE_WIDTH = 595
 REPORT_PDF_PAGE_HEIGHT = 842
@@ -43,6 +51,25 @@ REPORT_PDF_CSS = (
     "figcaption{font-size:9.5pt;color:#52606d;}"
     ".pdf-visual-fallback{border:1px solid #d8dee8;padding:10px 12px;border-radius:4px;background:#f7f9fc;}"
 )
+REPORT_PDF_STYLE_CSS = {
+    "professional": "",
+    "dark_research": (
+        "body{color:#edf2f7;background:#111827;}"
+        "h1,h2,h3{color:#f8fafc;}"
+        "figcaption{color:#cbd5e1;}"
+        ".pdf-visual-fallback{border-color:#334155;background:#1f2937;}"
+    ),
+    "brand_cover": (
+        "h1{color:#0f766e;border-bottom:2px solid #14b8a6;padding-bottom:8px;}"
+        "h2{color:#115e59;}"
+        ".pdf-visual-fallback{border-color:#99f6e4;background:#f0fdfa;}"
+    ),
+    "chart_focus": (
+        "h1{color:#1d4ed8;}"
+        "h2{color:#1e40af;border-bottom:1px solid #bfdbfe;padding-bottom:4px;}"
+        "figure{border:1px solid #dbeafe;padding:8px;background:#f8fbff;}"
+    ),
+}
 PUBLISHED_REPORT_FORBIDDEN_LABELS = {
     "moduleId",
     "displayName",
@@ -895,6 +922,7 @@ def normalized_report_download_metadata(report_id: str, stored_metadata: dict[st
 def report_preview_metadata(artifact: dict[str, Any]) -> dict[str, Any]:
     report_id = _clean_text(artifact.get("reportId"))
     metadata = normalized_report_download_metadata(report_id, _dict_value(artifact.get("downloadMetadata")))
+    render_style = normalize_report_render_style(artifact.get("renderStyle") or _dict_value(artifact.get("rendering")).get("style"))
     return _drop_empty(
         {
             "reportId": report_id,
@@ -903,9 +931,230 @@ def report_preview_metadata(artifact: dict[str, Any]) -> dict[str, Any]:
             "preview": _clean_text(artifact.get("preview") or bounded_report_preview(_clean_text(artifact.get("markdownBody")))),
             "availableFormats": metadata["availableFormats"],
             "downloadUrls": metadata["downloadUrls"],
+            "previewUrl": report_preview_url(report_id) if report_id else "",
+            "renderStyle": render_style,
+            "regeneration": report_regeneration_metadata(report_id) if report_id else {},
             "limitations": artifact.get("limitations") if isinstance(artifact.get("limitations"), list) else [],
         }
     )
+
+
+def normalize_report_render_style(value: Any) -> str:
+    clean = _clean_text(value)
+    allowed = {style["id"] for style in REPORT_RENDER_STYLES}
+    return clean if clean in allowed else DEFAULT_REPORT_RENDER_STYLE
+
+
+def report_render_styles_metadata() -> list[dict[str, str]]:
+    return [dict(style) for style in REPORT_RENDER_STYLES]
+
+
+def report_preview_url(report_id: str) -> str:
+    clean_report_id = _clean_text(report_id)
+    if not clean_report_id:
+        return ""
+    return f"/api/workspace/reports/{clean_report_id}/preview?format={REPORT_PREVIEW_FORMAT}"
+
+
+def report_regeneration_metadata(report_id: str = "") -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "allowed": True,
+            "reportId": _clean_text(report_id),
+            "renderStyles": report_render_styles_metadata(),
+            "defaultRenderStyle": DEFAULT_REPORT_RENDER_STYLE,
+        }
+    )
+
+
+def build_analysis_module_artifacts(
+    *,
+    analysis_session: dict[str, Any],
+    module_results: dict[str, dict[str, Any]],
+    module_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    session_payload = _dict_value(analysis_session)
+    ordered_module_ids = _string_list(module_ids or session_payload.get("enabledModules"))
+    if not ordered_module_ids:
+        ordered_module_ids = [module_id for module_id in module_results.keys() if _clean_text(module_id)]
+    artifacts: list[dict[str, Any]] = []
+    for module_id in ordered_module_ids:
+        result = module_results.get(module_id)
+        if not isinstance(result, dict):
+            continue
+        markdown_body = _module_markdown_body(result)
+        if not markdown_body:
+            continue
+        title = _module_artifact_title(result, module_id=module_id)
+        run_id = _clean_text(result.get("runId"))
+        artifact_id = _clean_text(result.get("moduleArtifactId")) or _new_module_artifact_id()
+        artifacts.append(
+            _drop_empty(
+                {
+                    "schemaVersion": "analysis_module_artifact.v1",
+                    "artifactId": artifact_id,
+                    "moduleId": _clean_text(result.get("moduleId")) or module_id,
+                    "moduleRunId": run_id,
+                    "title": title,
+                    "status": _clean_text(result.get("status")) or "completed",
+                    "contentType": "text/markdown",
+                    "markdownBody": markdown_body,
+                    "analysisSession": {
+                        "sessionId": _clean_text(session_payload.get("sessionId")),
+                        "revision": _safe_int(session_payload.get("revision"), default=0),
+                    },
+                    "metadata": {
+                        "displayName": _clean_text(result.get("displayName")),
+                        "summary": _clean_text(result.get("summary")),
+                        "moduleResult": result,
+                    },
+                }
+            )
+        )
+    return artifacts
+
+
+def build_report_generation_request(
+    *,
+    analysis_session: dict[str, Any],
+    module_artifacts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    artifact_ids = [_clean_text(item.get("artifactId")) for item in module_artifacts if isinstance(item, dict)]
+    artifact_ids = [item for item in artifact_ids if item]
+    if not artifact_ids:
+        return {}
+    session_payload = _dict_value(analysis_session)
+    return _drop_empty(
+        {
+            "requestId": f"rreq_{uuid.uuid4().hex[:24]}",
+            "analysisSessionId": _clean_text(session_payload.get("sessionId")),
+            "analysisSessionRevision": _safe_int(session_payload.get("revision"), default=0),
+            "moduleArtifactIds": artifact_ids,
+            "renderStyles": report_render_styles_metadata(),
+            "defaultRenderStyle": DEFAULT_REPORT_RENDER_STYLE,
+        }
+    )
+
+
+def save_analysis_module_artifacts(
+    db: Session,
+    *,
+    user_id: int,
+    workspace_id: str,
+    role: str,
+    conversation_id: str,
+    artifacts: list[dict[str, Any]],
+    analysis_session: dict[str, Any] | None = None,
+) -> list[AnalysisModuleArtifact]:
+    rows: list[AnalysisModuleArtifact] = []
+    session_payload = _dict_value(analysis_session)
+    now = datetime.utcnow()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        artifact_id = _clean_text(artifact.get("artifactId"))
+        module_id = _clean_text(artifact.get("moduleId"))
+        markdown_body = _clean_text(artifact.get("markdownBody") or artifact.get("textBody"))
+        if not artifact_id or not module_id or not markdown_body:
+            continue
+        artifact_session = _dict_value(artifact.get("analysisSession"))
+        analysis_session_id = _clean_text(session_payload.get("sessionId") or artifact_session.get("sessionId")) or None
+        analysis_session_revision = _safe_int(
+            session_payload.get("revision", artifact_session.get("revision")),
+            default=0,
+        )
+        row = db.execute(
+            select(AnalysisModuleArtifact).where(AnalysisModuleArtifact.artifact_id == artifact_id)
+        ).scalar_one_or_none()
+        if row is None:
+            row = AnalysisModuleArtifact(
+                artifact_id=artifact_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                role=role,
+                conversation_id=conversation_id,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(row)
+        row.analysis_session_id = analysis_session_id
+        row.analysis_session_revision = analysis_session_revision
+        row.module_id = module_id
+        row.module_run_id = _clean_text(artifact.get("moduleRunId")) or None
+        row.title = _clean_text(artifact.get("title")) or "模块分析结果"
+        row.status = _clean_text(artifact.get("status")) or "completed"
+        row.content_type = _clean_text(artifact.get("contentType")) or "text/markdown"
+        row.markdown_body = markdown_body
+        row.text_body = _clean_text(artifact.get("textBody"))
+        row.artifact_json = {
+            key: value
+            for key, value in artifact.items()
+            if key not in {"markdownBody", "textBody"}
+        }
+        row.metadata_json = _dict_value(artifact.get("metadata"))
+        row.updated_at = now
+        rows.append(row)
+    if rows:
+        db.flush()
+    return rows
+
+
+def analysis_module_artifact_to_payload(row: AnalysisModuleArtifact, *, include_body: bool = True) -> dict[str, Any]:
+    payload = _drop_empty(
+        {
+            "artifactId": row.artifact_id,
+            "moduleId": row.module_id,
+            "moduleRunId": row.module_run_id,
+            "title": row.title,
+            "status": row.status,
+            "contentType": row.content_type,
+            "analysisSession": {
+                "sessionId": row.analysis_session_id,
+                "revision": int(row.analysis_session_revision or 0),
+            },
+            "createdAt": _format_datetime(row.created_at),
+            "updatedAt": _format_datetime(row.updated_at),
+        }
+    )
+    if include_body:
+        payload["markdownBody"] = row.markdown_body or row.text_body or ""
+    return payload
+
+
+def get_analysis_module_artifacts_by_ids(
+    db: Session,
+    *,
+    user_id: int,
+    artifact_ids: list[str],
+    workspace_id: str | None = None,
+) -> list[AnalysisModuleArtifact]:
+    clean_ids = _string_list(artifact_ids)
+    if not clean_ids:
+        return []
+    criteria = [AnalysisModuleArtifact.user_id == user_id, AnalysisModuleArtifact.artifact_id.in_(clean_ids)]
+    if workspace_id:
+        criteria.append(AnalysisModuleArtifact.workspace_id == workspace_id)
+    rows = db.execute(select(AnalysisModuleArtifact).where(*criteria)).scalars().all()
+    row_by_id = {row.artifact_id: row for row in rows}
+    return [row_by_id[artifact_id] for artifact_id in clean_ids if artifact_id in row_by_id]
+
+
+def generate_analysis_report_from_module_artifacts(
+    module_artifacts: list[AnalysisModuleArtifact],
+    *,
+    render_style: str = DEFAULT_REPORT_RENDER_STYLE,
+    report_writer: Any | None = None,
+) -> dict[str, Any] | None:
+    rows = [row for row in module_artifacts if row.markdown_body or row.text_body]
+    if not rows:
+        return None
+    clean_style = normalize_report_render_style(render_style)
+    artifact = _artifact_report_from_module_text(rows, render_style=clean_style)
+    artifact["renderStyle"] = clean_style
+    artifact["sourceModuleArtifactIds"] = [row.artifact_id for row in rows]
+    artifact["downloadMetadata"] = report_download_metadata(_clean_text(artifact.get("reportId")))
+    artifact["preview"] = bounded_report_preview(_clean_text(artifact.get("markdownBody")))
+    return artifact
 
 
 def save_analysis_report_artifact(
@@ -970,6 +1219,7 @@ def get_analysis_report(
 def analysis_report_to_payload(row: AnalysisReport, *, include_body: bool = False) -> dict[str, Any]:
     artifact = _dict_value(row.artifact_json)
     metadata = normalized_report_download_metadata(row.report_id, _dict_value(row.download_metadata_json))
+    render_style = normalize_report_render_style(artifact.get("renderStyle") or _dict_value(artifact.get("rendering")).get("style"))
     payload = _drop_empty(
         {
             "reportId": row.report_id,
@@ -978,6 +1228,9 @@ def analysis_report_to_payload(row: AnalysisReport, *, include_body: bool = Fals
             "preview": _clean_text(artifact.get("preview") or bounded_report_preview(row.markdown_body or "")),
             "availableFormats": metadata["availableFormats"],
             "downloadUrls": metadata["downloadUrls"],
+            "previewUrl": report_preview_url(row.report_id),
+            "renderStyle": render_style,
+            "regeneration": report_regeneration_metadata(row.report_id),
             "analysisSession": {
                 "sessionId": row.analysis_session_id,
                 "revision": int(row.analysis_session_revision or 0),
@@ -1070,8 +1323,9 @@ def render_report_pdf(
     doc = fitz.open()
     page = doc.new_page(width=REPORT_PDF_PAGE_WIDTH, height=REPORT_PDF_PAGE_HEIGHT)
     cursor_y = REPORT_PDF_MARGIN_TOP
+    css = _report_pdf_css(artifact)
     for segment in segments:
-        page, cursor_y = _insert_report_pdf_segment(doc, page, cursor_y, segment, fitz_module=fitz)
+        page, cursor_y = _insert_report_pdf_segment(doc, page, cursor_y, segment, fitz_module=fitz, css=css)
     pdf_bytes = doc.tobytes(deflate=True, garbage=3)
     doc.close()
 
@@ -1091,22 +1345,37 @@ def validate_report_pdf_bytes(pdf_bytes: bytes, *, forbidden_values: list[str] |
     return validate_published_report(text, forbidden_values=forbidden_values)
 
 
-def _insert_report_pdf_segment(doc: Any, page: Any, cursor_y: float, segment: str, *, fitz_module: Any) -> tuple[Any, float]:
+def _report_pdf_css(artifact: dict[str, Any]) -> str:
+    style_id = normalize_report_render_style(
+        artifact.get("renderStyle") or _dict_value(artifact.get("rendering")).get("style")
+    )
+    return REPORT_PDF_CSS + REPORT_PDF_STYLE_CSS.get(style_id, "")
+
+
+def _insert_report_pdf_segment(
+    doc: Any,
+    page: Any,
+    cursor_y: float,
+    segment: str,
+    *,
+    fitz_module: Any,
+    css: str,
+) -> tuple[Any, float]:
     right = REPORT_PDF_PAGE_WIDTH - REPORT_PDF_MARGIN_X
     bottom = REPORT_PDF_PAGE_HEIGHT - REPORT_PDF_MARGIN_BOTTOM
     rect = fitz_module.Rect(REPORT_PDF_MARGIN_X, cursor_y, right, bottom)
-    spare_height, _ = page.insert_htmlbox(rect, segment, css=REPORT_PDF_CSS, scale_low=1)
+    spare_height, _ = page.insert_htmlbox(rect, segment, css=css, scale_low=1)
     if spare_height == -1:
         page = doc.new_page(width=REPORT_PDF_PAGE_WIDTH, height=REPORT_PDF_PAGE_HEIGHT)
         cursor_y = REPORT_PDF_MARGIN_TOP
         rect = fitz_module.Rect(REPORT_PDF_MARGIN_X, cursor_y, right, bottom)
-        spare_height, _ = page.insert_htmlbox(rect, segment, css=REPORT_PDF_CSS, scale_low=1)
+        spare_height, _ = page.insert_htmlbox(rect, segment, css=css, scale_low=1)
     if spare_height == -1:
         fallback_html = f"<p>{html.escape(_report_pdf_plain_text(segment))}</p>"
-        spare_height, _ = page.insert_htmlbox(rect, fallback_html, css=REPORT_PDF_CSS, scale_low=0.7)
+        spare_height, _ = page.insert_htmlbox(rect, fallback_html, css=css, scale_low=0.7)
     if spare_height == -1:
         final_html = "<p>该段内容过长，已在下载版中省略，请回到系统内查看完整预览。</p>"
-        spare_height, _ = page.insert_htmlbox(rect, final_html, css=REPORT_PDF_CSS, scale_low=0.7)
+        spare_height, _ = page.insert_htmlbox(rect, final_html, css=css, scale_low=0.7)
     next_y = bottom - max(spare_height, 0) + REPORT_PDF_SEGMENT_GAP
     if next_y > bottom - 20:
         page = doc.new_page(width=REPORT_PDF_PAGE_WIDTH, height=REPORT_PDF_PAGE_HEIGHT)
@@ -2205,6 +2474,135 @@ def _content_type_for_visual_type(asset_type: str) -> str:
     if asset_type == "image":
         return "image/png"
     return "application/json"
+
+
+def _new_module_artifact_id() -> str:
+    return f"mart_{uuid.uuid4().hex[:24]}"
+
+
+def _module_artifact_title(result: dict[str, Any], *, module_id: str) -> str:
+    handoff = _dict_value(result.get("documentHandoff"))
+    return (
+        _clean_text(handoff.get("title"))
+        or _clean_text(result.get("title"))
+        or _clean_text(result.get("displayName"))
+        or f"{module_id}分析结果"
+    )
+
+
+def _module_markdown_body(result: dict[str, Any]) -> str:
+    result_payload = _dict_value(result.get("result"))
+    handoff = _dict_value(result.get("documentHandoff"))
+    body = (
+        _clean_text(result.get("markdownBody"))
+        or _clean_text(result_payload.get("briefMarkdown"))
+        or _clean_text(handoff.get("compactMarkdown"))
+        or _clean_text(result.get("summary"))
+    )
+    if body:
+        return body
+    limitations = result.get("limitations") if isinstance(result.get("limitations"), list) else []
+    if limitations:
+        return "# 模块分析结果\n\n" + "\n".join(f"- {_clean_text(item)}" for item in limitations if _clean_text(item))
+    return ""
+
+
+def _shared_summary_from_module_rows(rows: list[AnalysisModuleArtifact]) -> dict[str, Any]:
+    for row in rows:
+        metadata = _dict_value(row.metadata_json)
+        module_result = _dict_value(metadata.get("moduleResult"))
+        target = _dict_value(module_result.get("targetCompany"))
+        normalized_input = _dict_value(module_result.get("normalizedInput"))
+        if target or normalized_input:
+            enterprise = _clean_text(target.get("name") or _dict_value(normalized_input.get("enterprise")).get("name") or normalized_input.get("enterpriseName"))
+            scope = _dict_value(normalized_input.get("analysisScope"))
+            return _drop_empty(
+                {
+                    "enterpriseName": enterprise,
+                    "stockCode": _clean_text(target.get("stockCode") or normalized_input.get("stockCode")),
+                    "timeRange": _clean_text(scope.get("timeRange") or normalized_input.get("timeRange")),
+                    "reportGoal": _clean_text(_dict_value(normalized_input.get("metadata")).get("reportGoal")),
+                }
+            )
+    return {}
+
+
+def _artifact_report_from_module_text(
+    rows: list[AnalysisModuleArtifact],
+    *,
+    render_style: str,
+) -> dict[str, Any]:
+    report_id = _new_report_id()
+    title = "综合分析报告"
+    style_label = _report_style_label(render_style)
+    generated_at = _format_datetime(datetime.utcnow())
+    toc_items = [row.title for row in rows if row.title]
+    lines = [
+        f"# {title}",
+        "",
+        "## 封面",
+        "",
+        f"- 报告名称：{title}",
+        f"- 生成时间：{generated_at}",
+        f"- 渲染风格：{style_label}",
+        "",
+        "## 目录",
+        "",
+        "- 报告范围",
+        "- 模块分析正文",
+        *[f"- {item}" for item in toc_items],
+        "- 来源与限制",
+        "",
+        "## 报告范围",
+        "",
+        "本报告基于本轮对话中已完成的分析模块原文生成，报告结构由系统固定，渲染风格仅影响最终 PDF 的视觉呈现。",
+        "",
+        "## 模块分析正文",
+        "",
+    ]
+    for row in rows:
+        lines.extend([f"### {row.title}", "", row.markdown_body or row.text_body or "", ""])
+    lines.extend(["## 来源与限制", "", "- 报告生成基于已完成模块输出，不会在生成阶段重新运行分析模块。"])
+    markdown_body = "\n".join(lines).strip() + "\n"
+    artifact = _drop_empty(
+        {
+            "schemaVersion": REPORT_ARTIFACT_SCHEMA_VERSION,
+            "reportId": report_id,
+            "title": title,
+            "status": "completed",
+            "generatedAt": generated_at,
+            "renderStyle": render_style,
+            "scope": {
+                "analysisSessionId": rows[0].analysis_session_id,
+                "analysisSessionRevision": int(rows[0].analysis_session_revision or 0),
+                "enabledModules": [row.module_id for row in rows],
+                "moduleRunIds": {row.module_id: row.module_run_id for row in rows if row.module_run_id},
+            },
+            "sectionPlan": [
+                {"id": "cover", "title": "封面"},
+                {"id": "toc", "title": "目录"},
+                {"id": "module_bodies", "title": "模块分析正文"},
+                {"id": "limitations", "title": "来源与限制"},
+            ],
+            "sourceModuleArtifactIds": [row.artifact_id for row in rows],
+            "qualityFlags": [
+                _quality_flag("artifact_text_report", "info", "报告基于模块原文生成，未要求模块提供额外 reportBrief。")
+            ],
+            "markdownBody": markdown_body,
+        }
+    )
+    artifact["htmlBody"] = render_report_html(artifact, markdown_body=markdown_body)
+    artifact["preview"] = bounded_report_preview(markdown_body)
+    artifact["downloadMetadata"] = report_download_metadata(report_id)
+    return artifact
+
+
+def _report_style_label(render_style: str) -> str:
+    style_id = normalize_report_render_style(render_style)
+    for style in REPORT_RENDER_STYLES:
+        if style["id"] == style_id:
+            return style["label"]
+    return style_id
 
 
 def _new_report_id() -> str:

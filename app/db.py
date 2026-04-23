@@ -35,6 +35,7 @@ def init_db(app) -> None:
         _ensure_rag_columns(engine)
         _ensure_bankruptcy_columns(engine)
         _ensure_analysis_report_columns(engine)
+        _ensure_analysis_module_artifact_columns(engine)
         _ensure_robotics_evidence_columns(engine)
 
 
@@ -296,6 +297,40 @@ def _ensure_analysis_report_columns(engine) -> None:
                     "ALTER TABLE analysis_reports "
                     "ADD INDEX ix_analysis_reports_session "
                     "(analysis_session_id, analysis_session_revision)"
+                )
+            )
+
+
+def _ensure_analysis_module_artifact_columns(engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "analysis_module_artifacts" not in table_names:
+        return
+
+    indexes = {item["name"] for item in inspector.get_indexes("analysis_module_artifacts")}
+    with engine.begin() as conn:
+        if "ix_analysis_module_artifacts_scope_created" not in indexes:
+            conn.execute(
+                text(
+                    "ALTER TABLE analysis_module_artifacts "
+                    "ADD INDEX ix_analysis_module_artifacts_scope_created "
+                    "(user_id, workspace_id, role, conversation_id, created_at)"
+                )
+            )
+        if "ix_analysis_module_artifacts_session" not in indexes:
+            conn.execute(
+                text(
+                    "ALTER TABLE analysis_module_artifacts "
+                    "ADD INDEX ix_analysis_module_artifacts_session "
+                    "(analysis_session_id, analysis_session_revision)"
+                )
+            )
+        if "ix_analysis_module_artifacts_module_run" not in indexes:
+            conn.execute(
+                text(
+                    "ALTER TABLE analysis_module_artifacts "
+                    "ADD INDEX ix_analysis_module_artifacts_module_run "
+                    "(module_id, module_run_id)"
                 )
             )
 

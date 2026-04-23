@@ -315,6 +315,41 @@ class AnalysisReport(Base):
     )
 
 
+class AnalysisModuleArtifact(Base):
+    __tablename__ = "analysis_module_artifacts"
+    __table_args__ = (
+        UniqueConstraint("artifact_id", name="uq_analysis_module_artifacts_artifact_id"),
+        Index("ix_analysis_module_artifacts_scope_created", "user_id", "workspace_id", "role", "conversation_id", "created_at"),
+        Index("ix_analysis_module_artifacts_session", "analysis_session_id", "analysis_session_revision"),
+        Index("ix_analysis_module_artifacts_module_run", "module_id", "module_run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    analysis_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    analysis_session_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    module_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    module_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed", index=True)
+    content_type: Mapped[str] = mapped_column(String(64), nullable=False, default="text/markdown")
+    markdown_body: Mapped[str | None] = mapped_column(LongText, nullable=True)
+    text_body: Mapped[str | None] = mapped_column(LongText, nullable=True)
+    artifact_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
 class RoboticsCninfoAnnouncement(Base):
     __tablename__ = "robotics_cninfo_announcements"
     __table_args__ = (

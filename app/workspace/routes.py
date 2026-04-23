@@ -18,16 +18,23 @@ from ..agent.jobs import (
 from ..agent.analysis_session import load_analysis_session_state, save_analysis_session_state
 from ..agent.memory import load_conversation_history, save_conversation_turn
 from ..agent.reporting import (
+    DEFAULT_REPORT_RENDER_STYLE,
     REPORT_DOWNLOAD_FORMAT,
     PublishedReportValidationError,
     SUPPORTED_REPORT_DOWNLOAD_FORMATS,
+    analysis_module_artifact_to_payload,
     analysis_report_to_payload,
+    build_report_generation_request,
     find_report_asset,
+    generate_analysis_report_from_module_artifacts,
     get_analysis_report,
+    get_analysis_module_artifacts_by_ids,
     inline_asset_response_payload,
+    normalize_report_render_style,
     render_report_pdf,
     report_row_forbidden_values,
     safe_report_filename,
+    save_analysis_module_artifacts,
     save_analysis_report_artifact,
 )
 from ..agent.services import AgentServiceError, generate_reply_payload
@@ -170,6 +177,10 @@ def _chat_response_data(
         data["analysisHandoffBundle"] = result.get("analysisHandoffBundle", {})
     if isinstance(result.get("analysisSession"), dict):
         data["analysisSession"] = result.get("analysisSession", {})
+    if isinstance(result.get("analysisModuleArtifacts"), list):
+        data["analysisModuleArtifacts"] = result.get("analysisModuleArtifacts", [])
+    if isinstance(result.get("analysisReportRequest"), dict):
+        data["analysisReportRequest"] = result.get("analysisReportRequest", {})
     if isinstance(result.get("analysisReport"), dict):
         data["analysisReport"] = result.get("analysisReport", {})
     if trace_enabled and isinstance(result.get("trace"), dict):
@@ -211,6 +222,71 @@ def _persist_analysis_report_result(
         return
     result["analysisReport"] = analysis_report_to_payload(row)
     result.pop("analysisReportArtifact", None)
+
+
+def _persist_analysis_module_artifacts_result(
+    db,
+    *,
+    result: dict,
+    user_id: int,
+    workspace_id: str,
+    role: str,
+    conversation_id: str,
+    analysis_session: dict | None = None,
+) -> None:
+    artifacts = result.get("analysisModuleArtifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        return
+    rows = save_analysis_module_artifacts(
+        db,
+        user_id=user_id,
+        workspace_id=workspace_id,
+        role=role,
+        conversation_id=conversation_id,
+        artifacts=[item for item in artifacts if isinstance(item, dict)],
+        analysis_session=analysis_session,
+    )
+    payloads = [analysis_module_artifact_to_payload(row) for row in rows]
+    result["analysisModuleArtifacts"] = payloads
+    report_request = build_report_generation_request(
+        analysis_session=analysis_session or {},
+        module_artifacts=payloads,
+    )
+    if report_request:
+        result["analysisReportRequest"] = report_request
+
+
+def _report_pdf_response(row, *, report_format: str, disposition: str) -> Response | tuple[dict, int]:
+    artifact = dict(row.artifact_json) if isinstance(row.artifact_json, dict) else {}
+    artifact["title"] = artifact.get("title") or row.title
+    artifact["markdownBody"] = row.markdown_body or ""
+    artifact["htmlBody"] = row.html_body or ""
+    artifact["visualAssets"] = artifact.get("visualAssets") or (
+        row.visual_assets_json.get("items", []) if isinstance(row.visual_assets_json, dict) else []
+    )
+    artifact["attachments"] = artifact.get("attachments") or (
+        row.attachments_json.get("items", []) if isinstance(row.attachments_json, dict) else []
+    )
+    try:
+        body = render_report_pdf(
+            artifact,
+            markdown_body=row.markdown_body or "",
+            forbidden_values=report_row_forbidden_values(row),
+        )
+    except PublishedReportValidationError:
+        body = render_report_pdf(
+            {
+                "title": "报告生成失败",
+                "markdownBody": "# 报告生成失败\n\n下载版报告未通过发布校验，请重新生成或联系管理员复核。\n",
+            }
+        )
+    except RuntimeError:
+        logger.exception("Report PDF rendering failed for %s", row.report_id)
+        return _json_error("report pdf rendering unavailable", 500)
+    response = Response(body, mimetype="application/pdf")
+    response.headers["Content-Disposition"] = f'{disposition}; filename="{safe_report_filename(row, report_format)}"'
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def _job_response_data(job) -> dict:
@@ -426,36 +502,24 @@ def download_workspace_report(report_id: str):
         row = get_analysis_report(db, user_id=user_id, workspace_id=workspace_id, report_id=str(report_id))
         if row is None:
             return _json_error("report not found", 404)
-        artifact = dict(row.artifact_json) if isinstance(row.artifact_json, dict) else {}
-        artifact["title"] = artifact.get("title") or row.title
-        artifact["markdownBody"] = row.markdown_body or ""
-        artifact["htmlBody"] = row.html_body or ""
-        artifact["visualAssets"] = artifact.get("visualAssets") or (
-            row.visual_assets_json.get("items", []) if isinstance(row.visual_assets_json, dict) else []
-        )
-        artifact["attachments"] = artifact.get("attachments") or (
-            row.attachments_json.get("items", []) if isinstance(row.attachments_json, dict) else []
-        )
-        try:
-            body = render_report_pdf(
-                artifact,
-                markdown_body=row.markdown_body or "",
-                forbidden_values=report_row_forbidden_values(row),
-            )
-        except PublishedReportValidationError:
-            body = render_report_pdf(
-                {
-                    "title": "报告生成失败",
-                    "markdownBody": "# 报告生成失败\n\n下载版报告未通过发布校验，请重新生成或联系管理员复核。\n",
-                }
-            )
-        except RuntimeError:
-            logger.exception("Report PDF rendering failed for %s", report_id)
-            return _json_error("report pdf rendering unavailable", 500)
-        response = Response(body, mimetype="application/pdf")
-        response.headers["Content-Disposition"] = f'attachment; filename="{safe_report_filename(row, report_format)}"'
-        response.headers["Cache-Control"] = "no-store"
-        return response
+        return _report_pdf_response(row, report_format=report_format, disposition="attachment")
+
+
+@workspace_bp.get("/reports/<report_id>/preview")
+def preview_workspace_report(report_id: str):
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+    workspace_id = str(request.args.get("workspaceId", "") or "").strip() or None
+    report_format = str(request.args.get("format", REPORT_DOWNLOAD_FORMAT) or REPORT_DOWNLOAD_FORMAT).strip().lower()
+    if report_format not in SUPPORTED_REPORT_DOWNLOAD_FORMATS:
+        return _json_error(f"unsupported report format: only {REPORT_DOWNLOAD_FORMAT} is supported", 400)
+
+    with session_scope() as db:
+        row = get_analysis_report(db, user_id=user_id, workspace_id=workspace_id, report_id=str(report_id))
+        if row is None:
+            return _json_error("report not found", 404)
+        return _report_pdf_response(row, report_format=report_format, disposition="inline")
 
 
 @workspace_bp.get("/reports/<report_id>/assets/<asset_id>/download")
@@ -480,6 +544,106 @@ def download_workspace_report_asset(report_id: str, asset_id: str):
         response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
         response.headers["Cache-Control"] = "no-store"
         return response
+
+
+@workspace_bp.post("/reports/generate")
+def generate_workspace_report():
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _json_error("request body is required", 400)
+    raw_ids = payload.get("moduleArtifactIds")
+    artifact_ids = [
+        str(item).strip()
+        for item in raw_ids
+        if isinstance(item, str) and str(item).strip()
+    ] if isinstance(raw_ids, list) else []
+    if not artifact_ids:
+        return _json_error("moduleArtifactIds is required", 400)
+    workspace_id = str(payload.get("workspaceId", "") or "").strip() or "default"
+    conversation_id = str(payload.get("conversationId", "") or "").strip() or "report-generation"
+    render_style = normalize_report_render_style(payload.get("renderStyle") or DEFAULT_REPORT_RENDER_STYLE)
+
+    with session_scope() as db:
+        user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+        if not user:
+            return _json_error("user not found", 404)
+        role = _selected_role(user.preferences)
+        if not role:
+            return _json_error("please select a role first", 400)
+        rows = get_analysis_module_artifacts_by_ids(
+            db,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            artifact_ids=artifact_ids,
+        )
+        if len(rows) != len(artifact_ids):
+            return _json_error("module artifact not found", 404)
+        artifact = generate_analysis_report_from_module_artifacts(rows, render_style=render_style)
+        if not artifact:
+            return _json_error("report generation failed", 500)
+        row = save_analysis_report_artifact(
+            db,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            role=role,
+            conversation_id=conversation_id,
+            artifact=artifact,
+        )
+        if row is None:
+            return _json_error("report generation failed", 500)
+        return {"ok": True, "data": {"analysisReport": analysis_report_to_payload(row)}}
+
+
+@workspace_bp.post("/reports/<report_id>/regenerate")
+def regenerate_workspace_report(report_id: str):
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+
+    payload = request.get_json(silent=True)
+    payload = payload if isinstance(payload, dict) else {}
+    workspace_id = str(payload.get("workspaceId", "") or "").strip() or None
+    conversation_id = str(payload.get("conversationId", "") or "").strip() or "report-regeneration"
+    render_style = normalize_report_render_style(payload.get("renderStyle") or DEFAULT_REPORT_RENDER_STYLE)
+
+    with session_scope() as db:
+        source_row = get_analysis_report(db, user_id=user_id, workspace_id=workspace_id, report_id=str(report_id))
+        if source_row is None:
+            return _json_error("report not found", 404)
+        artifact_json = source_row.artifact_json if isinstance(source_row.artifact_json, dict) else {}
+        source_ids = [
+            str(item).strip()
+            for item in artifact_json.get("sourceModuleArtifactIds", [])
+            if isinstance(item, str) and str(item).strip()
+        ]
+        if not source_ids:
+            return _json_error("source module artifacts are unavailable", 400)
+        rows = get_analysis_module_artifacts_by_ids(
+            db,
+            user_id=user_id,
+            workspace_id=source_row.workspace_id,
+            artifact_ids=source_ids,
+        )
+        if len(rows) != len(source_ids):
+            return _json_error("source module artifact not found", 404)
+        artifact = generate_analysis_report_from_module_artifacts(rows, render_style=render_style)
+        if not artifact:
+            return _json_error("report regeneration failed", 500)
+        row = save_analysis_report_artifact(
+            db,
+            user_id=user_id,
+            workspace_id=source_row.workspace_id,
+            role=source_row.role,
+            conversation_id=conversation_id or source_row.conversation_id,
+            artifact=artifact,
+        )
+        if row is None:
+            return _json_error("report regeneration failed", 500)
+        return {"ok": True, "data": {"analysisReport": analysis_report_to_payload(row)}}
 
 
 @workspace_bp.post("/chat")
@@ -591,14 +755,6 @@ def workspace_chat():
             resource_id=workspace_id,
             role=role,
         )
-        save_conversation_turn(
-            db,
-            thread=thread,
-            user_message=message,
-            assistant_result=result,
-            intent=str(result.get("intent", intent)).strip(),
-            conversation_context=conversation_context,
-        )
         persisted_analysis_session = save_analysis_session_state(
             db,
             user_id=user_id,
@@ -609,6 +765,15 @@ def workspace_chat():
         )
         if persisted_analysis_session:
             result["analysisSession"] = persisted_analysis_session
+        _persist_analysis_module_artifacts_result(
+            db,
+            result=result,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            role=role,
+            conversation_id=conversation_id,
+            analysis_session=result.get("analysisSession"),
+        )
         _persist_analysis_report_result(
             db,
             result=result,
@@ -617,6 +782,14 @@ def workspace_chat():
             role=role,
             conversation_id=conversation_id,
             analysis_session=result.get("analysisSession"),
+        )
+        save_conversation_turn(
+            db,
+            thread=thread,
+            user_message=message,
+            assistant_result=result,
+            intent=str(result.get("intent", intent)).strip(),
+            conversation_context=conversation_context,
         )
 
         return {
@@ -728,14 +901,6 @@ def workspace_chat_stream():
                     agent_trace_enabled=trace_enabled,
                     agent_trace_debug_details_enabled=trace_details_enabled,
                 )
-                save_conversation_turn(
-                    db,
-                    thread=thread,
-                    user_message=message,
-                    assistant_result=result,
-                    intent=str(result.get("intent", intent)).strip(),
-                    conversation_context=conversation_context,
-                )
                 persisted_analysis_session = save_analysis_session_state(
                     db,
                     user_id=user_id,
@@ -746,6 +911,15 @@ def workspace_chat_stream():
                 )
                 if persisted_analysis_session:
                     result["analysisSession"] = persisted_analysis_session
+                _persist_analysis_module_artifacts_result(
+                    db,
+                    result=result,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    role=role,
+                    conversation_id=conversation_id,
+                    analysis_session=result.get("analysisSession"),
+                )
                 _persist_analysis_report_result(
                     db,
                     result=result,
@@ -754,6 +928,14 @@ def workspace_chat_stream():
                     role=role,
                     conversation_id=conversation_id,
                     analysis_session=result.get("analysisSession"),
+                )
+                save_conversation_turn(
+                    db,
+                    thread=thread,
+                    user_message=message,
+                    assistant_result=result,
+                    intent=str(result.get("intent", intent)).strip(),
+                    conversation_context=conversation_context,
                 )
         except AgentServiceError:
             log_audit_event(

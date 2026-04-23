@@ -62,6 +62,7 @@ def build_graph():
         {
             "clarify": "clarify",
             "report_generation": "report_generation",
+            "compose_answer": "compose_answer",
         },
     )
     builder.add_conditional_edges(

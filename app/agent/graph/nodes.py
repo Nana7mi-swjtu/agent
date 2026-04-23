@@ -8,7 +8,12 @@ from pydantic import BaseModel, Field
 from ...rag.errors import RAGContractError
 from ...rag.schemas import RetrievalHit
 from ...rag.service import build_cited_response
-from ..reporting import generate_analysis_report, report_preview_metadata
+from ..reporting import (
+    build_analysis_module_artifacts,
+    build_report_generation_request,
+    generate_analysis_report,
+    report_preview_metadata,
+)
 from .analysis_modules import (
     AnalysisModuleContract,
     build_analysis_handoff_bundle,
@@ -682,6 +687,8 @@ def plan_route_node(state: AgentState):
             "analysis_missing_fields": [],
             "analysis_completed": False,
             "analysis_unsupported_modules": [],
+            "analysis_module_artifacts": [],
+            "analysis_report_request": {},
             "analysis_report": {},
             "analysis_report_artifact": {},
             "analysis_report_generated": False,
@@ -823,14 +830,14 @@ def route_after_analysis_intake(state: AgentState) -> str:
     if state.get("needs_clarification", False):
         return "clarify"
     if bool(state.get("analysis_completed", False)):
-        return "report_generation"
+        return "compose_answer"
     return "analysis_modules"
 
 
 def route_after_analysis_modules(state: AgentState) -> str:
     if state.get("needs_clarification", False):
         return "clarify"
-    return "report_generation"
+    return "compose_answer"
 
 
 def route_after_report_generation(state: AgentState) -> str:
@@ -1034,6 +1041,23 @@ def analysis_modules_node(state: AgentState):
         "unsupportedModules": unsupported_modules,
         "bundleLimitations": list(bundle.get("limitations", [])) if isinstance(bundle.get("limitations", []), list) else [],
     }
+    module_artifacts: list[dict[str, Any]] = []
+    report_request: dict[str, Any] = {}
+    if session["status"] == "completed" and not needs_clarification:
+        module_artifacts = build_analysis_module_artifacts(
+            analysis_session=session,
+            module_results=results,
+            module_ids=enabled_modules,
+        )
+        report_request = build_report_generation_request(
+            analysis_session=session,
+            module_artifacts=module_artifacts,
+        )
+        debug_payload["moduleArtifactIds"] = [
+            str(item.get("artifactId", "")).strip()
+            for item in module_artifacts
+            if isinstance(item, dict) and str(item.get("artifactId", "")).strip()
+        ]
     return {
         "enabled_analysis_modules": enabled_modules,
         "analysis_session": session,
@@ -1042,6 +1066,11 @@ def analysis_modules_node(state: AgentState):
         "analysis_handoff_bundle": bundle,
         "analysis_completed": not needs_clarification,
         "analysis_unsupported_modules": unsupported_modules,
+        "analysis_module_artifacts": module_artifacts,
+        "analysis_report_request": report_request,
+        "analysis_report": {},
+        "analysis_report_artifact": {},
+        "analysis_report_generated": False,
         "needs_clarification": needs_clarification,
         "clarification_question": clarification_question,
         "missing_fields": ["analysis.modules"] if needs_clarification else [],
