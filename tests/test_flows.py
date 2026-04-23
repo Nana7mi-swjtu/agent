@@ -7,6 +7,7 @@ from sqlalchemy import select
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.agent import services as agent_services
+from app.agent.reporting import analysis_report_to_payload, render_report_pdf
 from app.agent.services import AgentServiceError
 from app.models import AgentChatJob, AgentConversationMessage, AgentConversationThread, AnalysisReport, AnalysisSession, User
 
@@ -550,7 +551,7 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
     assert payload["reply"] == "主 agent 汇总了分析模块结果"
     assert payload["analysisResults"]["robotics_risk"]["runId"] == "rrisk_parent_001"
     assert payload["analysisReport"]["reportId"].startswith("arpt_")
-    assert payload["analysisReport"]["downloadUrls"]["markdown"].endswith("/download?format=markdown")
+    assert payload["analysisReport"]["downloadUrls"]["pdf"].endswith("/download?format=pdf")
     assert payload["analysisHandoffBundle"]["enabledModules"] == ["robotics_risk"]
     assert payload["analysisHandoffBundle"]["documentHandoffs"]["robotics_risk"]["title"] == "石头科技风险机会简报"
     assert "分析模块编排结果" in captured["system_content"]
@@ -743,7 +744,8 @@ def test_workspace_chat_persists_report_and_supports_downloads(client, db_sessio
     assert response.status_code == 200
     payload = response.get_json()["data"]
     assert payload["analysisReport"]["reportId"] == "arpt_test_001"
-    assert payload["analysisReport"]["downloadUrls"]["html"].endswith("/download?format=html")
+    assert payload["analysisReport"]["availableFormats"] == ["pdf"]
+    assert payload["analysisReport"]["downloadUrls"]["pdf"].endswith("/download?format=pdf")
     assert "robotics_risk" not in payload["analysisReport"]["preview"]
 
     db_session.expire_all()
@@ -753,25 +755,94 @@ def test_workspace_chat_persists_report_and_supports_downloads(client, db_sessio
     assert row.artifact_json["semanticModel"]["schemaVersion"] == "report_semantic_model.v1"
     assert row.artifact_json["internalTraceIndex"]["items"]["sem_finding_001"]["moduleId"] == "robotics_risk"
 
-    markdown = client.get("/api/workspace/reports/arpt_test_001/download?format=markdown&workspaceId=ws-report", headers=headers)
-    assert markdown.status_code == 200
-    assert "text/markdown" in markdown.headers["Content-Type"]
-    assert "报告正文" in markdown.get_data(as_text=True)
-    assert "robotics_risk" not in markdown.get_data(as_text=True)
+    pdf_download = client.get("/api/workspace/reports/arpt_test_001/download?format=pdf&workspaceId=ws-report", headers=headers)
+    assert pdf_download.status_code == 200
+    assert "application/pdf" in pdf_download.headers["Content-Type"]
+    import fitz
 
-    html_download = client.get("/api/workspace/reports/arpt_test_001/download?format=html&workspaceId=ws-report", headers=headers)
-    assert html_download.status_code == 200
-    assert "text/html" in html_download.headers["Content-Type"]
+    with fitz.open(stream=pdf_download.data, filetype="pdf") as document:
+        pdf_text = "\n".join(page.get_text("text") for page in document)
+    assert "石头科技定制化分析报告" in pdf_text
+    assert "报告正文" in pdf_text
+    assert "robotics_risk" not in pdf_text
 
-    unsupported = client.get("/api/workspace/reports/arpt_test_001/download?format=pdf&workspaceId=ws-report", headers=headers)
-    assert unsupported.status_code == 400
+    unsupported_markdown = client.get("/api/workspace/reports/arpt_test_001/download?format=markdown&workspaceId=ws-report", headers=headers)
+    assert unsupported_markdown.status_code == 400
+
+    unsupported_html = client.get("/api/workspace/reports/arpt_test_001/download?format=html&workspaceId=ws-report", headers=headers)
+    assert unsupported_html.status_code == 400
 
     asset = client.get("/api/workspace/reports/arpt_test_001/assets/chart_001/download?workspaceId=ws-report", headers=headers)
     assert asset.status_code == 200
     assert asset.get_data(as_text=True) == "chart payload"
 
-    blocked = client.get("/api/workspace/reports/arpt_test_001/download?format=markdown&workspaceId=other", headers=headers)
+    blocked = client.get("/api/workspace/reports/arpt_test_001/download?format=pdf&workspaceId=other", headers=headers)
     assert blocked.status_code == 404
+
+
+def test_analysis_report_payload_normalizes_legacy_download_metadata(db_session):
+    row = AnalysisReport(
+        report_id="arpt_legacy_001",
+        user_id=1,
+        workspace_id="ws-legacy",
+        role="investor",
+        conversation_id="conv-legacy",
+        status="completed",
+        title="历史报告",
+        artifact_json={"preview": "# 历史报告\n\n正文预览。"},
+        markdown_body="# 历史报告\n\n正文。",
+        html_body="<!doctype html><html><body><h1>历史报告</h1></body></html>",
+        download_metadata_json={
+            "availableFormats": ["markdown", "html"],
+            "downloadUrls": {
+                "markdown": "/api/workspace/reports/arpt_legacy_001/download?format=markdown",
+                "html": "/api/workspace/reports/arpt_legacy_001/download?format=html",
+            },
+        },
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    payload = analysis_report_to_payload(row)
+    assert payload["availableFormats"] == ["pdf"]
+    assert payload["downloadUrls"] == {
+        "pdf": "/api/workspace/reports/arpt_legacy_001/download?format=pdf",
+    }
+
+
+def test_render_report_pdf_embeds_images_and_keeps_reader_facing_text():
+    image_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yS3cAAAAASUVORK5CYII="
+    artifact = {
+        "title": "PDF 图表测试报告",
+        "markdownBody": (
+            "# PDF 图表测试报告\n\n"
+            "## 图表与模型输出\n\n"
+            "![风险矩阵](/api/workspace/reports/arpt_pdf/assets/chart_png/download)\n\n"
+            "- **趋势图**：用于说明订单变化。\n"
+        ),
+        "visualAssets": [
+            {
+                "assetId": "chart_png",
+                "downloadUrl": "/api/workspace/reports/arpt_pdf/assets/chart_png/download",
+                "type": "image",
+                "title": "风险矩阵",
+                "caption": "图像图表说明。",
+                "contentType": "image/png",
+                "inlineContent": f"data:image/png;base64,{image_data}",
+            }
+        ],
+    }
+
+    pdf_bytes = render_report_pdf(artifact)
+
+    import fitz
+
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+        pdf_text = "\n".join(page.get_text("text") for page in document)
+    assert "PDF 图表测试报告" in pdf_text
+    assert "风险矩阵" in pdf_text
+    assert "趋势图" in pdf_text
+    assert "robotics_risk" not in pdf_text
 
 
 def test_workspace_chat_restores_persisted_analysis_session_between_turns(client, db_session, monkeypatch):
