@@ -1,4 +1,4 @@
-import { apiRequest, streamApiRequest } from "@/shared/api/client";
+import { apiRequest, buildApiUrl, streamApiRequest } from "@/shared/api/client";
 import { buildWorkspaceChatRequestBody } from "@/entities/workspace/api/chatPayload";
 
 export { buildWorkspaceChatRequestBody, normalizeEnabledAnalysisModules } from "@/entities/workspace/api/chatPayload";
@@ -47,7 +47,11 @@ export const getAnalysisReport = (reportId, workspaceId) =>
   apiRequest(`/api/workspace/reports/${encodeURIComponent(reportId)}?workspaceId=${encodeURIComponent(workspaceId || "default")}`);
 
 export const buildAnalysisReportDownloadUrl = (reportId, format = "markdown", workspaceId = "default") =>
-  `/api/workspace/reports/${encodeURIComponent(reportId)}/download?format=${encodeURIComponent(format)}&workspaceId=${encodeURIComponent(workspaceId || "default")}`;
+  buildApiUrl(
+    `/api/workspace/reports/${encodeURIComponent(reportId)}/download?format=${encodeURIComponent(format)}&workspaceId=${encodeURIComponent(workspaceId || "default")}`,
+  );
 
 export const buildAnalysisReportAssetDownloadUrl = (reportId, assetId, workspaceId = "default") =>
-  `/api/workspace/reports/${encodeURIComponent(reportId)}/assets/${encodeURIComponent(assetId)}/download?workspaceId=${encodeURIComponent(workspaceId || "default")}`;
+  buildApiUrl(
+    `/api/workspace/reports/${encodeURIComponent(reportId)}/assets/${encodeURIComponent(assetId)}/download?workspaceId=${encodeURIComponent(workspaceId || "default")}`,
+  );

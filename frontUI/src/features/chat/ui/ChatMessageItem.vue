@@ -9,6 +9,7 @@ import {
   getMessageSources,
   getMessageTraceSteps,
 } from "@/entities/chat/lib/message";
+import { buildApiUrl } from "@/shared/api/client";
 import { useUiStore } from "@/shared/model/ui-store";
 import MarkdownContent from "@/shared/ui/MarkdownContent.vue";
 
@@ -63,12 +64,18 @@ const sourcesForMessage = (message) => getMessageSources(message);
 const memoryInfoForMessage = (message) => getMessageMemoryInfo(message);
 const reportForMessage = (message) =>
   message?.analysisReport && typeof message.analysisReport === "object" ? message.analysisReport : null;
+const resolveReportDownloadUrl = (url) => {
+  const cleanUrl = String(url || "").trim();
+  if (!cleanUrl) return "";
+  if (/^https?:\/\//i.test(cleanUrl)) return cleanUrl;
+  return cleanUrl.startsWith("/api/") ? buildApiUrl(cleanUrl) : cleanUrl;
+};
 const reportDownloadEntries = (message) => {
   const report = reportForMessage(message);
   const urls = report?.downloadUrls && typeof report.downloadUrls === "object" ? report.downloadUrls : {};
   return [
-    { key: "markdown", label: "Markdown", url: String(urls.markdown || "") },
-    { key: "html", label: "HTML", url: String(urls.html || "") },
+    { key: "markdown", label: "Markdown", url: resolveReportDownloadUrl(urls.markdown) },
+    { key: "html", label: "HTML", url: resolveReportDownloadUrl(urls.html) },
   ].filter((item) => item.url);
 };
 const showGroundingMeta = (message) =>
