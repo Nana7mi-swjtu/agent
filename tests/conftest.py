@@ -91,6 +91,7 @@ def db_session(app):
             session.execute(text("DELETE FROM agent_conversation_messages"))
             session.execute(text("DELETE FROM agent_conversation_threads"))
             session.execute(text("DELETE FROM analysis_reports"))
+            session.execute(text("DELETE FROM analysis_module_artifacts"))
             session.execute(text("DELETE FROM analysis_sessions"))
             session.execute(text("DELETE FROM rag_query_logs"))
             session.execute(text("DELETE FROM rag_index_jobs"))

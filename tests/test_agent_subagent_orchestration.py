@@ -580,6 +580,13 @@ def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
     assert bundle["limitations"] == ["公告样本有限"]
     assert result["analysis_results"]["robotics_risk"]["domainAnalysis"]["moduleId"] == "robotics_risk"
     assert result["analysis_results"]["robotics_risk"]["reportContribution"]["moduleId"] == "robotics_risk"
+    assert result["analysis_report_generated"] is False
+    assert result["analysis_report"] == {}
+    assert result["analysis_module_artifacts"][0]["moduleId"] == "robotics_risk"
+    assert result["analysis_module_artifacts"][0]["moduleRunId"] == "run-robotics-001"
+    assert result["analysis_report_request"]["moduleArtifactIds"] == [
+        result["analysis_module_artifacts"][0]["artifactId"]
+    ]
 
 
 def test_report_contribution_traceability_validation_rejects_unknown_refs():

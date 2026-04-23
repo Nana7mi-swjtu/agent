@@ -9,7 +9,15 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from app.agent import services as agent_services
 from app.agent.reporting import analysis_report_to_payload, render_report_pdf
 from app.agent.services import AgentServiceError
-from app.models import AgentChatJob, AgentConversationMessage, AgentConversationThread, AnalysisReport, AnalysisSession, User
+from app.models import (
+    AgentChatJob,
+    AgentConversationMessage,
+    AgentConversationThread,
+    AnalysisModuleArtifact,
+    AnalysisReport,
+    AnalysisSession,
+    User,
+)
 
 
 def _auth_headers(client, user_id: int) -> dict[str, str]:
@@ -550,8 +558,12 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
 
     assert payload["reply"] == "主 agent 汇总了分析模块结果"
     assert payload["analysisResults"]["robotics_risk"]["runId"] == "rrisk_parent_001"
-    assert payload["analysisReport"]["reportId"].startswith("arpt_")
-    assert payload["analysisReport"]["downloadUrls"]["pdf"].endswith("/download?format=pdf")
+    assert "analysisReport" not in payload
+    assert payload["analysisModuleArtifacts"][0]["artifactId"].startswith("mart_")
+    assert "政策支持和订单增长" in payload["analysisModuleArtifacts"][0]["markdownBody"]
+    assert payload["analysisReportRequest"]["moduleArtifactIds"] == [
+        payload["analysisModuleArtifacts"][0]["artifactId"]
+    ]
     assert payload["analysisHandoffBundle"]["enabledModules"] == ["robotics_risk"]
     assert payload["analysisHandoffBundle"]["documentHandoffs"]["robotics_risk"]["title"] == "石头科技风险机会简报"
     assert "分析模块编排结果" in captured["system_content"]
@@ -559,7 +571,6 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
         "planner",
         "analysis_intake",
         "analysis_modules",
-        "analysis_report_generation",
         "compose_answer",
         "citations",
     ]
@@ -623,6 +634,12 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
             "citations": [],
             "sources": [],
             "noEvidence": False,
+            "analysisSession": {
+                "sessionId": "asess_modules_001",
+                "status": "completed",
+                "revision": 1,
+                "enabledModules": ["robotics_risk"],
+            },
             "analysisResults": {
                 "robotics_risk": {
                     "moduleId": "robotics_risk",
@@ -634,6 +651,23 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
             "analysisHandoffBundle": {
                 "enabledModules": ["robotics_risk"],
                 "sharedInputSummary": {"enterpriseName": "石头科技"},
+            },
+            "analysisModuleArtifacts": [
+                {
+                    "schemaVersion": "analysis_module_artifact.v1",
+                    "artifactId": "mart_test_001",
+                    "moduleId": "robotics_risk",
+                    "moduleRunId": "rrisk_001",
+                    "title": "机器人政策与订单分析",
+                    "status": "completed",
+                    "contentType": "text/markdown",
+                    "markdownBody": "# 机器人政策与订单分析\n\n模块原文分析结果。",
+                }
+            ],
+            "analysisReportRequest": {
+                "moduleArtifactIds": ["mart_test_001"],
+                "renderStyles": [{"id": "professional", "label": "专业白底"}],
+                "defaultRenderStyle": "professional",
             },
             "graph": {},
             "graphMeta": {},
@@ -662,6 +696,56 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
     assert captured_kwargs["analysis_module_inputs"]["robotics_risk"]["focus"] == "订单与政策"
     assert payload["analysisHandoffBundle"]["enabledModules"] == ["robotics_risk"]
     assert payload["analysisResults"]["robotics_risk"]["runId"] == "rrisk_001"
+    assert payload["analysisModuleArtifacts"][0]["artifactId"] == "mart_test_001"
+    assert payload["analysisModuleArtifacts"][0]["markdownBody"] == "# 机器人政策与订单分析\n\n模块原文分析结果。"
+    assert payload["analysisReportRequest"]["moduleArtifactIds"] == ["mart_test_001"]
+    db_session.expire_all()
+    artifact_row = db_session.execute(
+        select(AnalysisModuleArtifact).where(AnalysisModuleArtifact.artifact_id == "mart_test_001")
+    ).scalar_one()
+    assert artifact_row.workspace_id == f"user-{user.id}"
+    assert artifact_row.markdown_body == "# 机器人政策与订单分析\n\n模块原文分析结果。"
+
+    generated = client.post(
+        "/api/workspace/reports/generate",
+        json={
+            "workspaceId": artifact_row.workspace_id,
+            "conversationId": "conv-test",
+            "moduleArtifactIds": ["mart_test_001"],
+            "renderStyle": "brand_cover",
+            "structure": "ignored",
+        },
+        headers=headers,
+    )
+    assert generated.status_code == 200
+    generated_report = generated.get_json()["data"]["analysisReport"]
+    assert generated_report["reportId"].startswith("arpt_")
+    assert generated_report["renderStyle"] == "brand_cover"
+    assert generated_report["previewUrl"].endswith("/preview?format=pdf")
+    detail = client.get(
+        f"/api/workspace/reports/{generated_report['reportId']}?workspaceId={artifact_row.workspace_id}",
+        headers=headers,
+    )
+    assert detail.status_code == 200
+    markdown_body = detail.get_json()["data"]["markdownBody"]
+    assert "## 封面" in markdown_body
+    assert "## 目录" in markdown_body
+    assert "模块原文分析结果" in markdown_body
+
+    preview = client.get(
+        f"/api/workspace/reports/{generated_report['reportId']}/preview?format=pdf&workspaceId={artifact_row.workspace_id}",
+        headers=headers,
+    )
+    assert preview.status_code == 200
+    assert "inline" in preview.headers["Content-Disposition"]
+
+    regenerated = client.post(
+        f"/api/workspace/reports/{generated_report['reportId']}/regenerate",
+        json={"workspaceId": artifact_row.workspace_id, "conversationId": "conv-test", "renderStyle": "dark_research"},
+        headers=headers,
+    )
+    assert regenerated.status_code == 200
+    assert regenerated.get_json()["data"]["analysisReport"]["renderStyle"] == "dark_research"
 
 
 def test_workspace_chat_persists_report_and_supports_downloads(client, db_session, monkeypatch):
@@ -781,9 +865,12 @@ def test_workspace_chat_persists_report_and_supports_downloads(client, db_sessio
 
 
 def test_analysis_report_payload_normalizes_legacy_download_metadata(db_session):
+    user = User(email="legacy-report@example.com", nickname="LegacyReport", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
     row = AnalysisReport(
         report_id="arpt_legacy_001",
-        user_id=1,
+        user_id=user.id,
         workspace_id="ws-legacy",
         role="investor",
         conversation_id="conv-legacy",
