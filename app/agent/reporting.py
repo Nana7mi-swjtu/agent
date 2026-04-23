@@ -14,13 +14,39 @@ from ..models import AnalysisReport
 REPORT_ARTIFACT_SCHEMA_VERSION = "analysis_report_artifact.v1"
 REPORT_CONTRIBUTION_SCHEMA_VERSION = "analysis_report_contribution.v1"
 DOMAIN_ANALYSIS_SCHEMA_VERSION = "analysis_domain_analysis.v1"
+REPORT_SEMANTIC_MODEL_SCHEMA_VERSION = "report_semantic_model.v1"
+REPORT_SEMANTIC_CONTRIBUTION_PROFILE_VERSION = "report_semantic_contribution.v1"
 VISUAL_ASSET_SCHEMA_VERSION = "analysis_report_visual_asset.v1"
 REPORT_PREVIEW_LIMIT = 1200
 SUPPORTED_REPORT_DOWNLOAD_FORMATS = {"markdown", "html"}
 VISUAL_ASSET_TYPES = {"image", "chart", "table", "graph", "timeline", "heatmap"}
+PUBLISHED_REPORT_FORBIDDEN_LABELS = {
+    "moduleId",
+    "displayName",
+    "runId",
+    "moduleRunIds",
+    "enabledModules",
+    "analysisSessionId",
+    "analysisSessionRevision",
+    "traceRefs",
+    "sourceIds",
+    "eventIds",
+    "domainOutputIds",
+    "findingIds",
+    "modelOutputIds",
+    "assetId",
+    "storageRef",
+    "rawResult",
+    "artifact_json",
+    "analysis_reports",
+}
 
 
 class ReportContributionValidationError(ValueError):
+    pass
+
+
+class PublishedReportValidationError(ValueError):
     pass
 
 
@@ -208,7 +234,7 @@ def generate_analysis_report(
     for module_id in enabled_modules:
         result = module_results.get(module_id)
         if not isinstance(result, dict):
-            limitations.append(_limitation("report", f"已选择模块 {module_id}，但未获得模块输出。"))
+            limitations.append(_limitation("report", "某项已启用分析能力未获得输出，相关内容已从报告正文中省略。"))
             continue
         contribution = result.get("reportContribution")
         if not isinstance(contribution, dict) or not contribution:
@@ -225,7 +251,7 @@ def generate_analysis_report(
         try:
             validate_report_contribution_traceability(contribution, domain_analysis)
         except ReportContributionValidationError as exc:
-            limitations.append(_limitation(module_id, f"模块报告贡献未通过追溯校验，已降级处理：{exc}"))
+            limitations.append(_limitation(module_id, f"某项分析输出未通过追溯校验，已降级处理：{exc}"))
             contribution = _drop_substantive_items(contribution)
         contributions.append(contribution)
         included_results.append(result)
@@ -241,9 +267,9 @@ def generate_analysis_report(
     status = _report_status(contributions, stale_modules=stale_modules)
     limitations.extend(_contribution_limitations(contributions))
     if stale_modules:
-        limitations.append(_limitation("report", "部分模块输出已过期，报告只能作为降级快照使用：" + "、".join(stale_modules)))
+        limitations.append(_limitation("report", "部分已启用分析能力输出已过期，报告只能作为降级快照使用。"))
     module_run_ids = _dict_value(handoff_bundle.get("moduleRunIds"))
-    sections = _build_report_sections(
+    semantic_model = build_report_semantic_model(
         title=title,
         status=status,
         shared_summary=shared_summary,
@@ -254,6 +280,11 @@ def generate_analysis_report(
         module_results=included_results,
         limitations=limitations,
     )
+    semantic_model["qualityFlags"] = [
+        *_list_of_dicts(semantic_model.get("qualityFlags")),
+        *_semantic_quality_flags(semantic_model, stale_modules=stale_modules),
+    ]
+    sections = _build_semantic_report_sections(semantic_model)
     artifact = _drop_empty(
         {
             "schemaVersion": REPORT_ARTIFACT_SCHEMA_VERSION,
@@ -272,20 +303,38 @@ def generate_analysis_report(
                 "moduleRunIds": module_run_ids,
             },
             "moduleSummaries": _module_summaries(contributions, included_results),
+            "semanticModel": semantic_model,
+            "internalTraceIndex": _dict_value(semantic_model.get("internalTraceIndex")),
+            "sectionPlan": [{"id": section.get("id"), "title": section.get("title")} for section in sections if isinstance(section, dict)],
             "sections": sections,
-            "findings": _all_items(contributions, "findings"),
-            "attributionChains": _all_items(contributions, "attributionInputs"),
-            "logicBreakdown": _all_items(contributions, "logicInputs"),
-            "recommendations": _all_items(contributions, "recommendationInputs"),
-            "evidenceTraceability": _all_items(contributions, "evidence"),
-            "modelOutputs": _all_items(contributions, "modelOutputs"),
+            "findings": _list_of_dicts(semantic_model.get("keyFindings")),
+            "attributionChains": _list_of_dicts(semantic_model.get("drivers")),
+            "logicBreakdown": _list_of_dicts(semantic_model.get("drivers")),
+            "recommendations": _list_of_dicts(semantic_model.get("recommendations")),
+            "evidenceTraceability": _list_of_dicts(semantic_model.get("evidenceChains")),
+            "modelOutputs": _list_of_dicts(semantic_model.get("modelExplanations")),
             "visualAssets": _with_report_asset_urls(report_id, _all_items(contributions, "visualAssets")),
             "attachments": _with_report_asset_urls(report_id, _all_items(contributions, "attachments")),
-            "limitations": limitations,
+            "limitations": _list_of_dicts(semantic_model.get("limitations")),
+            "qualityFlags": _list_of_dicts(semantic_model.get("qualityFlags")),
         }
     )
     markdown_body = render_report_markdown(artifact)
     html_body = render_report_html(artifact, markdown_body=markdown_body)
+    validation_errors = validate_published_report(
+        markdown_body,
+        html_body,
+        bounded_report_preview(markdown_body),
+        forbidden_values=_published_forbidden_values(enabled_modules=enabled_modules, module_run_ids=module_run_ids, contributions=contributions),
+    )
+    if validation_errors:
+        artifact["status"] = "failed"
+        artifact["qualityFlags"] = [
+            *_list_of_dicts(artifact.get("qualityFlags")),
+            _quality_flag("published_output", "hard", "发布报告包含内部字段，已阻止对外发布：" + "；".join(validation_errors[:5])),
+        ]
+        markdown_body = "# 报告生成失败\n\n发布报告未通过内部字段泄露校验，请重新生成或联系管理员复核。\n"
+        html_body = render_report_html({"title": "报告生成失败", "sections": [_section("validation_failed", "报告生成失败", [_paragraph("发布报告未通过内部字段泄露校验，请重新生成或联系管理员复核。")])]}, markdown_body=markdown_body)
     artifact["markdownBody"] = markdown_body
     artifact["htmlBody"] = html_body
     artifact["preview"] = bounded_report_preview(markdown_body)
@@ -293,22 +342,220 @@ def generate_analysis_report(
     return artifact
 
 
+def build_report_semantic_model(
+    *,
+    title: str,
+    status: str,
+    shared_summary: dict[str, Any],
+    enabled_modules: list[str],
+    session_payload: dict[str, Any],
+    module_run_ids: dict[str, Any],
+    contributions: list[dict[str, Any]],
+    module_results: list[dict[str, Any]],
+    limitations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    blocked_terms = _internal_reader_blocklist(
+        enabled_modules=enabled_modules,
+        module_run_ids=module_run_ids,
+        contributions=contributions,
+        module_results=module_results,
+    )
+    trace_index: dict[str, Any] = {}
+    key_findings: list[dict[str, Any]] = []
+    risk_signals: list[dict[str, Any]] = []
+    opportunity_signals: list[dict[str, Any]] = []
+    drivers: list[dict[str, Any]] = []
+    evidence_chains: list[dict[str, Any]] = []
+    model_explanations: list[dict[str, Any]] = []
+    visual_narratives: list[dict[str, Any]] = []
+    recommendations: list[dict[str, Any]] = []
+    semantic_limitations: list[dict[str, Any]] = []
+
+    for contribution in contributions:
+        module_id = _clean_text(contribution.get("moduleId"))
+        profile = _semantic_profile(contribution)
+        for item in _list_of_dicts(contribution.get("findings")):
+            semantic = _semantic_finding(item, blocked_terms=blocked_terms)
+            if not semantic:
+                continue
+            _add_trace(trace_index, semantic["id"], contribution=contribution, item=item, kind="finding", profile=profile)
+            existing = _find_similar_semantic_item(key_findings, semantic)
+            if existing is not None:
+                _merge_semantic_item(existing, semantic)
+                _add_trace(trace_index, existing["id"], contribution=contribution, item=item, kind="finding", profile=profile)
+                continue
+            key_findings.append(semantic)
+            kind = _clean_text(item.get("kind")).lower()
+            if kind == "risk" or "风险" in semantic.get("title", ""):
+                risk_signals.append({**semantic, "id": semantic["id"].replace("finding", "risk", 1), "signalType": "risk"})
+            elif kind == "opportunity" or "机会" in semantic.get("title", ""):
+                opportunity_signals.append({**semantic, "id": semantic["id"].replace("finding", "opportunity", 1), "signalType": "opportunity"})
+
+        for item in [*_list_of_dicts(contribution.get("attributionInputs")), *_list_of_dicts(contribution.get("logicInputs"))]:
+            semantic = _semantic_driver(item, blocked_terms=blocked_terms)
+            if semantic:
+                drivers.append(semantic)
+                _add_trace(trace_index, semantic["id"], contribution=contribution, item=item, kind="driver", profile=profile)
+
+        for item in _list_of_dicts(contribution.get("evidence")):
+            semantic = _semantic_evidence_chain(item, blocked_terms=blocked_terms)
+            if semantic:
+                evidence_chains.append(semantic)
+                _add_trace(trace_index, semantic["id"], contribution=contribution, item=item, kind="evidence", profile=profile)
+
+        for item in _list_of_dicts(contribution.get("modelOutputs")):
+            semantic = _semantic_model_explanation(item, blocked_terms=blocked_terms)
+            if semantic:
+                model_explanations.append(semantic)
+                _add_trace(trace_index, semantic["id"], contribution=contribution, item=item, kind="model_explanation", profile=profile)
+
+        for item in _list_of_dicts(contribution.get("visualAssets")):
+            semantic = _semantic_visual_narrative(item, blocked_terms=blocked_terms)
+            if semantic:
+                visual_narratives.append(semantic)
+                _add_trace(trace_index, semantic["id"], contribution=contribution, item=item, kind="visual_narrative", profile=profile)
+
+        grounded_finding_ids = {item.get("id") for item in _list_of_dicts(contribution.get("findings")) if _clean_text(item.get("id"))}
+        for item in _list_of_dicts(contribution.get("recommendationInputs")):
+            semantic = _semantic_recommendation(item, blocked_terms=blocked_terms, grounded_finding_ids=grounded_finding_ids)
+            if semantic:
+                recommendations.append(semantic)
+                _add_trace(trace_index, semantic["id"], contribution=contribution, item=item, kind="recommendation", profile=profile)
+
+        for item in _list_of_dicts(contribution.get("limitations")):
+            semantic = _semantic_limitation(item, blocked_terms=blocked_terms)
+            if semantic:
+                semantic_limitations.append(semantic)
+                _add_trace(trace_index, semantic["id"], contribution=contribution, item=item, kind="limitation", profile=profile)
+
+        if module_id and not _list_of_dicts(contribution.get("findings")) and _clean_text(contribution.get("status")).lower() in {"partial", "failed", "need_input", "stale"}:
+            semantic_limitations.append(
+                _semantic_limitation(
+                    {"summary": "部分已启用分析能力未提供足够可支撑的实质性结论，相关内容已从报告正文中降级处理。"},
+                    blocked_terms=blocked_terms,
+                )
+            )
+
+    for item in limitations:
+        semantic = _semantic_limitation(item, blocked_terms=blocked_terms)
+        if semantic:
+            semantic_limitations.append(semantic)
+
+    semantic_limitations = _dedupe_semantic_items(semantic_limitations)
+    executive_judgements = _executive_judgements_from_semantics(
+        status=status,
+        findings=key_findings,
+        limitations=semantic_limitations,
+        blocked_terms=blocked_terms,
+    )
+    return _drop_empty(
+        {
+            "schemaVersion": REPORT_SEMANTIC_MODEL_SCHEMA_VERSION,
+            "reportIntent": {
+                "goal": _reader_text(shared_summary.get("reportGoal"), blocked_terms=blocked_terms),
+                "language": "zh-CN",
+                "outputStyle": "decision_report",
+            },
+            "subject": {
+                "name": _reader_text(shared_summary.get("enterpriseName"), blocked_terms=blocked_terms),
+                "stockCode": _reader_text(shared_summary.get("stockCode"), blocked_terms=blocked_terms),
+            },
+            "scope": {
+                "timeRange": _reader_text(shared_summary.get("timeRange"), blocked_terms=blocked_terms),
+                "analysisFocus": _reader_text("、".join(_string_list(shared_summary.get("analysisFocusTags"))), blocked_terms=blocked_terms),
+                "status": status,
+            },
+            "executiveJudgements": executive_judgements,
+            "keyFindings": key_findings,
+            "riskSignals": _dedupe_semantic_items(risk_signals),
+            "opportunitySignals": _dedupe_semantic_items(opportunity_signals),
+            "drivers": _dedupe_semantic_items(drivers),
+            "evidenceChains": _dedupe_semantic_items(evidence_chains),
+            "modelExplanations": _dedupe_semantic_items(model_explanations),
+            "visualNarratives": _dedupe_semantic_items(visual_narratives),
+            "recommendations": _dedupe_semantic_items(recommendations),
+            "limitations": semantic_limitations,
+            "qualityFlags": [],
+            "internalTraceIndex": {
+                "session": {
+                    "sessionId": _clean_text(session_payload.get("sessionId")),
+                    "revision": _safe_int(session_payload.get("revision"), default=0),
+                },
+                "enabledModules": enabled_modules,
+                "moduleRunIds": module_run_ids,
+                "items": trace_index,
+            },
+            "title": _reader_text(title, blocked_terms=blocked_terms) or "定制化分析报告",
+        }
+    )
+
+
+def _build_semantic_report_sections(semantic_model: dict[str, Any]) -> list[dict[str, Any]]:
+    intent = _dict_value(semantic_model.get("reportIntent"))
+    subject = _dict_value(semantic_model.get("subject"))
+    scope = _dict_value(semantic_model.get("scope"))
+    sections: list[dict[str, Any]] = []
+    scope_items = [
+        {"title": "企业", "summary": _clean_text(subject.get("name"))},
+        {"title": "股票代码", "summary": _clean_text(subject.get("stockCode"))},
+        {"title": "时间范围", "summary": _clean_text(scope.get("timeRange"))},
+        {"title": "报告目标", "summary": _clean_text(intent.get("goal"))},
+    ]
+    sections.append(_section("report_scope", "报告范围", [_items_block([item for item in scope_items if item.get("summary")])]))
+    sections.append(_section("executive_judgement", "核心判断", [_items_block(semantic_model.get("executiveJudgements"), empty_text="当前输入不足以形成可支撑的核心判断。")]))
+    sections.append(_section("key_findings", "关键发现", [_items_block(semantic_model.get("keyFindings"), empty_text="当前未形成可支撑的实质性发现。")]))
+    signal_blocks = []
+    if _list_of_dicts(semantic_model.get("riskSignals")):
+        signal_blocks.append(_items_block(semantic_model.get("riskSignals")))
+    if _list_of_dicts(semantic_model.get("opportunitySignals")):
+        signal_blocks.append(_items_block(semantic_model.get("opportunitySignals")))
+    if signal_blocks:
+        sections.append(_section("risk_opportunity_assessment", "风险与机会评估", signal_blocks))
+    if _list_of_dicts(semantic_model.get("drivers")):
+        sections.append(_section("attribution_logic", "归因与逻辑拆解", [_items_block(semantic_model.get("drivers"))]))
+    sections.append(_section("evidence_verification", "来源与核验", [_evidence_block(semantic_model.get("evidenceChains"))]))
+    visual_blocks = []
+    if _list_of_dicts(semantic_model.get("visualNarratives")):
+        visual_blocks.append(_visual_block(semantic_model.get("visualNarratives")))
+    if _list_of_dicts(semantic_model.get("modelExplanations")):
+        visual_blocks.append(_items_block(semantic_model.get("modelExplanations")))
+    if visual_blocks:
+        sections.append(_section("model_visual_interpretation", "模型与图表解读", visual_blocks))
+    sections.append(_section("recommendations", "决策建议", [_items_block(semantic_model.get("recommendations"), empty_text="当前未形成可追溯的决策建议。")]))
+    sections.append(_section("limitations", "限制说明", [_items_block(semantic_model.get("limitations"), empty_text="暂无额外限制。")]))
+    return [section for section in sections if section.get("blocks")]
+
+
+def validate_published_report(*bodies: str, forbidden_values: list[str] | None = None) -> list[str]:
+    text = "\n".join(str(body or "") for body in bodies)
+    errors: list[str] = []
+    for token in sorted(PUBLISHED_REPORT_FORBIDDEN_LABELS, key=len, reverse=True):
+        if token and token in text:
+            errors.append(f"internal label leaked: {token}")
+    for value in forbidden_values or []:
+        clean = _clean_text(value)
+        if len(clean) >= 4 and clean in text:
+            errors.append(f"internal value leaked: {clean}")
+    return errors
+
+
 def render_report_markdown(artifact: dict[str, Any]) -> str:
     title = _clean_text(artifact.get("title")) or "分析报告"
     lines = [f"# {title}", ""]
     scope = _dict_value(artifact.get("scope"))
     meta_parts = []
-    for key, label in (
-        ("targetCompany", "企业"),
-        ("stockCode", "股票代码"),
-        ("timeRange", "时间范围"),
-        ("reportGoal", "报告目标"),
-    ):
-        value = _clean_text(scope.get(key))
-        if value:
-            meta_parts.append(f"{label}：{value}")
-    if meta_parts:
-        lines.extend(["## 报告范围", "", *[f"- {item}" for item in meta_parts], ""])
+    if not isinstance(artifact.get("semanticModel"), dict):
+        for key, label in (
+            ("targetCompany", "企业"),
+            ("stockCode", "股票代码"),
+            ("timeRange", "时间范围"),
+            ("reportGoal", "报告目标"),
+        ):
+            value = _clean_text(scope.get(key))
+            if value:
+                meta_parts.append(f"{label}：{value}")
+        if meta_parts:
+            lines.extend(["## 报告范围", "", *[f"- {item}" for item in meta_parts], ""])
 
     for section in artifact.get("sections", []) if isinstance(artifact.get("sections"), list) else []:
         if not isinstance(section, dict):
@@ -614,13 +861,29 @@ def _append_markdown_block(lines: list[str], block: Any) -> None:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            title = _clean_text(item.get("title") or item.get("name") or item.get("id"))
-            summary = _clean_text(item.get("summary") or item.get("description") or item.get("text") or item.get("reasoning"))
+            title = _clean_text(item.get("title") or item.get("claim") or item.get("action") or item.get("name"))
+            summary = _clean_text(
+                item.get("readerSummary")
+                or item.get("basisSummary")
+                or item.get("summary")
+                or item.get("description")
+                or item.get("text")
+                or item.get("reasoning")
+            )
             prefix = f"- **{title}**" if title else "-"
             lines.append(f"{prefix}：{summary}" if summary else prefix)
-            trace = _trace_label(item)
-            if trace:
-                lines.append(f"  - 追溯：{trace}")
+            rationale = _clean_text(item.get("rationale"))
+            if rationale:
+                lines.append(f"  - 理由：{rationale}")
+            expected_benefit = _clean_text(item.get("expectedBenefit"))
+            if expected_benefit:
+                lines.append(f"  - 预期价值：{expected_benefit}")
+            risk_note = _clean_text(item.get("riskNote"))
+            if risk_note:
+                lines.append(f"  - 风险提示：{risk_note}")
+            boundary = _clean_text(item.get("interpretationBoundary"))
+            if boundary:
+                lines.append(f"  - 解读边界：{boundary}")
         lines.append("")
     elif block_type == "evidence":
         evidence = block.get("items", [])
@@ -630,12 +893,18 @@ def _append_markdown_block(lines: list[str], block: Any) -> None:
         for item in evidence:
             if not isinstance(item, dict):
                 continue
-            title = _clean_text(item.get("title") or item.get("sourceName") or item.get("sourceId") or item.get("id"))
-            source = _clean_text(item.get("url") or item.get("locator") or item.get("sourceType"))
-            text = _clean_text(item.get("summary") or item.get("evidenceText") or item.get("description"))
-            lines.append(f"- **{title or '来源'}**：{text or source}")
-            if source and source != text:
-                lines.append(f"  - 位置：{source}")
+            title = _clean_text(item.get("title") or item.get("sourceDescription")) or "来源"
+            text = _clean_text(item.get("readerSummary") or item.get("summary") or item.get("description"))
+            source = _clean_text(item.get("sourceDescription"))
+            verification = _clean_text(item.get("verificationStatus"))
+            support = _clean_text(item.get("supportRelationship"))
+            lines.append(f"- **{title}**：{text or source}")
+            if source and source != title:
+                lines.append(f"  - 来源说明：{source}")
+            if verification:
+                lines.append(f"  - 核验状态：{verification}")
+            if support:
+                lines.append(f"  - 支撑关系：{support}")
         lines.append("")
     elif block_type == "visuals":
         for asset in block.get("items", []) if isinstance(block.get("items"), list) else []:
@@ -644,17 +913,391 @@ def _append_markdown_block(lines: list[str], block: Any) -> None:
             title = _clean_text(asset.get("title"))
             url = _clean_text(asset.get("downloadUrl"))
             alt = _clean_text(asset.get("altText") or title)
-            caption = _clean_text(asset.get("caption") or asset.get("description"))
+            caption = _clean_text(asset.get("caption") or asset.get("readerSummary") or asset.get("description"))
             if url and str(asset.get("type", "")).lower() == "image":
                 lines.append(f"![{alt}]({url})")
             else:
                 lines.append(f"- **{title or '图表'}**：{caption or alt}")
-                render_payload = asset.get("renderPayload")
-                if isinstance(render_payload, dict) and render_payload:
-                    lines.append(f"  - 降级呈现：{_clean_text(render_payload.get('text') or render_payload.get('summary') or render_payload)}")
+                fallback = _clean_text(asset.get("fallbackText"))
+                if fallback and fallback != caption:
+                    lines.append(f"  - 降级呈现：{fallback}")
             if caption:
                 lines.append(f"  - 说明：{caption}")
+            boundary = _clean_text(asset.get("interpretationBoundary"))
+            if boundary:
+                lines.append(f"  - 解读边界：{boundary}")
         lines.append("")
+
+
+def _semantic_profile(contribution: dict[str, Any]) -> dict[str, Any]:
+    profile = _dict_value(contribution.get("semanticContributionProfile"))
+    if profile:
+        return _drop_empty(
+            {
+                "profileVersion": _clean_text(profile.get("profileVersion")) or REPORT_SEMANTIC_CONTRIBUTION_PROFILE_VERSION,
+                "capabilityTypes": _string_list(profile.get("capabilityTypes")),
+                "supportedSemanticItems": _string_list(profile.get("supportedSemanticItems")),
+            }
+        )
+    supported = []
+    for key, item_type in (
+        ("findings", "finding"),
+        ("evidence", "evidence"),
+        ("attributionInputs", "driver"),
+        ("logicInputs", "driver"),
+        ("recommendationInputs", "recommendation"),
+        ("modelOutputs", "model_explanation"),
+        ("visualAssets", "visual"),
+    ):
+        if _list_of_dicts(contribution.get(key)) and item_type not in supported:
+            supported.append(item_type)
+    return {
+        "profileVersion": REPORT_SEMANTIC_CONTRIBUTION_PROFILE_VERSION,
+        "capabilityTypes": _semantic_capability_types(contribution),
+        "supportedSemanticItems": supported,
+    }
+
+
+def _semantic_capability_types(contribution: dict[str, Any]) -> list[str]:
+    kinds = {_clean_text(item.get("kind")).lower() for item in _list_of_dicts(contribution.get("findings"))}
+    titles = " ".join(_clean_text(item.get("title")) for item in _list_of_dicts(contribution.get("findings")))
+    result: list[str] = []
+    if "risk" in kinds or "风险" in titles:
+        result.append("risk_assessment")
+    if "opportunity" in kinds or "机会" in titles:
+        result.append("opportunity_assessment")
+    if _list_of_dicts(contribution.get("modelOutputs")):
+        result.append("model_explanation")
+    if not result:
+        result.append("general_analysis")
+    return result
+
+
+def _semantic_finding(item: dict[str, Any], *, blocked_terms: set[str]) -> dict[str, Any]:
+    title = _reader_text(item.get("title"), blocked_terms=blocked_terms) or "关键发现"
+    summary = _reader_text(item.get("summary"), blocked_terms=blocked_terms)
+    if not title and not summary:
+        return {}
+    semantic_id = _semantic_id("finding", item)
+    return _drop_empty(
+        {
+            "id": semantic_id,
+            "title": title,
+            "claim": title,
+            "readerSummary": summary or title,
+            "basisSummary": _basis_summary(item),
+            "category": _reader_text(item.get("kind"), blocked_terms=blocked_terms),
+            "confidence": item.get("confidence"),
+            "priority": _reader_text(item.get("priority"), blocked_terms=blocked_terms),
+            "supportRefs": [semantic_id],
+        }
+    )
+
+
+def _semantic_driver(item: dict[str, Any], *, blocked_terms: set[str]) -> dict[str, Any]:
+    title = _reader_text(item.get("title"), blocked_terms=blocked_terms) or "影响因素"
+    summary = _reader_text(item.get("summary") or item.get("rationale"), blocked_terms=blocked_terms)
+    if not summary and title == "影响因素":
+        return {}
+    return _drop_empty(
+        {
+            "id": _semantic_id("driver", item),
+            "title": title,
+            "readerSummary": summary or title,
+            "basisSummary": _basis_summary(item),
+            "direction": _reader_text(item.get("direction"), blocked_terms=blocked_terms),
+            "strength": item.get("strength"),
+            "confidence": item.get("confidence"),
+            "interpretationBoundary": _reader_text(item.get("interpretationBoundary"), blocked_terms=blocked_terms),
+        }
+    )
+
+
+def _semantic_evidence_chain(item: dict[str, Any], *, blocked_terms: set[str]) -> dict[str, Any]:
+    source_name = _reader_text(item.get("sourceName") or item.get("title"), blocked_terms=blocked_terms)
+    source_type = _source_type_label(item)
+    summary = _reader_text(item.get("summary") or item.get("evidenceText") or item.get("description"), blocked_terms=blocked_terms)
+    url = _clean_text(item.get("url"))
+    source_description = source_name or source_type or (url if url.startswith(("http://", "https://")) else "")
+    if not summary and not source_description:
+        return {}
+    return _drop_empty(
+        {
+            "id": _semantic_id("evidence", item),
+            "title": source_description or "来源",
+            "readerSummary": summary or "该来源用于支撑相关判断，需结合上下文阅读。",
+            "sourceDescription": source_description,
+            "verificationStatus": _reader_text(item.get("verificationStatus"), blocked_terms=blocked_terms) or "已纳入结构化分析输入，需以后续事实更新复核。",
+            "supportRelationship": _reader_text(item.get("supportRelationship"), blocked_terms=blocked_terms) or "支撑报告中的相关发现或限制说明。",
+            "uncertainty": _reader_text(item.get("uncertainty"), blocked_terms=blocked_terms),
+        }
+    )
+
+
+def _semantic_model_explanation(item: dict[str, Any], *, blocked_terms: set[str]) -> dict[str, Any]:
+    title = _reader_text(item.get("title"), blocked_terms=blocked_terms) or "模型解释"
+    summary = _reader_text(item.get("summary") or item.get("description"), blocked_terms=blocked_terms)
+    if not summary and title == "模型解释":
+        return {}
+    boundary = _reader_text(item.get("interpretationBoundary"), blocked_terms=blocked_terms) or "模型得分、特征贡献或预测结果用于解释模型输出，不等同于现实世界因果关系。"
+    return _drop_empty(
+        {
+            "id": _semantic_id("model", item),
+            "title": title,
+            "readerSummary": summary or title,
+            "basisSummary": _basis_summary(item),
+            "interpretationBoundary": boundary,
+            "confidence": item.get("confidence"),
+        }
+    )
+
+
+def _semantic_visual_narrative(item: dict[str, Any], *, blocked_terms: set[str]) -> dict[str, Any]:
+    title = _reader_text(item.get("title"), blocked_terms=blocked_terms) or "分析图表"
+    caption = _reader_text(item.get("caption") or item.get("description"), blocked_terms=blocked_terms)
+    render_payload = _dict_value(item.get("renderPayload"))
+    fallback = _reader_text(render_payload.get("text") or render_payload.get("summary") or item.get("inlineContent"), blocked_terms=blocked_terms)
+    limitations = _list_of_dicts(item.get("limitations"))
+    limitation_text = "；".join(_reader_text(entry.get("summary"), blocked_terms=blocked_terms) for entry in limitations if _reader_text(entry.get("summary"), blocked_terms=blocked_terms))
+    boundary = _reader_text(item.get("interpretationBoundary"), blocked_terms=blocked_terms) or limitation_text
+    if _clean_text(item.get("subtype")).lower() in {"shap_summary_plot", "feature_importance"} and "因果" not in boundary:
+        boundary = (boundary + " " if boundary else "") + "模型贡献不等于现实因果关系。"
+    return _drop_empty(
+        {
+            "id": _semantic_id("visual", item),
+            "type": _clean_text(item.get("type")),
+            "title": title,
+            "caption": caption or fallback or title,
+            "readerSummary": caption or fallback or title,
+            "fallbackText": fallback,
+            "altText": _reader_text(item.get("altText"), blocked_terms=blocked_terms) or title,
+            "interpretationBoundary": boundary,
+            "assetRef": _clean_text(item.get("assetId") or item.get("id")),
+        }
+    )
+
+
+def _semantic_recommendation(item: dict[str, Any], *, blocked_terms: set[str], grounded_finding_ids: set[str]) -> dict[str, Any]:
+    refs = _trace_ids(item.get("traceRefs"))
+    if grounded_finding_ids and refs and not refs.intersection(grounded_finding_ids):
+        return {}
+    title = _reader_text(item.get("title"), blocked_terms=blocked_terms) or "建议事项"
+    summary = _reader_text(item.get("summary"), blocked_terms=blocked_terms)
+    rationale = _reader_text(item.get("rationale"), blocked_terms=blocked_terms) or summary
+    if not summary and title == "建议事项":
+        return {}
+    return _drop_empty(
+        {
+            "id": _semantic_id("recommendation", item),
+            "title": title,
+            "action": title,
+            "readerSummary": summary or rationale or title,
+            "rationale": rationale,
+            "expectedBenefit": _reader_text(item.get("expectedBenefit"), blocked_terms=blocked_terms),
+            "riskNote": _reader_text(item.get("riskNote"), blocked_terms=blocked_terms),
+            "priority": _reader_text(item.get("priority"), blocked_terms=blocked_terms),
+            "confidence": item.get("confidence"),
+        }
+    )
+
+
+def _semantic_limitation(item: dict[str, Any], *, blocked_terms: set[str]) -> dict[str, Any]:
+    summary = _reader_text(item.get("summary") if isinstance(item, dict) else item, blocked_terms=blocked_terms)
+    if not summary:
+        return {}
+    return _drop_empty({"id": _semantic_id("limitation", item if isinstance(item, dict) else {"summary": summary}), "title": "限制说明", "readerSummary": summary, "summary": summary})
+
+
+def _semantic_id(prefix: str, item: dict[str, Any]) -> str:
+    raw = _clean_text(item.get("id") or item.get("assetId") or item.get("title") or item.get("summary"))
+    if not raw:
+        raw = uuid.uuid4().hex[:12]
+    token = re.sub(r"[^0-9A-Za-z_\-\u4e00-\u9fff]+", "_", raw).strip("_")[:48]
+    return f"sem_{prefix}_{token or uuid.uuid4().hex[:12]}"
+
+
+def _reader_text(value: Any, *, blocked_terms: set[str]) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    for term in sorted(blocked_terms, key=len, reverse=True):
+        if not term or term not in text:
+            continue
+        if re.fullmatch(r"[A-Za-z0-9_.:\-/]+", term):
+            text = text.replace(term, "")
+        else:
+            text = text.replace(term, "相关分析")
+    text = re.sub(r"\s+", " ", text).strip(" ；;，,")
+    return text
+
+
+def _internal_reader_blocklist(
+    *,
+    enabled_modules: list[str],
+    module_run_ids: dict[str, Any],
+    contributions: list[dict[str, Any]],
+    module_results: list[dict[str, Any]],
+) -> set[str]:
+    terms = set(enabled_modules)
+    terms.update(_clean_text(value) for value in module_run_ids.values())
+    for contribution in contributions:
+        terms.add(_clean_text(contribution.get("moduleId")))
+        terms.add(_clean_text(contribution.get("displayName")))
+        for collection_name in ("findings", "evidence", "attributionInputs", "logicInputs", "recommendationInputs", "modelOutputs", "visualAssets", "attachments", "limitations"):
+            for item in _list_of_dicts(contribution.get(collection_name)):
+                terms.add(_clean_text(item.get("moduleId")))
+    for result in module_results:
+        terms.add(_clean_text(result.get("moduleId")))
+        terms.add(_clean_text(result.get("displayName")))
+        terms.add(_clean_text(result.get("runId")))
+    return {term for term in terms if len(term) >= 3}
+
+
+def _basis_summary(item: dict[str, Any]) -> str:
+    refs = _trace_ids(item.get("traceRefs"))
+    if refs:
+        return "该判断可追溯到已完成的结构化分析材料。"
+    if _string_list(item.get("sourceIds")):
+        return "该判断基于已纳入的来源材料。"
+    if _string_list(item.get("eventIds")):
+        return "该判断基于已纳入的事件材料。"
+    return ""
+
+
+def _source_type_label(item: dict[str, Any]) -> str:
+    source_type = _clean_text(item.get("sourceType")).lower()
+    labels = {
+        "web": "公开网页",
+        "rag": "知识库文档",
+        "policy": "政策文件",
+        "announcement": "公告文件",
+        "bidding": "招投标信息",
+        "model": "模型输出",
+    }
+    return labels.get(source_type, _reader_text(source_type, blocked_terms=set()))
+
+
+def _find_similar_semantic_item(items: list[dict[str, Any]], candidate: dict[str, Any]) -> dict[str, Any] | None:
+    title = _clean_text(candidate.get("title"))
+    claim = _clean_text(candidate.get("claim"))
+    for item in items:
+        if title and title == _clean_text(item.get("title")):
+            return item
+        if claim and claim == _clean_text(item.get("claim")):
+            return item
+    return None
+
+
+def _merge_semantic_item(target: dict[str, Any], candidate: dict[str, Any]) -> None:
+    if not _clean_text(target.get("readerSummary")) and _clean_text(candidate.get("readerSummary")):
+        target["readerSummary"] = candidate["readerSummary"]
+    if _clean_text(candidate.get("basisSummary")) and _clean_text(candidate.get("basisSummary")) not in _clean_text(target.get("basisSummary")):
+        target["basisSummary"] = "；".join(part for part in [_clean_text(target.get("basisSummary")), _clean_text(candidate.get("basisSummary"))] if part)
+    target["supportRefs"] = list(dict.fromkeys([*_string_list(target.get("supportRefs")), *_string_list(candidate.get("supportRefs"))]))
+
+
+def _dedupe_semantic_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        key = _clean_text(item.get("readerSummary") or item.get("claim") or item.get("title") or item.get("id"))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _add_trace(
+    trace_index: dict[str, Any],
+    semantic_id: str,
+    *,
+    contribution: dict[str, Any],
+    item: dict[str, Any],
+    kind: str,
+    profile: dict[str, Any],
+) -> None:
+    trace_index[semantic_id] = _drop_empty(
+        {
+            "kind": kind,
+            "moduleId": _clean_text(contribution.get("moduleId")),
+            "displayName": _clean_text(contribution.get("displayName")),
+            "status": _clean_text(contribution.get("status")),
+            "itemId": _clean_text(item.get("id") or item.get("assetId")),
+            "traceRefs": _normalize_trace_refs(item.get("traceRefs")),
+            "sourceIds": _string_list(item.get("sourceIds")),
+            "eventIds": _string_list(item.get("eventIds")),
+            "semanticContributionProfile": profile,
+        }
+    )
+
+
+def _executive_judgements_from_semantics(
+    *,
+    status: str,
+    findings: list[dict[str, Any]],
+    limitations: list[dict[str, Any]],
+    blocked_terms: set[str],
+) -> list[dict[str, Any]]:
+    if findings:
+        titles = "；".join(_reader_text(item.get("title"), blocked_terms=blocked_terms) for item in findings[:3] if _reader_text(item.get("title"), blocked_terms=blocked_terms))
+        return [
+            _drop_empty(
+                {
+                    "id": "sem_judgement_primary",
+                    "title": "核心判断",
+                    "claim": titles or "已形成可追溯的结构化判断。",
+                    "readerSummary": f"本报告基于已完成的结构化分析材料生成，当前状态为 {status}。核心判断集中在：{titles}。",
+                    "basisSummary": "所有核心判断均由已纳入的分析材料、证据链、模型解释或限制说明支撑。",
+                }
+            )
+        ]
+    if limitations:
+        return [
+            {
+                "id": "sem_judgement_limited",
+                "title": "核心判断",
+                "claim": "当前材料不足以形成充分的实质性结论。",
+                "readerSummary": f"本报告当前状态为 {status}。由于可支撑材料不足，正文主要呈现限制、来源缺口与后续复核方向。",
+            }
+        ]
+    return [
+        {
+            "id": "sem_judgement_empty",
+            "title": "核心判断",
+            "claim": "当前尚未形成可支撑的实质性结论。",
+            "readerSummary": f"本报告当前状态为 {status}，尚未获得足够可支撑材料。",
+        }
+    ]
+
+
+def _semantic_quality_flags(semantic_model: dict[str, Any], *, stale_modules: list[str]) -> list[dict[str, Any]]:
+    flags: list[dict[str, Any]] = []
+    if stale_modules:
+        flags.append(_quality_flag("stale_inputs", "warning", "部分分析输入已过期，报告仅作为降级快照。"))
+    if not _list_of_dicts(semantic_model.get("keyFindings")):
+        flags.append(_quality_flag("missing_findings", "warning", "未形成可支撑的实质性发现。"))
+    if _list_of_dicts(semantic_model.get("recommendations")) and not _list_of_dicts(semantic_model.get("keyFindings")):
+        flags.append(_quality_flag("weak_recommendations", "warning", "建议缺少关键发现支撑。"))
+    return flags
+
+
+def _quality_flag(flag_type: str, severity: str, message: str) -> dict[str, Any]:
+    return {"type": flag_type, "severity": severity, "message": _clean_text(message)}
+
+
+def _published_forbidden_values(*, enabled_modules: list[str], module_run_ids: dict[str, Any], contributions: list[dict[str, Any]]) -> list[str]:
+    values = set(enabled_modules)
+    values.update(_clean_text(value) for value in module_run_ids.values())
+    for contribution in contributions:
+        values.add(_clean_text(contribution.get("moduleId")))
+        for collection_name in ("findings", "evidence", "attributionInputs", "logicInputs", "recommendationInputs", "modelOutputs"):
+            for item in _list_of_dicts(contribution.get(collection_name)):
+                values.update(_string_list(item.get("sourceIds")))
+                values.update(_string_list(item.get("eventIds")))
+                for trace_value in _normalize_trace_refs(item.get("traceRefs")).values():
+                    values.update(trace_value)
+    return [value for value in values if len(value) >= 4]
 
 
 def _normalize_contribution_items(value: Any, item_type: str, *, module_id: str) -> list[dict[str, Any]]:
