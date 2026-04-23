@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from ..models import AnalysisModuleArtifact, AnalysisReport
 
 REPORT_ARTIFACT_SCHEMA_VERSION = "analysis_report_artifact.v1"
+REPORT_DOCUMENT_SCHEMA_VERSION = "analysis_report_document.v1"
 REPORT_CONTRIBUTION_SCHEMA_VERSION = "analysis_report_contribution.v1"
 DOMAIN_ANALYSIS_SCHEMA_VERSION = "analysis_domain_analysis.v1"
 REPORT_SEMANTIC_MODEL_SCHEMA_VERSION = "report_semantic_model.v1"
@@ -40,6 +41,7 @@ REPORT_PDF_SEGMENT_GAP = 10
 REPORT_PDF_CSS = (
     "body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
     "font-size:11pt;line-height:1.6;color:#17202a;}"
+    ".report-cover-kicker{font-size:10pt;letter-spacing:0.18em;text-transform:uppercase;color:#0f766e;margin:0 0 14px 0;}"
     "h1{font-size:18pt;line-height:1.3;margin:0 0 14px 0;}"
     "h2{font-size:14pt;line-height:1.35;margin:16px 0 8px 0;}"
     "h3{font-size:12pt;line-height:1.4;margin:12px 0 6px 0;}"
@@ -90,6 +92,19 @@ PUBLISHED_REPORT_FORBIDDEN_LABELS = {
     "artifact_json",
     "analysis_reports",
 }
+PUBLISHED_REPORT_FORBIDDEN_PHRASES = (
+    "生成阶段",
+    "重新运行分析模块",
+    "模块 rerun",
+    "module rerun",
+    "generation-stage",
+    "generation stage",
+    "orchestration stage",
+    "内部快照字段",
+    "snapshot fields",
+    "internal snapshot",
+    "internal trace",
+)
 
 
 class ReportContributionValidationError(ValueError):
@@ -395,7 +410,17 @@ def generate_analysis_report(
             "attachments": _with_report_asset_urls(report_id, _all_items(contributions, "attachments")),
             "limitations": _list_of_dicts(semantic_model.get("limitations")),
             "qualityFlags": _list_of_dicts(semantic_model.get("qualityFlags")),
+            "rendering": {
+                "style": DEFAULT_REPORT_RENDER_STYLE,
+                "structureLocked": True,
+            },
         }
+    )
+    artifact["document"] = build_report_document(
+        title=writer_title,
+        scope=artifact.get("scope"),
+        body_sections=sections,
+        render_style=_clean_text(_dict_value(artifact.get("rendering")).get("style")) or DEFAULT_REPORT_RENDER_STYLE,
     )
     markdown_body = render_report_markdown(artifact)
     html_body = render_report_html(artifact, markdown_body=markdown_body)
@@ -611,6 +636,7 @@ def _write_report_with_llm(
     prompt = (
         "你是面向决策读者的中文报告写作器。只根据给定写作包重写报告，不新增事实、数字、来源或判断。"
         "禁止出现模块名、运行标识、数据库字段、代码字段、traceRefs、sourceIds、moduleId 等内部实现词。"
+        "限制说明只能使用读者可理解的证据覆盖、时间范围、不确定性、数据边界等语言，禁止描述内部编排、快照字段或模块重跑策略。"
         "输出必须是 JSON 对象，格式为："
         "{\"title\":\"...\",\"sections\":[{\"id\":\"executive_judgement\",\"title\":\"核心判断\",\"blocks\":[{\"type\":\"paragraph\",\"text\":\"...\"}]}]}。"
         "允许的 section id 包括 report_scope、executive_judgement、key_findings、risk_opportunity_assessment、"
@@ -805,6 +831,11 @@ def validate_published_report(*bodies: str, forbidden_values: list[str] | None =
     for token in sorted(PUBLISHED_REPORT_FORBIDDEN_LABELS, key=len, reverse=True):
         if token and token in text:
             errors.append(f"internal label leaked: {token}")
+    lowered = text.lower()
+    for phrase in PUBLISHED_REPORT_FORBIDDEN_PHRASES:
+        clean = _clean_text(phrase)
+        if clean and clean.lower() in lowered:
+            errors.append(f"internal orchestration wording leaked: {clean}")
     for value in forbidden_values or []:
         clean = _clean_text(value)
         if len(clean) >= 4 and clean in text:
@@ -813,6 +844,9 @@ def validate_published_report(*bodies: str, forbidden_values: list[str] | None =
 
 
 def render_report_markdown(artifact: dict[str, Any]) -> str:
+    document = _report_document_from_artifact(artifact)
+    if document:
+        return _render_report_document_markdown(document, title=_clean_text(artifact.get("title")) or "分析报告")
     title = _clean_text(artifact.get("title")) or "分析报告"
     lines = [f"# {title}", ""]
     scope = _dict_value(artifact.get("scope"))
@@ -844,6 +878,9 @@ def render_report_markdown(artifact: dict[str, Any]) -> str:
 
 
 def render_report_html(artifact: dict[str, Any], *, markdown_body: str | None = None) -> str:
+    document = _report_document_from_artifact(artifact)
+    if document:
+        return _render_report_document_html(document, title=_clean_text(artifact.get("title")) or "分析报告")
     body = markdown_body if markdown_body is not None else render_report_markdown(artifact)
     parts: list[str] = []
     in_list = False
@@ -937,6 +974,231 @@ def report_preview_metadata(artifact: dict[str, Any]) -> dict[str, Any]:
             "limitations": artifact.get("limitations") if isinstance(artifact.get("limitations"), list) else [],
         }
     )
+
+
+def build_report_document(
+    *,
+    title: str,
+    scope: dict[str, Any] | None,
+    body_sections: list[dict[str, Any]],
+    render_style: str,
+) -> dict[str, Any]:
+    scope_payload = _dict_value(scope)
+    cover_items = [
+        {"title": "报告标题", "summary": _clean_text(title)},
+        {"title": "目标对象", "summary": _clean_text(scope_payload.get("targetCompany"))},
+        {"title": "股票代码", "summary": _clean_text(scope_payload.get("stockCode"))},
+        {"title": "时间范围", "summary": _clean_text(scope_payload.get("timeRange"))},
+        {"title": "报告目标", "summary": _clean_text(scope_payload.get("reportGoal"))},
+    ]
+    toc_items = [
+        {"id": _clean_text(section.get("id")), "title": _clean_text(section.get("title"))}
+        for section in body_sections
+        if isinstance(section, dict) and _clean_text(section.get("title"))
+    ]
+    return _drop_empty(
+        {
+            "schemaVersion": REPORT_DOCUMENT_SCHEMA_VERSION,
+            "renderStyle": normalize_report_render_style(render_style),
+            "structureLocked": True,
+            "pages": [
+                {
+                    "id": "cover",
+                    "type": "cover",
+                    "title": "封面",
+                    "blocks": [
+                        _paragraph("本报告面向决策阅读场景整理当前已完成的分析结果与限制说明。"),
+                        _items_block([item for item in cover_items if item.get("summary")]),
+                    ],
+                },
+                {
+                    "id": "table_of_contents",
+                    "type": "table_of_contents",
+                    "title": "目录",
+                    "items": toc_items,
+                },
+                {
+                    "id": "body",
+                    "type": "body",
+                    "title": "正文",
+                    "sections": [section for section in body_sections if isinstance(section, dict)],
+                },
+            ],
+        }
+    )
+
+
+def _report_document_from_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
+    payload = _dict_value(artifact)
+    document = _dict_value(payload.get("document"))
+    if document.get("pages"):
+        return document
+    sections = _list_of_dicts(payload.get("sections"))
+    if not sections:
+        return {}
+    return build_report_document(
+        title=_clean_text(payload.get("title")) or "分析报告",
+        scope=_dict_value(payload.get("scope")),
+        body_sections=sections,
+        render_style=_clean_text(payload.get("renderStyle") or _dict_value(payload.get("rendering")).get("style"))
+        or DEFAULT_REPORT_RENDER_STYLE,
+    )
+
+
+def _render_report_document_markdown(document: dict[str, Any], *, title: str) -> str:
+    lines = [f"# {title}", ""]
+    for page in _list_of_dicts(document.get("pages")):
+        page_type = _clean_text(page.get("type"))
+        page_title = _report_document_page_title(page)
+        if page_title:
+            lines.extend([f"## {page_title}", ""])
+        if page_type == "table_of_contents":
+            toc_items = _list_of_dicts(page.get("items"))
+            for item in toc_items:
+                item_title = _clean_text(item.get("title"))
+                if item_title:
+                    lines.append(f"- {item_title}")
+            lines.append("")
+            continue
+        if page_type == "body":
+            for section in _list_of_dicts(page.get("sections")):
+                section_title = _clean_text(section.get("title"))
+                if section_title:
+                    lines.extend([f"### {section_title}", ""])
+                for block in section.get("blocks", []) if isinstance(section.get("blocks"), list) else []:
+                    _append_markdown_block(lines, block)
+            continue
+        for block in page.get("blocks", []) if isinstance(page.get("blocks"), list) else []:
+            _append_markdown_block(lines, block)
+    return "\n".join(lines).strip() + "\n"
+
+
+def _render_report_document_html(document: dict[str, Any], *, title: str) -> str:
+    parts: list[str] = []
+    for page in _list_of_dicts(document.get("pages")):
+        page_type = _clean_text(page.get("type")) or "body"
+        page_title = _report_document_page_title(page)
+        page_parts = [f"<section class=\"report-page report-page-{html.escape(page_type, quote=True)}\">"]
+        page_parts.append("<div class=\"report-page-frame\">")
+        if page_title:
+            page_parts.append(f"<h2>{html.escape(page_title)}</h2>")
+        if page_type == "table_of_contents":
+            toc_items = _list_of_dicts(page.get("items"))
+            if toc_items:
+                page_parts.append("<ol class=\"report-toc\">")
+                for item in toc_items:
+                    item_title = _clean_text(item.get("title"))
+                    if item_title:
+                        page_parts.append(f"<li>{html.escape(item_title)}</li>")
+                page_parts.append("</ol>")
+        elif page_type == "body":
+            for section in _list_of_dicts(page.get("sections")):
+                section_title = _clean_text(section.get("title"))
+                if section_title:
+                    page_parts.append(f"<h3>{html.escape(section_title)}</h3>")
+                for block in section.get("blocks", []) if isinstance(section.get("blocks"), list) else []:
+                    page_parts.append(_render_report_html_block(block))
+        else:
+            for block in page.get("blocks", []) if isinstance(page.get("blocks"), list) else []:
+                page_parts.append(_render_report_html_block(block))
+        page_parts.append("</div></section>")
+        parts.append("".join(page_parts))
+    return (
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+        f"<title>{html.escape(title)}</title>"
+        "<style>"
+        "body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.65;max-width:960px;margin:0 auto;padding:32px 24px;color:#17202a;background:#f4f7fb}"
+        ".report-page{page-break-after:always;break-after:page;margin:0 0 28px;border:1px solid #d8dee8;border-radius:20px;background:#fff;box-shadow:0 12px 40px rgba(15,23,42,.06)}"
+        ".report-page:last-child{page-break-after:auto;break-after:auto}"
+        ".report-page-frame{padding:32px 36px 40px}"
+        ".report-page-cover .report-page-frame{min-height:720px;display:flex;flex-direction:column;justify-content:center;background:linear-gradient(160deg,#0f766e 0%,#14b8a6 52%,#ccfbf1 100%);color:#f8fafc}"
+        ".report-page-cover h2{font-size:14px;letter-spacing:.12em;text-transform:uppercase;opacity:.9}"
+        ".report-page-cover p,.report-page-cover li{color:#ecfeff}"
+        ".report-page h2,.report-page h3{line-height:1.25}"
+        ".report-page-cover .report-items li strong{color:#fff}"
+        ".report-toc{margin:0;padding-left:20px}"
+        ".report-toc li{margin:0 0 10px 0}"
+        ".report-items,.report-evidence{margin:0;padding-left:20px}"
+        ".report-items li,.report-evidence li{margin:0 0 10px 0}"
+        ".report-visual{border:1px solid #d8dee8;border-radius:12px;padding:12px 14px;background:#f8fbff;margin:0 0 12px 0}"
+        "img{max-width:100%;height:auto}table{border-collapse:collapse;width:100%}td,th{border:1px solid #d8dee8;padding:6px}"
+        "</style></head><body>"
+        + "\n".join(parts)
+        + "</body></html>"
+    )
+
+
+def _report_document_page_title(page: dict[str, Any]) -> str:
+    page_type = _clean_text(page.get("type"))
+    if page_type == "table_of_contents":
+        return "目录"
+    if page_type == "cover":
+        return "封面"
+    return _clean_text(page.get("title"))
+
+
+def _render_report_html_block(block: Any) -> str:
+    if not isinstance(block, dict):
+        return ""
+    block_type = _clean_text(block.get("type"))
+    if block_type == "paragraph":
+        text = _clean_text(block.get("text"))
+        return f"<p>{_inline_markdown_to_html(text)}</p>" if text else ""
+    if block_type == "items":
+        items = _list_of_dicts(block.get("items"))
+        if not items:
+            empty_text = _clean_text(block.get("emptyText"))
+            return f"<p>{html.escape(empty_text)}</p>" if empty_text else ""
+        parts = ["<ul class=\"report-items\">"]
+        for item in items:
+            title = _clean_text(item.get("title") or item.get("claim") or item.get("action") or item.get("name"))
+            summary = _clean_text(
+                item.get("readerSummary")
+                or item.get("basisSummary")
+                or item.get("summary")
+                or item.get("description")
+                or item.get("text")
+                or item.get("reasoning")
+            )
+            body = []
+            if title:
+                body.append(f"<strong>{html.escape(title)}</strong>")
+            if summary:
+                body.append(html.escape(summary))
+            boundary = _clean_text(item.get("interpretationBoundary"))
+            if boundary:
+                body.append(f"解读边界：{html.escape(boundary)}")
+            parts.append("<li>" + " ".join(body or [html.escape(title or summary)]) + "</li>")
+        parts.append("</ul>")
+        return "".join(parts)
+    if block_type == "evidence":
+        items = _list_of_dicts(block.get("items"))
+        if not items:
+            return "<p>暂无可引用来源。</p>"
+        parts = ["<ul class=\"report-evidence\">"]
+        for item in items:
+            title = _clean_text(item.get("title") or item.get("sourceDescription")) or "来源"
+            summary = _clean_text(item.get("readerSummary") or item.get("summary") or item.get("description"))
+            verification = _clean_text(item.get("verificationStatus"))
+            text = " ".join(part for part in (title, summary, verification) if part)
+            parts.append(f"<li>{html.escape(text)}</li>")
+        parts.append("</ul>")
+        return "".join(parts)
+    if block_type == "visuals":
+        parts: list[str] = []
+        for asset in _list_of_dicts(block.get("items")):
+            title = _clean_text(asset.get("title")) or "图表"
+            caption = _clean_text(asset.get("caption") or asset.get("readerSummary") or asset.get("description"))
+            boundary = _clean_text(asset.get("interpretationBoundary"))
+            parts.append("<div class=\"report-visual\">")
+            parts.append(f"<strong>{html.escape(title)}</strong>")
+            if caption:
+                parts.append(f"<p>{html.escape(caption)}</p>")
+            if boundary:
+                parts.append(f"<p>解读边界：{html.escape(boundary)}</p>")
+            parts.append("</div>")
+        return "".join(parts)
+    return ""
 
 
 def normalize_report_render_style(value: Any) -> str:
@@ -1315,17 +1577,18 @@ def render_report_pdf(
     markdown_body = _clean_text(markdown_body if markdown_body is not None else artifact.get("markdownBody"))
     if not markdown_body:
         markdown_body = render_report_markdown(artifact)
-    segments = _report_pdf_segments(markdown_body, artifact)
-    if not segments:
+    page_segments = _report_pdf_page_segments(markdown_body, artifact)
+    if not page_segments:
         fallback_title = html.escape(_clean_text(artifact.get("title")) or "分析报告")
-        segments = [f"<h1>{fallback_title}</h1>", "<p>报告内容为空。</p>"]
+        page_segments = [[f"<h1>{fallback_title}</h1>", "<p>报告内容为空。</p>"]]
 
     doc = fitz.open()
-    page = doc.new_page(width=REPORT_PDF_PAGE_WIDTH, height=REPORT_PDF_PAGE_HEIGHT)
-    cursor_y = REPORT_PDF_MARGIN_TOP
     css = _report_pdf_css(artifact)
-    for segment in segments:
-        page, cursor_y = _insert_report_pdf_segment(doc, page, cursor_y, segment, fitz_module=fitz, css=css)
+    for segments in page_segments:
+        page = doc.new_page(width=REPORT_PDF_PAGE_WIDTH, height=REPORT_PDF_PAGE_HEIGHT)
+        cursor_y = REPORT_PDF_MARGIN_TOP
+        for segment in segments:
+            page, cursor_y = _insert_report_pdf_segment(doc, page, cursor_y, segment, fitz_module=fitz, css=css)
     pdf_bytes = doc.tobytes(deflate=True, garbage=3)
     doc.close()
 
@@ -1434,6 +1697,124 @@ def _report_pdf_segments(markdown_body: str, artifact: dict[str, Any]) -> list[s
             index += 1
         segments.append("<p>" + "<br>".join(_inline_markdown_to_html(item) for item in paragraph_lines) + "</p>")
     return segments
+
+
+def _report_pdf_page_segments(markdown_body: str, artifact: dict[str, Any]) -> list[list[str]]:
+    document = _report_document_from_artifact(artifact)
+    if document.get("pages"):
+        pages: list[list[str]] = []
+        for page in _list_of_dicts(document.get("pages")):
+            segments = _report_pdf_segments_for_document_page(page, artifact)
+            if segments:
+                pages.append(segments)
+        if pages:
+            return pages
+    fallback_segments = _report_pdf_segments(markdown_body, artifact)
+    return [fallback_segments] if fallback_segments else []
+
+
+def _report_pdf_segments_for_document_page(page: dict[str, Any], artifact: dict[str, Any]) -> list[str]:
+    page_type = _clean_text(page.get("type"))
+    title = _clean_text(artifact.get("title")) or "分析报告"
+    segments: list[str] = []
+    if page_type == "cover":
+        segments.append(f"<div class=\"report-cover-kicker\">正式分析报告</div>")
+        segments.append(f"<h1>{html.escape(title)}</h1>")
+        for block in page.get("blocks", []) if isinstance(page.get("blocks"), list) else []:
+            segments.extend(_report_pdf_segments_from_block(block))
+        return segments
+    page_title = _report_document_page_title(page)
+    if page_title:
+        segments.append(f"<h2>{html.escape(page_title)}</h2>")
+    if page_type == "table_of_contents":
+        items = [
+            f"<li>{html.escape(_clean_text(item.get('title')))}</li>"
+            for item in _list_of_dicts(page.get("items"))
+            if _clean_text(item.get("title"))
+        ]
+        if items:
+            segments.append("<ol>" + "".join(items) + "</ol>")
+        return segments
+    if page_type == "body":
+        for section in _list_of_dicts(page.get("sections")):
+            section_title = _clean_text(section.get("title"))
+            if section_title:
+                segments.append(f"<h2>{html.escape(section_title)}</h2>")
+            for block in section.get("blocks", []) if isinstance(section.get("blocks"), list) else []:
+                segments.extend(_report_pdf_segments_from_block(block))
+        return segments
+    for block in page.get("blocks", []) if isinstance(page.get("blocks"), list) else []:
+        segments.extend(_report_pdf_segments_from_block(block))
+    return segments
+
+
+def _report_pdf_segments_from_block(block: Any) -> list[str]:
+    if not isinstance(block, dict):
+        return []
+    block_type = _clean_text(block.get("type"))
+    if block_type == "paragraph":
+        text = _clean_text(block.get("text"))
+        return [f"<p>{_inline_markdown_to_html(text)}</p>"] if text else []
+    if block_type == "items":
+        items = []
+        for item in _list_of_dicts(block.get("items")):
+            title = _clean_text(item.get("title") or item.get("claim") or item.get("action") or item.get("name"))
+            summary = _clean_text(
+                item.get("readerSummary")
+                or item.get("basisSummary")
+                or item.get("summary")
+                or item.get("description")
+                or item.get("text")
+                or item.get("reasoning")
+            )
+            boundary = _clean_text(item.get("interpretationBoundary"))
+            parts = []
+            if title:
+                parts.append(f"<strong>{html.escape(title)}</strong>")
+            if summary:
+                parts.append(html.escape(summary))
+            if boundary:
+                parts.append(f"解读边界：{html.escape(boundary)}")
+            items.append("<li>" + " ".join(parts or [html.escape(title or summary)]) + "</li>")
+        if not items:
+            empty_text = _clean_text(block.get("emptyText"))
+            return [f"<p>{html.escape(empty_text)}</p>"] if empty_text else []
+        return ["<ul>" + "".join(items) + "</ul>"]
+    if block_type == "evidence":
+        items = []
+        for item in _list_of_dicts(block.get("items")):
+            title = _clean_text(item.get("title") or item.get("sourceDescription")) or "来源"
+            summary = _clean_text(item.get("readerSummary") or item.get("summary") or item.get("description"))
+            verification = _clean_text(item.get("verificationStatus"))
+            items.append("<li>" + html.escape(" ".join(part for part in (title, summary, verification) if part)) + "</li>")
+        return ["<ul>" + "".join(items) + "</ul>"] if items else ["<p>暂无可引用来源。</p>"]
+    if block_type == "visuals":
+        segments: list[str] = []
+        for asset in _list_of_dicts(block.get("items")):
+            title = _clean_text(asset.get("title")) or "图表"
+            caption = _clean_text(asset.get("caption") or asset.get("readerSummary") or asset.get("description"))
+            boundary = _clean_text(asset.get("interpretationBoundary"))
+            data_url = _report_pdf_asset_data_url(asset)
+            if data_url:
+                parts = [
+                    "<figure>",
+                    f"<img src=\"{html.escape(data_url, quote=True)}\" alt=\"{html.escape(_clean_text(asset.get('altText')) or title, quote=True)}\">",
+                ]
+                figcaption = " ".join(part for part in (title, caption, boundary) if part)
+                if figcaption:
+                    parts.append(f"<figcaption>{html.escape(figcaption)}</figcaption>")
+                parts.append("</figure>")
+                segments.append("".join(parts))
+            else:
+                summary = caption or boundary or _clean_text(asset.get("fallbackText")) or title
+                segments.append(
+                    "<div class=\"pdf-visual-fallback\">"
+                    f"<p><strong>{html.escape(title)}</strong></p>"
+                    f"<p>{html.escape(summary)}</p>"
+                    "</div>"
+                )
+        return segments
+    return []
 
 
 def _report_pdf_image_segment(line: str, asset_lookup: dict[str, dict[str, Any]]) -> str:
@@ -2536,6 +2917,7 @@ def _artifact_report_from_module_text(
     title = "综合分析报告"
     style_label = _report_style_label(render_style)
     generated_at = _format_datetime(datetime.utcnow())
+    shared_summary = _shared_summary_from_module_rows(rows)
     toc_items = [row.title for row in rows if row.title]
     lines = [
         f"# {title}",
@@ -2555,15 +2937,35 @@ def _artifact_report_from_module_text(
         "",
         "## 报告范围",
         "",
-        "本报告基于本轮对话中已完成的分析模块原文生成，报告结构由系统固定，渲染风格仅影响最终 PDF 的视觉呈现。",
+        "本报告基于本轮已完成的分析结果整理生成，报告结构由系统固定，渲染风格仅影响最终呈现方式。",
         "",
         "## 模块分析正文",
         "",
     ]
     for row in rows:
         lines.extend([f"### {row.title}", "", row.markdown_body or row.text_body or "", ""])
-    lines.extend(["## 来源与限制", "", "- 报告生成基于已完成模块输出，不会在生成阶段重新运行分析模块。"])
+    lines.extend(["## 来源与限制", "", "- 本报告仅覆盖当前已完成分析结果；如需更新结论，请先重新执行相关分析。"])
     markdown_body = "\n".join(lines).strip() + "\n"
+    normalized_sections = [
+        _section(
+            "report_scope",
+            "报告范围",
+            [_paragraph("本报告基于本轮已完成的分析结果整理生成，报告结构由系统固定，渲染风格仅影响最终呈现方式。")],
+        ),
+        *[
+            _section(
+                f"module_{row.module_id}",
+                row.title,
+                [_paragraph(row.markdown_body or row.text_body or "")],
+            )
+            for row in rows
+        ],
+        _section(
+            "limitations",
+            "来源与限制",
+            [_items_block([{"title": "边界说明", "summary": "本报告仅覆盖当前已完成分析结果；如需更新结论，请先重新执行相关分析。"}])],
+        ),
+    ]
     artifact = _drop_empty(
         {
             "schemaVersion": REPORT_ARTIFACT_SCHEMA_VERSION,
@@ -2573,6 +2975,10 @@ def _artifact_report_from_module_text(
             "generatedAt": generated_at,
             "renderStyle": render_style,
             "scope": {
+                "targetCompany": shared_summary.get("enterpriseName", ""),
+                "stockCode": shared_summary.get("stockCode", ""),
+                "timeRange": shared_summary.get("timeRange", ""),
+                "reportGoal": shared_summary.get("reportGoal", ""),
                 "analysisSessionId": rows[0].analysis_session_id,
                 "analysisSessionRevision": int(rows[0].analysis_session_revision or 0),
                 "enabledModules": [row.module_id for row in rows],
@@ -2584,10 +2990,30 @@ def _artifact_report_from_module_text(
                 {"id": "module_bodies", "title": "模块分析正文"},
                 {"id": "limitations", "title": "来源与限制"},
             ],
+            "sections": normalized_sections,
+            "document": build_report_document(
+                title=title,
+                scope={
+                    "targetCompany": shared_summary.get("enterpriseName", ""),
+                    "stockCode": shared_summary.get("stockCode", ""),
+                    "timeRange": shared_summary.get("timeRange", ""),
+                    "reportGoal": shared_summary.get("reportGoal", ""),
+                    "analysisSessionId": rows[0].analysis_session_id,
+                    "analysisSessionRevision": int(rows[0].analysis_session_revision or 0),
+                    "enabledModules": [row.module_id for row in rows],
+                    "moduleRunIds": {row.module_id: row.module_run_id for row in rows if row.module_run_id},
+                },
+                body_sections=normalized_sections,
+                render_style=render_style,
+            ),
             "sourceModuleArtifactIds": [row.artifact_id for row in rows],
             "qualityFlags": [
                 _quality_flag("artifact_text_report", "info", "报告基于模块原文生成，未要求模块提供额外 reportBrief。")
             ],
+            "rendering": {
+                "style": render_style,
+                "structureLocked": True,
+            },
             "markdownBody": markdown_body,
         }
     )

@@ -1,6 +1,7 @@
 <script setup>
-import { nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 
+import { ANALYSIS_MODULE_DEFINITIONS } from "@/entities/analysis-module/model/registry";
 import ChatMessageItem from "@/features/chat/ui/ChatMessageItem.vue";
 
 const props = defineProps({
@@ -11,6 +12,10 @@ const props = defineProps({
   channelName: {
     type: String,
     default: "",
+  },
+  selectedAnalysisModules: {
+    type: Array,
+    default: () => [],
   },
   displayTime: {
     type: Function,
@@ -67,6 +72,47 @@ const isGroupedMessage = (index, messageList) =>
 const feedElement = ref(null);
 const autoFollow = ref(true);
 
+const selectedModuleLabels = computed(() =>
+  ANALYSIS_MODULE_DEFINITIONS
+    .filter((module) => props.selectedAnalysisModules.includes(module.id))
+    .map((module) => props.uiStore.t(module.labelKey)),
+);
+
+const welcomeGuidance = computed(() => {
+  const count = props.selectedAnalysisModules.length;
+  if (count > 1) {
+    return {
+      title: props.uiStore.t("analysisEmptyStateMultiTitle"),
+      body: props.uiStore.t("analysisEmptyStateMultiBody"),
+      steps: [
+        props.uiStore.t("analysisEmptyStateStepSelect"),
+        props.uiStore.t("analysisEmptyStateStepShared"),
+        props.uiStore.t("analysisEmptyStateStepStage"),
+      ],
+    };
+  }
+  if (count === 1) {
+    return {
+      title: props.uiStore.t("analysisEmptyStateSingleTitle"),
+      body: props.uiStore.t("analysisEmptyStateSingleBody"),
+      steps: [
+        props.uiStore.t("analysisEmptyStateStepSingleInput"),
+        props.uiStore.t("analysisEmptyStateStepFollowUp"),
+        props.uiStore.t("analysisEmptyStateStepStage"),
+      ],
+    };
+  }
+  return {
+    title: props.uiStore.t("analysisEmptyStateTitle"),
+    body: props.uiStore.t("analysisEmptyStateBody"),
+    steps: [
+      props.uiStore.t("analysisEmptyStateStepSelect"),
+      props.uiStore.t("analysisEmptyStateStepShared"),
+      props.uiStore.t("analysisEmptyStateStepStage"),
+    ],
+  };
+});
+
 const isNearBottom = () => {
   const element = feedElement.value;
   if (!element) return true;
@@ -121,7 +167,14 @@ onMounted(async () => {
   <div ref="feedElement" class="dc-feed" @scroll="handleScroll">
     <div v-if="!activeSession || !activeSession.messages.length" class="feed-welcome">
       <h2># {{ channelName }}</h2>
-      <p>{{ uiStore.t("inputPlaceholder") }}</p>
+      <p>{{ welcomeGuidance.title }}</p>
+      <div v-if="selectedModuleLabels.length" class="feed-module-chips">
+        <span v-for="label in selectedModuleLabels" :key="label" class="feed-module-chip">{{ label }}</span>
+      </div>
+      <p class="feed-welcome-body">{{ welcomeGuidance.body }}</p>
+      <ul class="feed-welcome-steps">
+        <li v-for="step in welcomeGuidance.steps" :key="step">{{ step }}</li>
+      </ul>
     </div>
 
     <ChatMessageItem
@@ -180,6 +233,40 @@ onMounted(async () => {
   margin: 0;
   color: var(--text-muted);
   font-size: 15px;
+}
+
+.feed-welcome-body {
+  margin-top: 12px !important;
+}
+
+.feed-module-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.feed-module-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(47, 107, 255, 0.08);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.feed-welcome-steps {
+  margin: 14px 0 0;
+  padding-left: 20px;
+  color: var(--text-channel);
+}
+
+.feed-welcome-steps li {
+  margin: 0 0 8px 0;
+  line-height: 1.5;
 }
 
 .jump-latest-btn {

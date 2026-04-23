@@ -237,6 +237,29 @@ def _analysis_module_question(missing_fields: list[dict[str, Any]]) -> str:
     return "共享信息已收到，请继续补充模块信息：" + "；".join(parts) + "。"
 
 
+def _analysis_clarification_question(*, missing_fields: list[dict[str, Any]], enabled_modules: list[str]) -> str:
+    shared_missing = [item for item in missing_fields if str(item.get("scope", "")).strip() == "shared"]
+    module_missing = [item for item in missing_fields if str(item.get("scope", "")).strip() == "module"]
+    if shared_missing:
+        labels: list[str] = []
+        for item in shared_missing:
+            label = str(item.get("label", "")).strip()
+            if label and label not in labels:
+                labels.append(label)
+        suffix = "补齐后，系统只会在仍有缺口时继续追问模块特有信息。"
+        return "为启动已选分析模块，请先补充共享信息：" + "、".join(labels) + "。" + suffix
+    if module_missing:
+        if len(enabled_modules) > 1:
+            return _analysis_module_question(module_missing) + "补齐后将直接进入模块执行。"
+        labels: list[str] = []
+        for item in module_missing:
+            label = str(item.get("label", "")).strip()
+            if label and label not in labels:
+                labels.append(label)
+        return "共享信息已齐备，请补充当前模块仍缺少的信息：" + "、".join(labels) + "。补齐后将直接进入模块执行。"
+    return ""
+
+
 def _analysis_need_input_question(module_result: dict[str, Any], contract: AnalysisModuleContract) -> str:
     limitations = module_result.get("limitations", [])
     if isinstance(limitations, list):
@@ -906,8 +929,11 @@ def analysis_intake_node(state: AgentState):
 
     clarification_question = ""
     needs_clarification = bool(missing_entries)
-    if question_plan:
-        clarification_question = str(question_plan[0].get("question", "")).strip()
+    if needs_clarification:
+        clarification_question = _analysis_clarification_question(
+            missing_fields=missing_entries,
+            enabled_modules=enabled_modules,
+        ) or (str(question_plan[0].get("question", "")).strip() if question_plan else "")
 
     analysis_completed = False
     if missing_entries:

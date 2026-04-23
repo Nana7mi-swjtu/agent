@@ -159,6 +159,7 @@ const graphMetaForMessage = (message) =>
         <MarkdownContent v-else :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
         <div v-if="message.from === 'agent' && !message.pending && reportRequestForMessage(message)" class="analysis-report-preview">
           <div class="analysis-report-title">生成综合报告</div>
+          <p class="analysis-report-copy">模块分析结果已完成。下一步请选择渲染风格并生成正式报告，系统会输出独立封面、目录和正文页面。</p>
           <div class="analysis-report-actions">
             <select v-model="selectedGenerateRenderStyle" class="analysis-report-select" aria-label="报告渲染风格">
               <option
@@ -174,6 +175,7 @@ const graphMetaForMessage = (message) =>
         </div>
         <div v-if="message.from === 'agent' && !message.pending && reportForMessage(message)" class="analysis-report-preview">
           <div class="analysis-report-title">{{ reportForMessage(message).title || "分析报告" }}</div>
+          <p class="analysis-report-copy">报告已生成。可先打开完整预览核对封面、目录和正文结构，再按需下载或重新生成。</p>
           <div class="analysis-report-actions">
             <a
               v-if="reportPreviewUrl(message)"
@@ -255,6 +257,7 @@ const graphMetaForMessage = (message) =>
         <MarkdownContent :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
         <div v-if="message.from === 'agent' && !message.pending && reportRequestForMessage(message)" class="analysis-report-preview">
           <div class="analysis-report-title">生成综合报告</div>
+          <p class="analysis-report-copy">模块分析结果已完成。下一步请选择渲染风格并生成正式报告，系统会输出独立封面、目录和正文页面。</p>
           <div class="analysis-report-actions">
             <select v-model="selectedGenerateRenderStyle" class="analysis-report-select" aria-label="报告渲染风格">
               <option
@@ -270,6 +273,7 @@ const graphMetaForMessage = (message) =>
         </div>
         <div v-if="message.from === 'agent' && !message.pending && reportForMessage(message)" class="analysis-report-preview">
           <div class="analysis-report-title">{{ reportForMessage(message).title || "分析报告" }}</div>
+          <p class="analysis-report-copy">报告已生成。可先打开完整预览核对封面、目录和正文结构，再按需下载或重新生成。</p>
           <div class="analysis-report-actions">
             <a
               v-if="reportPreviewUrl(message)"
@@ -434,6 +438,13 @@ const graphMetaForMessage = (message) =>
   font-size: 13px;
   font-weight: 700;
   color: var(--text);
+}
+
+.analysis-report-copy {
+  margin: 0;
+  color: var(--text-channel);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .analysis-report-actions {

@@ -54,6 +54,34 @@ const analysisModuleOptions = computed(() => [
   })),
 ]);
 
+const analysisComposerGuidance = computed(() => {
+  const count = selectedAnalysisModules.value.length;
+  if (count > 1) {
+    return {
+      title: uiStore.t("analysisGuidanceMultiTitle"),
+      text: uiStore.t("analysisGuidanceMultiBody"),
+    };
+  }
+  if (count === 1) {
+    return {
+      title: uiStore.t("analysisGuidanceSingleTitle"),
+      text: uiStore.t("analysisGuidanceSingleBody"),
+    };
+  }
+  return null;
+});
+
+const composerPlaceholder = computed(() => {
+  const count = selectedAnalysisModules.value.length;
+  if (count > 1) {
+    return uiStore.t("analysisGuidanceMultiPlaceholder");
+  }
+  if (count === 1) {
+    return uiStore.t("analysisGuidanceSinglePlaceholder");
+  }
+  return uiStore.t("inputPlaceholder");
+});
+
 const sendMessage = async () => {
   const result = await send();
   if (result.noRole) {
@@ -142,6 +170,7 @@ const traceDetailsEntries = (step) =>
         :active-session="activeSession"
         :channel-name="channelName"
         :display-time="displayTime"
+        :selected-analysis-modules="selectedAnalysisModules"
         :agent-trace-enabled="agentTraceEnabled"
         :rag-debug-enabled="ragDebugEnabled"
         :trace-details-visible="agentTraceDebugDetailsEnabled"
@@ -159,10 +188,11 @@ const traceDetailsEntries = (step) =>
         v-model:analysis-module-values="selectedAnalysisModules"
         :sending="sending"
         :error="chatError"
-        :placeholder="uiStore.t('inputPlaceholder')"
+        :placeholder="composerPlaceholder"
         :send-label="uiStore.t('send')"
         :analysis-module-options="analysisModuleOptions"
         :analysis-module-label="uiStore.t('analysisModuleSelector')"
+        :analysis-guidance="analysisComposerGuidance"
         @submit="sendMessage"
       />
     </section>
