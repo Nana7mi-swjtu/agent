@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 import uuid
 from datetime import datetime
@@ -220,6 +221,7 @@ def generate_analysis_report(
     analysis_session: dict[str, Any],
     handoff_bundle: dict[str, Any],
     module_results: dict[str, dict[str, Any]],
+    report_writer: Any | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(handoff_bundle, dict) or not isinstance(module_results, dict):
         return None
@@ -269,6 +271,8 @@ def generate_analysis_report(
     if stale_modules:
         limitations.append(_limitation("report", "部分已启用分析能力输出已过期，报告只能作为降级快照使用。"))
     module_run_ids = _dict_value(handoff_bundle.get("moduleRunIds"))
+    if shared_summary.get("enterpriseName"):
+        shared_summary["enterpriseName"] = _clean_report_subject(shared_summary.get("enterpriseName"))
     semantic_model = build_report_semantic_model(
         title=title,
         status=status,
@@ -285,16 +289,41 @@ def generate_analysis_report(
         *_semantic_quality_flags(semantic_model, stale_modules=stale_modules),
     ]
     sections = _build_semantic_report_sections(semantic_model)
+    published_forbidden_values = _published_forbidden_values(
+        enabled_modules=enabled_modules,
+        module_run_ids=module_run_ids,
+        contributions=contributions,
+    )
+    writer_title = title
+    writer_quality_flags: list[dict[str, Any]] = []
+    if report_writer is None:
+        writer_quality_flags.append(_quality_flag("llm_writer_unavailable", "warning", "未接入报告写作模型，已使用结构化降级报告。"))
+    else:
+        writer_result = _write_report_with_llm(
+            report_writer,
+            semantic_model=semantic_model,
+            fallback_title=title,
+            fallback_sections=sections,
+            forbidden_values=published_forbidden_values,
+        )
+        if writer_result.get("ok"):
+            writer_title = _clean_text(writer_result.get("title")) or title
+            sections = _list_of_dicts(writer_result.get("sections"))
+            writer_quality_flags.append(_quality_flag("llm_writer", "info", "已使用受约束的报告写作模型润色正文。"))
+        else:
+            reason = _clean_text(writer_result.get("reason")) or "写作模型输出未通过校验"
+            writer_quality_flags.append(_quality_flag("llm_writer_fallback", "warning", f"{reason}，已使用结构化降级报告。"))
+    semantic_model["qualityFlags"] = [*_list_of_dicts(semantic_model.get("qualityFlags")), *writer_quality_flags]
     artifact = _drop_empty(
         {
             "schemaVersion": REPORT_ARTIFACT_SCHEMA_VERSION,
             "reportId": report_id,
-            "title": title,
+            "title": writer_title,
             "status": status,
             "generatedAt": generated_at,
             "scope": {
                 "reportGoal": _clean_text(shared_summary.get("reportGoal")),
-                "targetCompany": _clean_text(shared_summary.get("enterpriseName")),
+                "targetCompany": _clean_report_subject(shared_summary.get("enterpriseName")),
                 "stockCode": _clean_text(shared_summary.get("stockCode")),
                 "timeRange": _clean_text(shared_summary.get("timeRange")),
                 "enabledModules": enabled_modules,
@@ -325,7 +354,7 @@ def generate_analysis_report(
         markdown_body,
         html_body,
         bounded_report_preview(markdown_body),
-        forbidden_values=_published_forbidden_values(enabled_modules=enabled_modules, module_run_ids=module_run_ids, contributions=contributions),
+        forbidden_values=published_forbidden_values,
     )
     if validation_errors:
         artifact["status"] = "failed"
@@ -457,7 +486,7 @@ def build_report_semantic_model(
                 "outputStyle": "decision_report",
             },
             "subject": {
-                "name": _reader_text(shared_summary.get("enterpriseName"), blocked_terms=blocked_terms),
+                "name": _clean_report_subject(_reader_text(shared_summary.get("enterpriseName"), blocked_terms=blocked_terms)),
                 "stockCode": _reader_text(shared_summary.get("stockCode"), blocked_terms=blocked_terms),
             },
             "scope": {
@@ -488,6 +517,201 @@ def build_report_semantic_model(
             "title": _reader_text(title, blocked_terms=blocked_terms) or "定制化分析报告",
         }
     )
+
+
+def build_report_writing_packet(semantic_model: dict[str, Any]) -> dict[str, Any]:
+    subject = _dict_value(semantic_model.get("subject"))
+    scope = _dict_value(semantic_model.get("scope"))
+    intent = _dict_value(semantic_model.get("reportIntent"))
+    return _drop_empty(
+        {
+            "报告标题": _clean_text(semantic_model.get("title")),
+            "主体": {
+                "名称": _clean_text(subject.get("name")),
+                "股票代码": _clean_text(subject.get("stockCode")),
+            },
+            "范围": {
+                "时间范围": _clean_text(scope.get("timeRange")),
+                "分析重点": _clean_text(scope.get("analysisFocus")),
+                "报告目标": _clean_text(intent.get("goal")),
+                "生成状态": _clean_text(scope.get("status")),
+            },
+            "核心判断": [_reader_packet_item(item) for item in _list_of_dicts(semantic_model.get("executiveJudgements"))],
+            "关键发现": [_reader_packet_item(item) for item in _list_of_dicts(semantic_model.get("keyFindings"))],
+            "风险信号": [_reader_packet_item(item) for item in _list_of_dicts(semantic_model.get("riskSignals"))],
+            "机会信号": [_reader_packet_item(item) for item in _list_of_dicts(semantic_model.get("opportunitySignals"))],
+            "归因与逻辑": [_reader_packet_item(item) for item in _list_of_dicts(semantic_model.get("drivers"))],
+            "来源与核验": [_reader_packet_item(item) for item in _list_of_dicts(semantic_model.get("evidenceChains"))],
+            "模型解读": [_reader_packet_item(item) for item in _list_of_dicts(semantic_model.get("modelExplanations"))],
+            "图表解读": [_reader_packet_item(item) for item in _list_of_dicts(semantic_model.get("visualNarratives"))],
+            "决策建议": [_reader_packet_item(item) for item in _list_of_dicts(semantic_model.get("recommendations"))],
+            "限制说明": [_reader_packet_item(item) for item in _list_of_dicts(semantic_model.get("limitations"))],
+        }
+    )
+
+
+def _write_report_with_llm(
+    report_writer: Any,
+    *,
+    semantic_model: dict[str, Any],
+    fallback_title: str,
+    fallback_sections: list[dict[str, Any]],
+    forbidden_values: list[str],
+) -> dict[str, Any]:
+    packet = build_report_writing_packet(semantic_model)
+    prompt = (
+        "你是面向决策读者的中文报告写作器。只根据给定写作包重写报告，不新增事实、数字、来源或判断。"
+        "禁止出现模块名、运行标识、数据库字段、代码字段、traceRefs、sourceIds、moduleId 等内部实现词。"
+        "输出必须是 JSON 对象，格式为："
+        "{\"title\":\"...\",\"sections\":[{\"id\":\"executive_judgement\",\"title\":\"核心判断\",\"blocks\":[{\"type\":\"paragraph\",\"text\":\"...\"}]}]}。"
+        "允许的 section id 包括 report_scope、executive_judgement、key_findings、risk_opportunity_assessment、"
+        "attribution_logic、evidence_verification、model_visual_interpretation、recommendations、limitations。"
+        "允许的 block type 包括 paragraph、items、evidence、visuals。items/evidence/visuals 的条目只使用面向读者的标题、摘要、理由、边界说明等文本。"
+    )
+    try:
+        response = report_writer.invoke(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json.dumps(packet, ensure_ascii=False)},
+            ]
+        )
+    except Exception as exc:
+        return {"ok": False, "reason": f"报告写作模型调用失败：{exc}"}
+    payload = _extract_writer_payload(response)
+    if not isinstance(payload, dict):
+        return {"ok": False, "reason": "报告写作模型未返回可解析的 JSON"}
+    title = _clean_text(payload.get("title")) or fallback_title
+    sections = _normalize_writer_sections(payload.get("sections"))
+    if not sections:
+        return {"ok": False, "reason": "报告写作模型未返回有效章节"}
+    errors = _validate_written_report(title=title, sections=sections, forbidden_values=forbidden_values)
+    if errors:
+        return {"ok": False, "reason": "报告写作模型输出未通过发布校验：" + "；".join(errors[:5])}
+    return {"ok": True, "title": title, "sections": sections}
+
+
+def _reader_packet_item(item: dict[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "标题": _clean_text(item.get("title") or item.get("claim") or item.get("action") or item.get("name")),
+            "摘要": _clean_text(item.get("readerSummary") or item.get("summary") or item.get("description") or item.get("caption")),
+            "依据": _clean_text(item.get("basisSummary")),
+            "理由": _clean_text(item.get("rationale")),
+            "预期价值": _clean_text(item.get("expectedBenefit")),
+            "风险提示": _clean_text(item.get("riskNote")),
+            "核验状态": _clean_text(item.get("verificationStatus")),
+            "支撑关系": _clean_text(item.get("supportRelationship")),
+            "解读边界": _clean_text(item.get("interpretationBoundary")),
+            "置信度": item.get("confidence"),
+            "优先级": _clean_text(item.get("priority")),
+        }
+    )
+
+
+def _extract_writer_payload(response: Any) -> dict[str, Any] | None:
+    if isinstance(response, dict):
+        return response
+    content = getattr(response, "content", response)
+    if isinstance(content, dict):
+        return content
+    text = _clean_text(content)
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, flags=re.S)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+
+def _normalize_writer_sections(value: Any) -> list[dict[str, Any]]:
+    allowed_section_ids = {
+        "report_scope",
+        "executive_judgement",
+        "key_findings",
+        "risk_opportunity_assessment",
+        "attribution_logic",
+        "evidence_verification",
+        "model_visual_interpretation",
+        "recommendations",
+        "limitations",
+    }
+    sections: list[dict[str, Any]] = []
+    for section in _list_of_dicts(value):
+        section_id = _clean_text(section.get("id"))
+        title = _clean_text(section.get("title"))
+        if section_id not in allowed_section_ids or not title:
+            continue
+        blocks = _normalize_writer_blocks(section.get("blocks"))
+        if blocks:
+            sections.append({"id": section_id, "title": title, "blocks": blocks})
+    return sections
+
+
+def _normalize_writer_blocks(value: Any) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for block in _list_of_dicts(value):
+        block_type = _clean_text(block.get("type"))
+        if block_type == "paragraph":
+            text = _clean_text(block.get("text"))
+            if text:
+                blocks.append({"type": "paragraph", "text": text})
+            continue
+        if block_type in {"items", "evidence", "visuals"}:
+            items = [_normalize_writer_item(item) for item in _list_of_dicts(block.get("items"))]
+            items = [item for item in items if item]
+            if items:
+                blocks.append({"type": block_type, "items": items})
+    return blocks
+
+
+def _normalize_writer_item(item: dict[str, Any]) -> dict[str, Any]:
+    allowed_keys = (
+        "title",
+        "claim",
+        "action",
+        "name",
+        "readerSummary",
+        "basisSummary",
+        "summary",
+        "description",
+        "text",
+        "rationale",
+        "expectedBenefit",
+        "riskNote",
+        "interpretationBoundary",
+        "sourceDescription",
+        "verificationStatus",
+        "supportRelationship",
+        "caption",
+        "altText",
+        "fallbackText",
+        "type",
+        "downloadUrl",
+    )
+    return _drop_empty({key: _clean_text(item.get(key)) for key in allowed_keys if item.get(key) not in (None, "", [], {})})
+
+
+def _validate_written_report(*, title: str, sections: list[dict[str, Any]], forbidden_values: list[str]) -> list[str]:
+    if not any(section.get("id") == "executive_judgement" for section in sections):
+        return ["缺少核心判断章节"]
+    if not any(section.get("id") in {"key_findings", "limitations"} for section in sections):
+        return ["缺少发现或限制章节"]
+    artifact = {"title": title, "sections": sections}
+    markdown_body = render_report_markdown(artifact)
+    html_body = render_report_html(artifact, markdown_body=markdown_body)
+    errors = validate_published_report(markdown_body, html_body, forbidden_values=forbidden_values)
+    lowered = markdown_body.lower()
+    unsupported_tokens = ("未提供的事实", "自行假设", "凭经验判断", "数据库字段", "代码字段")
+    errors.extend(f"unsupported content indicator: {token}" for token in unsupported_tokens if token in lowered or token in markdown_body)
+    return errors
 
 
 def _build_semantic_report_sections(semantic_model: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1240,14 +1464,14 @@ def _executive_judgements_from_semantics(
     blocked_terms: set[str],
 ) -> list[dict[str, Any]]:
     if findings:
-        titles = "；".join(_reader_text(item.get("title"), blocked_terms=blocked_terms) for item in findings[:3] if _reader_text(item.get("title"), blocked_terms=blocked_terms))
+        finding_count = len(findings)
         return [
             _drop_empty(
                 {
                     "id": "sem_judgement_primary",
                     "title": "核心判断",
-                    "claim": titles or "已形成可追溯的结构化判断。",
-                    "readerSummary": f"本报告基于已完成的结构化分析材料生成，当前状态为 {status}。核心判断集中在：{titles}。",
+                    "claim": "已形成可追溯的结构化判断。",
+                    "readerSummary": f"本报告基于已完成的结构化分析材料生成，当前状态为 {status}。已识别 {finding_count} 项需要关注的判断方向，正文按发现、成因、来源和建议展开。",
                     "basisSummary": "所有核心判断均由已纳入的分析材料、证据链、模型解释或限制说明支撑。",
                 }
             )
@@ -1571,6 +1795,32 @@ def _module_summaries(contributions: list[dict[str, Any]], module_results: list[
     return summaries
 
 
+def _clean_report_subject(value: Any) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    text = re.sub(r"(?<!\d)\d{6}(?!\d)", "", text).strip(" ,，、；;。")
+    text = re.sub(r"^(?:请|麻烦|帮我|帮忙|可以)?(?:生成|出具|写|做|分析|查看|评估|开始|继续)?", "", text).strip(" ,，、；;。")
+    context_match = re.search(r"(?:时间范围|报告目标|分析目标|分析重点|关注重点|区域范围|时间|目标|重点|关注|聚焦|区域)\s*(?:是|为|:|：)?", text)
+    time_match = re.search(r"(?:近\s*\d+\s*(?:天|日|周|个月|月|年)|过去\s*\d+\s*(?:天|日|周|个月|月|年)|本(?:周|月|季度|季|年)|上(?:周|月|季度|季|年))", text)
+    cut_points = [match.start() for match in (context_match, time_match) if match is not None]
+    if cut_points:
+        text = text[: min(cut_points)]
+    text = re.sub(r"(?:的)?(?:定制化)?(?:分析)?(?:报告|简报|研报|洞察)$", "", text).strip(" ,，、；;。")
+    return text
+
+
+def _clean_report_title(value: Any, *, enterprise: str) -> str:
+    title = _clean_text(value).replace("简报", "定制化分析报告")
+    if not title:
+        return ""
+    if re.search(r"(?:时间范围|报告目标|分析目标|分析重点|关注重点|区域范围|时间|目标|重点|关注|聚焦|区域)", title):
+        return f"{enterprise}定制化分析报告"
+    if enterprise and enterprise not in title:
+        return f"{enterprise}定制化分析报告"
+    return title
+
+
 def _contribution_limitations(contributions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1602,22 +1852,24 @@ def _report_status(contributions: list[dict[str, Any]], *, stale_modules: list[s
 
 
 def _report_title(shared_summary: dict[str, Any], module_results: list[dict[str, Any]]) -> str:
-    enterprise = _clean_text(shared_summary.get("enterpriseName")) or "目标企业"
+    enterprise = _clean_report_subject(shared_summary.get("enterpriseName")) or "目标企业"
     for result in module_results:
         handoff = _dict_value(result.get("documentHandoff"))
         title = _clean_text(handoff.get("title"))
         if title:
-            return title.replace("简报", "定制化分析报告")
+            clean_title = _clean_report_title(title, enterprise=enterprise)
+            if clean_title:
+                return clean_title
     return f"{enterprise}定制化分析报告"
 
 
 def _executive_summary_text(findings: list[dict[str, Any]], limitations: list[dict[str, Any]], *, status: str) -> str:
     if findings:
         titles = "；".join(_clean_text(item.get("title")) for item in findings[:3] if _clean_text(item.get("title")))
-        return f"本报告基于已选模块的可追溯输出生成，当前状态为 {status}。核心发现包括：{titles}。所有结论均保留模块来源、证据或限制说明。"
+        return f"本报告基于已完成的结构化分析材料生成，当前状态为 {status}。核心发现集中在：{titles}。所有结论均保留来源、证据或限制说明。"
     if limitations:
-        return f"本报告基于已选模块输出生成，当前状态为 {status}。模块未提供足够可支持的实质性发现，因此报告主要呈现状态、来源缺口与限制。"
-    return f"本报告基于已选模块输出生成，当前状态为 {status}。"
+        return f"本报告当前状态为 {status}。现有材料未提供足够可支持的实质性发现，因此正文主要呈现状态、来源缺口与限制。"
+    return f"本报告当前状态为 {status}，尚未获得足够可支撑材料。"
 
 
 def _section(section_id: str, title: str, blocks: list[dict[str, Any]]) -> dict[str, Any]:

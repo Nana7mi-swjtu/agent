@@ -27,6 +27,7 @@ from .analysis_slots import (
     SHARED_STOCK_CODE,
     SHARED_TIME_RANGE,
     has_slot_value,
+    parse_compound_answer_for_slots,
     parse_answer_for_group,
     slot_label,
 )
@@ -865,12 +866,19 @@ def analysis_intake_node(state: AgentState):
     if not slot_updates and not shared_inputs and not module_inputs:
         current_group = _current_question_group(session)
         current_slot_ids = [slot_id for slot_id in current_group.get("slotIds", []) if slot_id in slot_catalog]
+        user_message = str(state.get("user_message", "")).strip()
         if current_slot_ids:
             slot_updates = parse_answer_for_group(
                 slot_ids=current_slot_ids,
                 slot_catalog=slot_catalog,
-                user_message=str(state.get("user_message", "")).strip(),
+                user_message=user_message,
             )
+        compound_updates = parse_compound_answer_for_slots(
+            slot_ids=relevant_slot_ids,
+            slot_catalog=slot_catalog,
+            user_message=user_message,
+        )
+        slot_updates = {**slot_updates, **compound_updates}
 
     changed_slots = _apply_slot_updates(session, slot_updates, contracts=contracts)
     if compatibility_changed_modules:
@@ -1063,6 +1071,7 @@ def report_generation_node(state: AgentState):
             analysis_session=analysis_session,
             handoff_bundle=handoff_bundle,
             module_results=module_results,
+            report_writer=state.get("main_llm"),
         )
     except Exception as exc:
         return {
