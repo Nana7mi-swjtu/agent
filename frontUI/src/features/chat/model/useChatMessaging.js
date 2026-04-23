@@ -6,6 +6,8 @@ import { normalizeSelectedAnalysisModules } from "@/entities/chat/lib/session";
 import {
   getWorkspaceChatJob,
   listWorkspaceChatJobs,
+  postAnalysisReportGeneration,
+  postAnalysisReportRegeneration,
   postWorkspaceChat,
   postWorkspaceChatJob,
   postWorkspaceChatStream,
@@ -84,6 +86,23 @@ export const useChatMessaging = () => {
 
   const displayTime = (value) => formatMessageTime(value, uiStore.language);
 
+  const appendAgentMessage = (message, sessionId = "") => {
+    if (sessionId) {
+      return chatStore.appendMessageToSession(sessionId, message);
+    }
+    return chatStore.appendMessage(message);
+  };
+
+  const applyAssistantMessage = (pendingMessageId, message, sessionId = "") => {
+    const replaced = sessionId
+      ? chatStore.replaceMessageInSession(sessionId, pendingMessageId, message)
+      : chatStore.replaceMessage(pendingMessageId, message);
+    if (!replaced) {
+      appendAgentMessage(message, sessionId);
+    }
+    return replaced;
+  };
+
   const restoreFailedRequest = (pendingMessageId, text, message, sessionId = "") => {
     if (pendingMessageId) {
       if (sessionId) {
@@ -112,7 +131,7 @@ export const useChatMessaging = () => {
         };
       }
     }
-    const message = {
+    const baseMessage = {
       from: "agent",
       text: payload.reply || "",
       time: new Date().toISOString(),
@@ -129,11 +148,38 @@ export const useChatMessaging = () => {
       jobStatus: "succeeded",
       pending: false,
     };
-    const replaced = sessionId
-      ? chatStore.replaceMessageInSession(sessionId, pendingMessageId, message)
-      : chatStore.replaceMessage(pendingMessageId, message);
-    if (!replaced && sessionId) {
-      chatStore.appendMessageToSession(sessionId, message);
+    const moduleArtifacts = Array.isArray(payload.analysisModuleArtifacts)
+      ? payload.analysisModuleArtifacts.filter((item) => item && typeof item === "object")
+      : [];
+    if (moduleArtifacts.length) {
+      moduleArtifacts.forEach((artifact, index) => {
+        const artifactMessage = {
+          ...baseMessage,
+          text: String(artifact.markdownBody || ""),
+          analysisModuleArtifact: artifact,
+          analysisReport: null,
+          reportGenerationRequest: null,
+        };
+        if (index === 0) {
+          applyAssistantMessage(pendingMessageId, artifactMessage, sessionId);
+        } else {
+          appendAgentMessage(artifactMessage, sessionId);
+        }
+      });
+      if (payload.analysisReportRequest && typeof payload.analysisReportRequest === "object") {
+        appendAgentMessage(
+          {
+            ...baseMessage,
+            text: "全部分析模块已完成。请选择渲染风格后生成综合报告。",
+            analysisModuleArtifact: null,
+            analysisReport: null,
+            reportGenerationRequest: payload.analysisReportRequest,
+          },
+          sessionId,
+        );
+      }
+    } else {
+      applyAssistantMessage(pendingMessageId, baseMessage, sessionId);
     }
     workspaceStore.systemPrompt = payload.systemPrompt || workspaceStore.systemPrompt;
   };
@@ -277,6 +323,8 @@ export const useChatMessaging = () => {
       trace: null,
       graph: null,
       graphMeta: null,
+      analysisModuleArtifacts: [],
+      analysisReportRequest: null,
       analysisReport: null,
       systemPrompt: "",
     };
@@ -307,6 +355,8 @@ export const useChatMessaging = () => {
         finalPayload.trace = event.trace && typeof event.trace === "object" ? event.trace : null;
         finalPayload.graph = event.graph && typeof event.graph === "object" ? event.graph : null;
         finalPayload.graphMeta = event.graphMeta && typeof event.graphMeta === "object" ? event.graphMeta : null;
+        finalPayload.analysisModuleArtifacts = Array.isArray(event.analysisModuleArtifacts) ? event.analysisModuleArtifacts : [];
+        finalPayload.analysisReportRequest = event.analysisReportRequest && typeof event.analysisReportRequest === "object" ? event.analysisReportRequest : null;
         finalPayload.analysisReport = event.analysisReport && typeof event.analysisReport === "object" ? event.analysisReport : null;
         finalPayload.systemPrompt = String(event.systemPrompt || "");
         return;
@@ -398,6 +448,83 @@ export const useChatMessaging = () => {
     }
   };
 
+  const appendReportMessage = (analysisReport, text = "综合报告已生成。") => {
+    appendAgentMessage({
+      from: "agent",
+      text,
+      time: new Date().toISOString(),
+      analysisReport,
+      pending: false,
+    });
+  };
+
+  const generateReport = async (requestPayload, renderStyle = "professional") => {
+    const moduleArtifactIds = Array.isArray(requestPayload?.moduleArtifactIds)
+      ? requestPayload.moduleArtifactIds
+      : [];
+    if (!moduleArtifactIds.length) {
+      error.value = uiStore.t("sendFailed");
+      return { ok: false, error: error.value };
+    }
+    const session = activeSession.value;
+    sending.value = true;
+    error.value = "";
+    try {
+      const result = await postAnalysisReportGeneration({
+        moduleArtifactIds,
+        renderStyle,
+        workspaceId: workspaceId.value,
+        conversationId: session?.conversationId || "",
+      });
+      if (!result.ok) {
+        error.value = result.data?.error || uiStore.t("sendFailed");
+        return { ok: false, error: error.value };
+      }
+      const analysisReport = result.data?.data?.analysisReport || result.data?.analysisReport || null;
+      if (analysisReport) {
+        appendReportMessage(analysisReport);
+      }
+      return result;
+    } catch (requestError) {
+      error.value = requestError instanceof Error ? requestError.message : uiStore.t("sendFailed");
+      return { ok: false, error: error.value };
+    } finally {
+      sending.value = false;
+    }
+  };
+
+  const regenerateReport = async (report, renderStyle = "professional") => {
+    const reportId = String(report?.reportId || "").trim();
+    if (!reportId) {
+      error.value = uiStore.t("sendFailed");
+      return { ok: false, error: error.value };
+    }
+    const session = activeSession.value;
+    sending.value = true;
+    error.value = "";
+    try {
+      const result = await postAnalysisReportRegeneration(reportId, {
+        renderStyle,
+        workspaceId: workspaceId.value,
+        conversationId: session?.conversationId || "",
+      });
+      if (!result.ok) {
+        error.value = result.data?.error || uiStore.t("sendFailed");
+        return { ok: false, error: error.value };
+      }
+      const analysisReport = result.data?.data?.analysisReport || result.data?.analysisReport || null;
+      if (analysisReport) {
+        appendReportMessage(analysisReport, "综合报告已重新生成。");
+      }
+      return result;
+    } catch (requestError) {
+      error.value = requestError instanceof Error ? requestError.message : uiStore.t("sendFailed");
+      return { ok: false, error: error.value };
+    } finally {
+      sending.value = false;
+    }
+  };
+
   onMounted(() => {
     void hydrateConversationJobs();
   });
@@ -424,6 +551,8 @@ export const useChatMessaging = () => {
     channelName,
     displayTime,
     send,
+    generateReport,
+    regenerateReport,
     hydrateConversationJobs,
     clearActiveAnalysisModules: chatStore.clearActiveSessionAnalysisModules,
     setActiveSession: chatStore.setActiveSession,

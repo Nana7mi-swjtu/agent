@@ -1,4 +1,6 @@
 <script setup>
+import { ref } from "vue";
+
 import AgentTracePanel from "@/features/chat/ui/AgentTracePanel.vue";
 import KnowledgeGraphPanel from "@/features/chat/ui/KnowledgeGraphPanel.vue";
 import RagMessageDebug from "@/features/chat/ui/RagMessageDebug.vue";
@@ -54,9 +56,19 @@ const props = defineProps({
     type: Function,
     required: true,
   },
+  generateReport: {
+    type: Function,
+    default: () => {},
+  },
+  regenerateReport: {
+    type: Function,
+    default: () => {},
+  },
 });
 
 const uiStore = useUiStore();
+const selectedGenerateRenderStyle = ref("professional");
+const selectedRegenerateRenderStyle = ref("professional");
 
 const ragDebugForMessage = (message) => getMessageRagDebug(message);
 const traceStepsForMessage = (message) => getMessageTraceSteps(message);
@@ -64,18 +76,39 @@ const sourcesForMessage = (message) => getMessageSources(message);
 const memoryInfoForMessage = (message) => getMessageMemoryInfo(message);
 const reportForMessage = (message) =>
   message?.analysisReport && typeof message.analysisReport === "object" ? message.analysisReport : null;
+const reportRequestForMessage = (message) =>
+  message?.reportGenerationRequest && typeof message.reportGenerationRequest === "object" ? message.reportGenerationRequest : null;
+const renderStylesForRequest = (request) =>
+  Array.isArray(request?.renderStyles) && request.renderStyles.length
+    ? request.renderStyles
+    : [{ id: "professional", label: "专业白底" }];
+const renderStylesForReport = (report) =>
+  Array.isArray(report?.regeneration?.renderStyles) && report.regeneration.renderStyles.length
+    ? report.regeneration.renderStyles
+    : [{ id: "professional", label: "专业白底" }];
 const resolveReportDownloadUrl = (url) => {
   const cleanUrl = String(url || "").trim();
   if (!cleanUrl) return "";
   if (/^https?:\/\//i.test(cleanUrl)) return cleanUrl;
   return cleanUrl.startsWith("/api/") ? buildApiUrl(cleanUrl) : cleanUrl;
 };
+const reportPreviewUrl = (message) => resolveReportDownloadUrl(reportForMessage(message)?.previewUrl);
 const reportDownloadEntries = (message) => {
   const report = reportForMessage(message);
   const urls = report?.downloadUrls && typeof report.downloadUrls === "object" ? report.downloadUrls : {};
   return [
     { key: "pdf", label: "PDF", url: resolveReportDownloadUrl(urls.pdf) },
   ].filter((item) => item.url);
+};
+const runReportGeneration = (message) => {
+  const request = reportRequestForMessage(message);
+  if (!request) return;
+  props.generateReport(request, selectedGenerateRenderStyle.value || request.defaultRenderStyle || "professional");
+};
+const runReportRegeneration = (message) => {
+  const report = reportForMessage(message);
+  if (!report) return;
+  props.regenerateReport(report, selectedRegenerateRenderStyle.value || report.renderStyle || "professional");
 };
 const showGroundingMeta = (message) =>
   message?.from === "agent" &&
@@ -124,24 +157,53 @@ const graphMetaForMessage = (message) =>
           <p>{{ uiStore.t("assistantWorkingHint") }}</p>
         </div>
         <MarkdownContent v-else :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
+        <div v-if="message.from === 'agent' && !message.pending && reportRequestForMessage(message)" class="analysis-report-preview">
+          <div class="analysis-report-title">生成综合报告</div>
+          <div class="analysis-report-actions">
+            <select v-model="selectedGenerateRenderStyle" class="analysis-report-select" aria-label="报告渲染风格">
+              <option
+                v-for="style in renderStylesForRequest(reportRequestForMessage(message))"
+                :key="style.id"
+                :value="style.id"
+              >
+                {{ style.label || style.id }}
+              </option>
+            </select>
+            <button type="button" class="analysis-report-button" @click="runReportGeneration(message)">生成报告</button>
+          </div>
+        </div>
         <div v-if="message.from === 'agent' && !message.pending && reportForMessage(message)" class="analysis-report-preview">
           <div class="analysis-report-title">{{ reportForMessage(message).title || "分析报告" }}</div>
-          <MarkdownContent
-            v-if="reportForMessage(message).preview"
-            :source="reportForMessage(message).preview"
-            markdown
-            class="analysis-report-body"
-          />
-          <div v-if="reportDownloadEntries(message).length" class="analysis-report-links">
+          <div class="analysis-report-actions">
+            <a
+              v-if="reportPreviewUrl(message)"
+              class="analysis-report-button is-link"
+              :href="reportPreviewUrl(message)"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              完整预览
+            </a>
             <a
               v-for="item in reportDownloadEntries(message)"
               :key="`${message.id}_report_${item.key}`"
+              class="analysis-report-button is-link"
               :href="item.url"
               target="_blank"
               rel="noreferrer noopener"
             >
-              {{ item.label }}
+              下载 {{ item.label }}
             </a>
+            <select v-model="selectedRegenerateRenderStyle" class="analysis-report-select" aria-label="重新生成风格">
+              <option
+                v-for="style in renderStylesForReport(reportForMessage(message))"
+                :key="style.id"
+                :value="style.id"
+              >
+                {{ style.label || style.id }}
+              </option>
+            </select>
+            <button type="button" class="analysis-report-button" @click="runReportRegeneration(message)">重新生成</button>
           </div>
         </div>
         <KnowledgeGraphPanel
@@ -191,24 +253,53 @@ const graphMetaForMessage = (message) =>
       <div class="msg-avatar is-empty"></div>
       <div class="msg-body">
         <MarkdownContent :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
+        <div v-if="message.from === 'agent' && !message.pending && reportRequestForMessage(message)" class="analysis-report-preview">
+          <div class="analysis-report-title">生成综合报告</div>
+          <div class="analysis-report-actions">
+            <select v-model="selectedGenerateRenderStyle" class="analysis-report-select" aria-label="报告渲染风格">
+              <option
+                v-for="style in renderStylesForRequest(reportRequestForMessage(message))"
+                :key="style.id"
+                :value="style.id"
+              >
+                {{ style.label || style.id }}
+              </option>
+            </select>
+            <button type="button" class="analysis-report-button" @click="runReportGeneration(message)">生成报告</button>
+          </div>
+        </div>
         <div v-if="message.from === 'agent' && !message.pending && reportForMessage(message)" class="analysis-report-preview">
           <div class="analysis-report-title">{{ reportForMessage(message).title || "分析报告" }}</div>
-          <MarkdownContent
-            v-if="reportForMessage(message).preview"
-            :source="reportForMessage(message).preview"
-            markdown
-            class="analysis-report-body"
-          />
-          <div v-if="reportDownloadEntries(message).length" class="analysis-report-links">
+          <div class="analysis-report-actions">
+            <a
+              v-if="reportPreviewUrl(message)"
+              class="analysis-report-button is-link"
+              :href="reportPreviewUrl(message)"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              完整预览
+            </a>
             <a
               v-for="item in reportDownloadEntries(message)"
               :key="`${message.id}_grouped_report_${item.key}`"
+              class="analysis-report-button is-link"
               :href="item.url"
               target="_blank"
               rel="noreferrer noopener"
             >
-              {{ item.label }}
+              下载 {{ item.label }}
             </a>
+            <select v-model="selectedRegenerateRenderStyle" class="analysis-report-select" aria-label="重新生成风格">
+              <option
+                v-for="style in renderStylesForReport(reportForMessage(message))"
+                :key="style.id"
+                :value="style.id"
+              >
+                {{ style.label || style.id }}
+              </option>
+            </select>
+            <button type="button" class="analysis-report-button" @click="runReportRegeneration(message)">重新生成</button>
           </div>
         </div>
         <KnowledgeGraphPanel
@@ -345,27 +436,46 @@ const graphMetaForMessage = (message) =>
   color: var(--text);
 }
 
-.analysis-report-body {
-  max-height: 320px;
-  overflow: hidden;
-}
-
-.analysis-report-links {
+.analysis-report-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
   margin-top: 10px;
 }
 
-.analysis-report-links a {
+.analysis-report-select {
+  min-height: 34px;
+  max-width: 180px;
+  border: 1px solid rgba(47, 107, 255, 0.18);
+  border-radius: 6px;
+  background: var(--surface-panel);
+  color: var(--text);
   font-size: 13px;
   font-weight: 650;
-  color: var(--accent);
-  text-decoration: none;
 }
 
-.analysis-report-links a:hover {
-  text-decoration: underline;
+.analysis-report-button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(31, 157, 116, 0.24);
+  border-radius: 6px;
+  background: rgba(31, 157, 116, 0.08);
+  font-size: 13px;
+  font-weight: 650;
+  color: #13795b;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.analysis-report-button:hover {
+  border-color: rgba(31, 157, 116, 0.42);
+  background: rgba(31, 157, 116, 0.14);
+}
+
+.analysis-report-button.is-link {
+  display: inline-flex;
+  align-items: center;
 }
 
 .msg-pending-card {

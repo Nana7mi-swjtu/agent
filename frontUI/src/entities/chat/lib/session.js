@@ -18,6 +18,25 @@ const normalizeGraph = (raw) => {
 };
 const normalizeGraphMeta = (raw) => (raw && typeof raw === "object" ? raw : null);
 export const normalizeSelectedAnalysisModules = (raw) => normalizeAnalysisModuleIds(raw);
+const normalizeRenderStyles = (raw) =>
+  Array.isArray(raw)
+    ? raw
+        .filter((item) => item && typeof item === "object")
+        .map((item) => ({
+          id: String(item.id || "").trim(),
+          label: String(item.label || item.id || "").trim(),
+        }))
+        .filter((item) => item.id)
+    : [];
+const normalizeReportRegeneration = (raw) => {
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    allowed: raw.allowed !== false,
+    reportId: String(raw.reportId || "").trim(),
+    renderStyles: normalizeRenderStyles(raw.renderStyles),
+    defaultRenderStyle: String(raw.defaultRenderStyle || "professional").trim() || "professional",
+  };
+};
 const normalizeAnalysisReport = (raw) => {
   if (!raw || typeof raw !== "object") return null;
   const reportId = String(raw.reportId || "").trim();
@@ -32,7 +51,40 @@ const normalizeAnalysisReport = (raw) => {
     downloadUrls: {
       pdf: String(downloadUrls.pdf || ""),
     },
+    previewUrl: String(raw.previewUrl || ""),
+    renderStyle: String(raw.renderStyle || "professional"),
+    regeneration: normalizeReportRegeneration(raw.regeneration),
     limitations: Array.isArray(raw.limitations) ? raw.limitations.filter((item) => item && typeof item === "object") : [],
+  };
+};
+const normalizeAnalysisModuleArtifact = (raw) => {
+  if (!raw || typeof raw !== "object") return null;
+  const artifactId = String(raw.artifactId || "").trim();
+  if (!artifactId) return null;
+  return {
+    artifactId,
+    moduleId: String(raw.moduleId || "").trim(),
+    moduleRunId: String(raw.moduleRunId || "").trim(),
+    title: String(raw.title || "模块分析结果"),
+    status: String(raw.status || ""),
+    contentType: String(raw.contentType || "text/markdown"),
+    markdownBody: String(raw.markdownBody || ""),
+    analysisSession: raw.analysisSession && typeof raw.analysisSession === "object" ? raw.analysisSession : null,
+  };
+};
+const normalizeReportGenerationRequest = (raw) => {
+  if (!raw || typeof raw !== "object") return null;
+  const moduleArtifactIds = Array.isArray(raw.moduleArtifactIds)
+    ? raw.moduleArtifactIds.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  if (!moduleArtifactIds.length) return null;
+  return {
+    requestId: String(raw.requestId || ""),
+    analysisSessionId: String(raw.analysisSessionId || ""),
+    analysisSessionRevision: Number.isInteger(raw.analysisSessionRevision) ? raw.analysisSessionRevision : 0,
+    moduleArtifactIds,
+    renderStyles: normalizeRenderStyles(raw.renderStyles),
+    defaultRenderStyle: String(raw.defaultRenderStyle || "professional").trim() || "professional",
   };
 };
 
@@ -48,6 +100,8 @@ export const normalizeChatMessage = (raw) => ({
   trace: normalizeTrace(raw?.trace),
   graph: normalizeGraph(raw?.graph),
   graphMeta: normalizeGraphMeta(raw?.graphMeta),
+  analysisModuleArtifact: normalizeAnalysisModuleArtifact(raw?.analysisModuleArtifact),
+  reportGenerationRequest: normalizeReportGenerationRequest(raw?.reportGenerationRequest),
   analysisReport: normalizeAnalysisReport(raw?.analysisReport),
   memoryInfo: raw?.memoryInfo && typeof raw.memoryInfo === "object" ? raw.memoryInfo : null,
   jobId: raw?.jobId ? String(raw.jobId) : "",
@@ -70,6 +124,8 @@ export const serializeChatMessage = (message) => ({
   trace: normalizeTrace(message?.trace),
   graph: normalizeGraph(message?.graph),
   graphMeta: normalizeGraphMeta(message?.graphMeta),
+  analysisModuleArtifact: normalizeAnalysisModuleArtifact(message?.analysisModuleArtifact),
+  reportGenerationRequest: normalizeReportGenerationRequest(message?.reportGenerationRequest),
   analysisReport: normalizeAnalysisReport(message?.analysisReport),
   memoryInfo: message?.memoryInfo && typeof message.memoryInfo === "object" ? message.memoryInfo : null,
   jobId: message?.jobId ? String(message.jobId) : "",

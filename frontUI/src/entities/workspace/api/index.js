@@ -51,7 +51,45 @@ export const buildAnalysisReportDownloadUrl = (reportId, format = "pdf", workspa
     `/api/workspace/reports/${encodeURIComponent(reportId)}/download?format=${encodeURIComponent(format)}&workspaceId=${encodeURIComponent(workspaceId || "default")}`,
   );
 
+export const buildAnalysisReportPreviewUrl = (reportId, format = "pdf", workspaceId = "default") =>
+  buildApiUrl(
+    `/api/workspace/reports/${encodeURIComponent(reportId)}/preview?format=${encodeURIComponent(format)}&workspaceId=${encodeURIComponent(workspaceId || "default")}`,
+  );
+
 export const buildAnalysisReportAssetDownloadUrl = (reportId, assetId, workspaceId = "default") =>
   buildApiUrl(
     `/api/workspace/reports/${encodeURIComponent(reportId)}/assets/${encodeURIComponent(assetId)}/download?workspaceId=${encodeURIComponent(workspaceId || "default")}`,
   );
+
+export const postAnalysisReportGeneration = ({
+  moduleArtifactIds,
+  renderStyle = "professional",
+  workspaceId = "default",
+  conversationId = "",
+} = {}) =>
+  apiRequest("/api/workspace/reports/generate", {
+    method: "POST",
+    body: {
+      moduleArtifactIds: Array.isArray(moduleArtifactIds) ? moduleArtifactIds : [],
+      renderStyle,
+      workspaceId: workspaceId || "default",
+      conversationId: conversationId || "",
+    },
+  });
+
+export const postAnalysisReportRegeneration = (
+  reportId,
+  {
+    renderStyle = "professional",
+    workspaceId = "default",
+    conversationId = "",
+  } = {},
+) =>
+  apiRequest(`/api/workspace/reports/${encodeURIComponent(reportId)}/regenerate`, {
+    method: "POST",
+    body: {
+      renderStyle,
+      workspaceId: workspaceId || "default",
+      conversationId: conversationId || "",
+    },
+  });
