@@ -46,7 +46,7 @@ export const listWorkspaceChatJobs = (workspaceId, conversationId) =>
 export const getAnalysisReport = (reportId, workspaceId) =>
   apiRequest(`/api/workspace/reports/${encodeURIComponent(reportId)}?workspaceId=${encodeURIComponent(workspaceId || "default")}`);
 
-export const buildAnalysisReportDownloadUrl = (reportId, format = "markdown", workspaceId = "default") =>
+export const buildAnalysisReportDownloadUrl = (reportId, format = "pdf", workspaceId = "default") =>
   buildApiUrl(
     `/api/workspace/reports/${encodeURIComponent(reportId)}/download?format=${encodeURIComponent(format)}&workspaceId=${encodeURIComponent(workspaceId || "default")}`,
   );

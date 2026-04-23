@@ -631,13 +631,7 @@ def _analysis_report_system_section(state: AgentState) -> str:
     if preview:
         lines.append("报告正文预览：")
         lines.append(preview[:1200])
-    download_urls = report.get("downloadUrls", {})
-    if isinstance(download_urls, dict) and download_urls:
-        lines.append(
-            "下载链接："
-            + "；".join(f"{key}={value}" for key, value in download_urls.items() if str(value).strip())
-        )
-    lines.append("最终回复应提示报告已生成，并可引用预览和下载链接；不要在回复中补写模块没有提供的领域结论。")
+    lines.append("最终回复应提示报告已生成，可结合预览概述结果；下载动作由界面提供，不要在回复中输出原始下载链接；不要在回复中补写模块没有提供的领域结论。")
     return "\n".join(lines)
 
 

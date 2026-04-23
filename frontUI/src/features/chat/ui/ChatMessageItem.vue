@@ -74,8 +74,7 @@ const reportDownloadEntries = (message) => {
   const report = reportForMessage(message);
   const urls = report?.downloadUrls && typeof report.downloadUrls === "object" ? report.downloadUrls : {};
   return [
-    { key: "markdown", label: "Markdown", url: resolveReportDownloadUrl(urls.markdown) },
-    { key: "html", label: "HTML", url: resolveReportDownloadUrl(urls.html) },
+    { key: "pdf", label: "PDF", url: resolveReportDownloadUrl(urls.pdf) },
   ].filter((item) => item.url);
 };
 const showGroundingMeta = (message) =>

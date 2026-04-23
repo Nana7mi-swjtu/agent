@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import html
 import json
 import re
@@ -19,8 +20,29 @@ REPORT_SEMANTIC_MODEL_SCHEMA_VERSION = "report_semantic_model.v1"
 REPORT_SEMANTIC_CONTRIBUTION_PROFILE_VERSION = "report_semantic_contribution.v1"
 VISUAL_ASSET_SCHEMA_VERSION = "analysis_report_visual_asset.v1"
 REPORT_PREVIEW_LIMIT = 1200
-SUPPORTED_REPORT_DOWNLOAD_FORMATS = {"markdown", "html"}
+REPORT_DOWNLOAD_FORMAT = "pdf"
+SUPPORTED_REPORT_DOWNLOAD_FORMATS = {REPORT_DOWNLOAD_FORMAT}
 VISUAL_ASSET_TYPES = {"image", "chart", "table", "graph", "timeline", "heatmap"}
+REPORT_PDF_PAGE_WIDTH = 595
+REPORT_PDF_PAGE_HEIGHT = 842
+REPORT_PDF_MARGIN_X = 40
+REPORT_PDF_MARGIN_TOP = 44
+REPORT_PDF_MARGIN_BOTTOM = 44
+REPORT_PDF_SEGMENT_GAP = 10
+REPORT_PDF_CSS = (
+    "body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+    "font-size:11pt;line-height:1.6;color:#17202a;}"
+    "h1{font-size:18pt;line-height:1.3;margin:0 0 14px 0;}"
+    "h2{font-size:14pt;line-height:1.35;margin:16px 0 8px 0;}"
+    "h3{font-size:12pt;line-height:1.4;margin:12px 0 6px 0;}"
+    "p{margin:0 0 10px 0;}"
+    "ul{margin:0 0 10px 18px;padding:0;}"
+    "li{margin:0 0 6px 0;}"
+    "figure{margin:0 0 12px 0;}"
+    "img{max-width:100%;height:auto;display:block;margin:0 auto 6px auto;}"
+    "figcaption{font-size:9.5pt;color:#52606d;}"
+    ".pdf-visual-fallback{border:1px solid #d8dee8;padding:10px 12px;border-radius:4px;background:#f7f9fc;}"
+)
 PUBLISHED_REPORT_FORBIDDEN_LABELS = {
     "moduleId",
     "displayName",
@@ -856,18 +878,23 @@ def bounded_report_preview(markdown_body: str, *, limit: int = REPORT_PREVIEW_LI
 
 
 def report_download_metadata(report_id: str) -> dict[str, Any]:
+    clean_report_id = _clean_text(report_id)
     return {
-        "availableFormats": ["markdown", "html"],
+        "availableFormats": [REPORT_DOWNLOAD_FORMAT],
         "downloadUrls": {
-            "markdown": f"/api/workspace/reports/{report_id}/download?format=markdown",
-            "html": f"/api/workspace/reports/{report_id}/download?format=html",
-        },
+            REPORT_DOWNLOAD_FORMAT: f"/api/workspace/reports/{clean_report_id}/download?format={REPORT_DOWNLOAD_FORMAT}"
+        } if clean_report_id else {},
     }
+
+
+def normalized_report_download_metadata(report_id: str, stored_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    del stored_metadata
+    return report_download_metadata(report_id)
 
 
 def report_preview_metadata(artifact: dict[str, Any]) -> dict[str, Any]:
     report_id = _clean_text(artifact.get("reportId"))
-    metadata = report_download_metadata(report_id)
+    metadata = normalized_report_download_metadata(report_id, _dict_value(artifact.get("downloadMetadata")))
     return _drop_empty(
         {
             "reportId": report_id,
@@ -942,14 +969,15 @@ def get_analysis_report(
 
 def analysis_report_to_payload(row: AnalysisReport, *, include_body: bool = False) -> dict[str, Any]:
     artifact = _dict_value(row.artifact_json)
+    metadata = normalized_report_download_metadata(row.report_id, _dict_value(row.download_metadata_json))
     payload = _drop_empty(
         {
             "reportId": row.report_id,
             "title": row.title,
             "status": row.status,
             "preview": _clean_text(artifact.get("preview") or bounded_report_preview(row.markdown_body or "")),
-            "availableFormats": ["markdown", "html"],
-            "downloadUrls": _dict_value(row.download_metadata_json).get("downloadUrls", {}),
+            "availableFormats": metadata["availableFormats"],
+            "downloadUrls": metadata["downloadUrls"],
             "analysisSession": {
                 "sessionId": row.analysis_session_id,
                 "revision": int(row.analysis_session_revision or 0),
@@ -969,7 +997,7 @@ def analysis_report_to_payload(row: AnalysisReport, *, include_body: bool = Fals
 
 
 def safe_report_filename(row: AnalysisReport, report_format: str) -> str:
-    extension = "md" if report_format == "markdown" else "html"
+    extension = REPORT_DOWNLOAD_FORMAT
     base = _ascii_filename(row.title or row.report_id).rsplit(".", 1)[0]
     return f"{base}-{row.report_id}.{extension}"
 
@@ -1000,6 +1028,264 @@ def inline_asset_response_payload(asset: dict[str, Any]) -> tuple[bytes, str, st
 
         return json.dumps(render_payload, ensure_ascii=False, indent=2).encode("utf-8"), "application/json", filename
     return None
+
+
+def report_row_forbidden_values(row: AnalysisReport) -> list[str]:
+    artifact = _dict_value(row.artifact_json)
+    values = set(_string_list((row.enabled_modules_json or {}).get("items", [])))
+    values.update(_clean_text(value) for value in _dict_value(row.module_run_ids_json).values())
+    values.add(_clean_text(row.analysis_session_id))
+    for item in _list_of_dicts(artifact.get("moduleSummaries")):
+        values.add(_clean_text(item.get("moduleId")))
+        values.add(_clean_text(item.get("runId")))
+    internal_items = _dict_value(_dict_value(artifact.get("internalTraceIndex")).get("items"))
+    for item in internal_items.values():
+        if not isinstance(item, dict):
+            continue
+        values.add(_clean_text(item.get("moduleId")))
+        values.add(_clean_text(item.get("runId")))
+    return [value for value in values if len(value) >= 4]
+
+
+def render_report_pdf(
+    artifact: dict[str, Any],
+    *,
+    markdown_body: str | None = None,
+    forbidden_values: list[str] | None = None,
+) -> bytes:
+    try:
+        import fitz
+    except ImportError as exc:
+        raise RuntimeError("pdf rendering requires pymupdf dependency") from exc
+
+    artifact = _dict_value(artifact)
+    markdown_body = _clean_text(markdown_body if markdown_body is not None else artifact.get("markdownBody"))
+    if not markdown_body:
+        markdown_body = render_report_markdown(artifact)
+    segments = _report_pdf_segments(markdown_body, artifact)
+    if not segments:
+        fallback_title = html.escape(_clean_text(artifact.get("title")) or "分析报告")
+        segments = [f"<h1>{fallback_title}</h1>", "<p>报告内容为空。</p>"]
+
+    doc = fitz.open()
+    page = doc.new_page(width=REPORT_PDF_PAGE_WIDTH, height=REPORT_PDF_PAGE_HEIGHT)
+    cursor_y = REPORT_PDF_MARGIN_TOP
+    for segment in segments:
+        page, cursor_y = _insert_report_pdf_segment(doc, page, cursor_y, segment, fitz_module=fitz)
+    pdf_bytes = doc.tobytes(deflate=True, garbage=3)
+    doc.close()
+
+    validation_errors = validate_report_pdf_bytes(pdf_bytes, forbidden_values=forbidden_values)
+    if validation_errors:
+        raise PublishedReportValidationError("；".join(validation_errors[:5]))
+    return pdf_bytes
+
+
+def validate_report_pdf_bytes(pdf_bytes: bytes, *, forbidden_values: list[str] | None = None) -> list[str]:
+    try:
+        import fitz
+    except ImportError as exc:
+        raise RuntimeError("pdf validation requires pymupdf dependency") from exc
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+        text = "\n".join(page.get_text("text") for page in document)
+    return validate_published_report(text, forbidden_values=forbidden_values)
+
+
+def _insert_report_pdf_segment(doc: Any, page: Any, cursor_y: float, segment: str, *, fitz_module: Any) -> tuple[Any, float]:
+    right = REPORT_PDF_PAGE_WIDTH - REPORT_PDF_MARGIN_X
+    bottom = REPORT_PDF_PAGE_HEIGHT - REPORT_PDF_MARGIN_BOTTOM
+    rect = fitz_module.Rect(REPORT_PDF_MARGIN_X, cursor_y, right, bottom)
+    spare_height, _ = page.insert_htmlbox(rect, segment, css=REPORT_PDF_CSS, scale_low=1)
+    if spare_height == -1:
+        page = doc.new_page(width=REPORT_PDF_PAGE_WIDTH, height=REPORT_PDF_PAGE_HEIGHT)
+        cursor_y = REPORT_PDF_MARGIN_TOP
+        rect = fitz_module.Rect(REPORT_PDF_MARGIN_X, cursor_y, right, bottom)
+        spare_height, _ = page.insert_htmlbox(rect, segment, css=REPORT_PDF_CSS, scale_low=1)
+    if spare_height == -1:
+        fallback_html = f"<p>{html.escape(_report_pdf_plain_text(segment))}</p>"
+        spare_height, _ = page.insert_htmlbox(rect, fallback_html, css=REPORT_PDF_CSS, scale_low=0.7)
+    if spare_height == -1:
+        final_html = "<p>该段内容过长，已在下载版中省略，请回到系统内查看完整预览。</p>"
+        spare_height, _ = page.insert_htmlbox(rect, final_html, css=REPORT_PDF_CSS, scale_low=0.7)
+    next_y = bottom - max(spare_height, 0) + REPORT_PDF_SEGMENT_GAP
+    if next_y > bottom - 20:
+        page = doc.new_page(width=REPORT_PDF_PAGE_WIDTH, height=REPORT_PDF_PAGE_HEIGHT)
+        next_y = REPORT_PDF_MARGIN_TOP
+    return page, next_y
+
+
+def _report_pdf_segments(markdown_body: str, artifact: dict[str, Any]) -> list[str]:
+    asset_lookup = _report_pdf_asset_lookup(artifact)
+    lines = str(markdown_body or "").splitlines()
+    segments: list[str] = []
+    index = 0
+    while index < len(lines):
+        raw_line = lines[index].rstrip()
+        line = raw_line.strip()
+        if not line:
+            index += 1
+            continue
+        if line.startswith("# "):
+            segments.append(f"<h1>{html.escape(line[2:].strip())}</h1>")
+            index += 1
+            continue
+        if line.startswith("## "):
+            segments.append(f"<h2>{html.escape(line[3:].strip())}</h2>")
+            index += 1
+            continue
+        if line.startswith("### "):
+            segments.append(f"<h3>{html.escape(line[4:].strip())}</h3>")
+            index += 1
+            continue
+        if line.startswith("!["):
+            segments.append(_report_pdf_image_segment(line, asset_lookup))
+            index += 1
+            continue
+        if re.match(r"^\s*-\s+", raw_line):
+            items: list[str] = []
+            while index < len(lines):
+                current_raw = lines[index].rstrip()
+                if not re.match(r"^\s*-\s+", current_raw):
+                    break
+                current_text = re.sub(r"^\s*-\s+", "", current_raw.strip())
+                items.append(f"<li>{_inline_markdown_to_html(current_text)}</li>")
+                index += 1
+            if items:
+                segments.append("<ul>" + "".join(items) + "</ul>")
+            continue
+
+        paragraph_lines = [line]
+        index += 1
+        while index < len(lines):
+            candidate_raw = lines[index].rstrip()
+            candidate = candidate_raw.strip()
+            if not candidate or candidate.startswith("#") or candidate.startswith("![") or re.match(r"^\s*-\s+", candidate_raw):
+                break
+            paragraph_lines.append(candidate)
+            index += 1
+        segments.append("<p>" + "<br>".join(_inline_markdown_to_html(item) for item in paragraph_lines) + "</p>")
+    return segments
+
+
+def _report_pdf_image_segment(line: str, asset_lookup: dict[str, dict[str, Any]]) -> str:
+    match = re.match(r"!\[(.*?)\]\((.*?)\)", line)
+    if not match:
+        return f"<p>{_inline_markdown_to_html(line)}</p>"
+    alt_text, url = match.groups()
+    clean_url = _clean_text(url)
+    asset_id = _report_asset_id_from_url(clean_url)
+    asset = asset_lookup.get(clean_url) or asset_lookup.get(asset_id)
+    title = _clean_text(asset.get("title") if isinstance(asset, dict) else "") or _clean_text(alt_text) or "图表"
+    caption = _clean_text(asset.get("caption") if isinstance(asset, dict) else "") or _clean_text(
+        asset.get("readerSummary") if isinstance(asset, dict) else ""
+    ) or _clean_text(asset.get("description") if isinstance(asset, dict) else "")
+    boundary = _clean_text(asset.get("interpretationBoundary") if isinstance(asset, dict) else "")
+    data_url = _report_pdf_asset_data_url(asset) if isinstance(asset, dict) else ""
+    if data_url:
+        parts = [
+            "<figure>",
+            f"<img src=\"{html.escape(data_url, quote=True)}\" alt=\"{html.escape(_clean_text(alt_text) or title, quote=True)}\">",
+        ]
+        if title or caption or boundary:
+            figcaption = " ".join(part for part in (title, caption, boundary) if part)
+            parts.append(f"<figcaption>{html.escape(figcaption)}</figcaption>")
+        parts.append("</figure>")
+        return "".join(parts)
+    fallback = caption or boundary or _clean_text(alt_text) or "该图片资产未提供可嵌入内容。"
+    return (
+        "<div class=\"pdf-visual-fallback\">"
+        f"<p><strong>{html.escape(title)}</strong></p>"
+        f"<p>{html.escape(fallback)}</p>"
+        "</div>"
+    )
+
+
+def _report_pdf_asset_lookup(artifact: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    for collection_name in ("visualAssets", "attachments"):
+        for asset in _list_of_dicts(artifact.get(collection_name)):
+            for key in (
+                asset.get("downloadUrl"),
+                asset.get("assetId"),
+                asset.get("id"),
+            ):
+                clean = _clean_text(key)
+                if clean:
+                    lookup[clean] = asset
+    return lookup
+
+
+def _report_asset_id_from_url(value: str) -> str:
+    match = re.search(r"/assets/([^/]+)/download", _clean_text(value))
+    return _clean_text(match.group(1)) if match else ""
+
+
+def _report_pdf_asset_data_url(asset: dict[str, Any]) -> str:
+    content_type = _clean_text(asset.get("contentType")).split(";", 1)[0].lower()
+    if not content_type.startswith("image/"):
+        return ""
+    image_bytes = _report_pdf_asset_bytes(asset, content_type=content_type)
+    if not image_bytes:
+        return ""
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+def _report_pdf_asset_bytes(asset: dict[str, Any], *, content_type: str) -> bytes:
+    inline_content = _clean_text(asset.get("inlineContent"))
+    if inline_content:
+        decoded = _decode_pdf_image_bytes(inline_content)
+        if decoded:
+            return decoded
+
+    render_payload = _dict_value(asset.get("renderPayload"))
+    for key in ("dataUrl", "imageData", "imageBase64", "base64", "bytesBase64", "src", "url"):
+        decoded = _decode_pdf_image_bytes(render_payload.get(key))
+        if decoded:
+            return decoded
+
+    payload = inline_asset_response_payload(asset)
+    if payload is None:
+        return b""
+    raw_bytes, payload_content_type, _ = payload
+    payload_type = _clean_text(payload_content_type).split(";", 1)[0].lower()
+    if payload_type.startswith("image/"):
+        return raw_bytes
+    if content_type.startswith("image/"):
+        decoded = _decode_pdf_image_bytes(raw_bytes.decode("utf-8", errors="ignore"))
+        if decoded:
+            return decoded
+    return b""
+
+
+def _decode_pdf_image_bytes(value: Any) -> bytes:
+    text = _clean_text(value)
+    if not text:
+        return b""
+    if text.startswith("data:"):
+        match = re.match(r"data:([^;,]+)?(;base64)?,(.*)", text, flags=re.S)
+        if not match:
+            return b""
+        payload = match.group(3)
+        if match.group(2):
+            try:
+                return base64.b64decode(payload, validate=False)
+            except (ValueError, TypeError):
+                return b""
+        return payload.encode("utf-8")
+    try:
+        return base64.b64decode(text, validate=True)
+    except (ValueError, TypeError):
+        return b""
+
+
+def _report_pdf_plain_text(segment: str) -> str:
+    clean = re.sub(r"<br\s*/?>", "\n", str(segment or ""), flags=re.I)
+    clean = re.sub(r"<[^>]+>", " ", clean)
+    clean = html.unescape(clean)
+    clean = re.sub(r"[ \t]+", " ", clean)
+    clean = re.sub(r"\n\s+", "\n", clean)
+    return clean.strip()
 
 
 def _build_report_sections(

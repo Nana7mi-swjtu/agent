@@ -30,8 +30,7 @@ const normalizeAnalysisReport = (raw) => {
     preview: String(raw.preview || ""),
     availableFormats: Array.isArray(raw.availableFormats) ? raw.availableFormats.map((item) => String(item)) : [],
     downloadUrls: {
-      markdown: String(downloadUrls.markdown || ""),
-      html: String(downloadUrls.html || ""),
+      pdf: String(downloadUrls.pdf || ""),
     },
     limitations: Array.isArray(raw.limitations) ? raw.limitations.filter((item) => item && typeof item === "object") : [],
   };

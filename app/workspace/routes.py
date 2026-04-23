@@ -18,11 +18,15 @@ from ..agent.jobs import (
 from ..agent.analysis_session import load_analysis_session_state, save_analysis_session_state
 from ..agent.memory import load_conversation_history, save_conversation_turn
 from ..agent.reporting import (
+    REPORT_DOWNLOAD_FORMAT,
+    PublishedReportValidationError,
     SUPPORTED_REPORT_DOWNLOAD_FORMATS,
     analysis_report_to_payload,
     find_report_asset,
     get_analysis_report,
     inline_asset_response_payload,
+    render_report_pdf,
+    report_row_forbidden_values,
     safe_report_filename,
     save_analysis_report_artifact,
 )
@@ -414,19 +418,41 @@ def download_workspace_report(report_id: str):
     if user_id is None:
         return _json_error("authentication required", 401)
     workspace_id = str(request.args.get("workspaceId", "") or "").strip() or None
-    report_format = str(request.args.get("format", "markdown") or "markdown").strip().lower()
-    if report_format in {"md"}:
-        report_format = "markdown"
+    report_format = str(request.args.get("format", REPORT_DOWNLOAD_FORMAT) or REPORT_DOWNLOAD_FORMAT).strip().lower()
     if report_format not in SUPPORTED_REPORT_DOWNLOAD_FORMATS:
-        return _json_error("unsupported report format: only markdown and html are supported", 400)
+        return _json_error(f"unsupported report format: only {REPORT_DOWNLOAD_FORMAT} is supported", 400)
 
     with session_scope() as db:
         row = get_analysis_report(db, user_id=user_id, workspace_id=workspace_id, report_id=str(report_id))
         if row is None:
             return _json_error("report not found", 404)
-        body = row.markdown_body if report_format == "markdown" else row.html_body
-        mimetype = "text/markdown; charset=utf-8" if report_format == "markdown" else "text/html; charset=utf-8"
-        response = Response(body or "", mimetype=mimetype)
+        artifact = dict(row.artifact_json) if isinstance(row.artifact_json, dict) else {}
+        artifact["title"] = artifact.get("title") or row.title
+        artifact["markdownBody"] = row.markdown_body or ""
+        artifact["htmlBody"] = row.html_body or ""
+        artifact["visualAssets"] = artifact.get("visualAssets") or (
+            row.visual_assets_json.get("items", []) if isinstance(row.visual_assets_json, dict) else []
+        )
+        artifact["attachments"] = artifact.get("attachments") or (
+            row.attachments_json.get("items", []) if isinstance(row.attachments_json, dict) else []
+        )
+        try:
+            body = render_report_pdf(
+                artifact,
+                markdown_body=row.markdown_body or "",
+                forbidden_values=report_row_forbidden_values(row),
+            )
+        except PublishedReportValidationError:
+            body = render_report_pdf(
+                {
+                    "title": "报告生成失败",
+                    "markdownBody": "# 报告生成失败\n\n下载版报告未通过发布校验，请重新生成或联系管理员复核。\n",
+                }
+            )
+        except RuntimeError:
+            logger.exception("Report PDF rendering failed for %s", report_id)
+            return _json_error("report pdf rendering unavailable", 500)
+        response = Response(body, mimetype="application/pdf")
         response.headers["Content-Disposition"] = f'attachment; filename="{safe_report_filename(row, report_format)}"'
         response.headers["Cache-Control"] = "no-store"
         return response
