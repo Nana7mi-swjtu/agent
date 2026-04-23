@@ -11,6 +11,7 @@
     "verify:agent-trace": "node ./scripts/verify-agent-trace.mjs",
     "verify:agent-chat-jobs": "node ./scripts/verify-agent-chat-jobs.mjs",
     "verify:analysis-module-selector": "node ./scripts/verify-analysis-module-selector.mjs",
+    "verify:report-preview-downloads": "node ./scripts/verify-report-preview-downloads.mjs",
     "verify:bankruptcy-analysis": "node ./scripts/verify-bankruptcy-analysis.mjs",
     "verify:rag-lifecycle": "node ./scripts/verify-rag-lifecycle.mjs"
   },

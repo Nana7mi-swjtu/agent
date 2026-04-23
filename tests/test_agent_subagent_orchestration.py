@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from app.agent.analysis_session import create_transient_analysis_session
 from app.agent.graph import analysis_modules as analysis_module_graph
 from app.agent.graph.analysis_modules import AnalysisModuleContract, normalize_analysis_module_output
@@ -12,6 +14,7 @@ from app.agent.graph.analysis_slots import (
     SHARED_TIME_RANGE,
     SCOPE_MODULE,
     VALUE_KIND_TEXT,
+    parse_compound_answer_for_slots,
     parse_answer_for_group,
     shared_slot_catalog,
 )
@@ -21,6 +24,7 @@ from app.agent.graph.nodes import (
     analysis_modules_node,
     mcp_subagent_node,
     plan_route_node,
+    report_generation_node,
     search_subagent_node,
 )
 from app.agent.reporting import (
@@ -30,6 +34,21 @@ from app.agent.reporting import (
     validate_report_contribution_traceability,
 )
 from app.robotics_risk.cache import RoboticsEvidenceCache
+
+
+class _FakeReportResponse:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class _FakeReportWriter:
+    def __init__(self, content: str):
+        self.content = content
+        self.calls = []
+
+    def invoke(self, messages):
+        self.calls.append(messages)
+        return _FakeReportResponse(self.content)
 
 
 def test_shared_slot_catalog_exposes_v1_baseline():
@@ -60,6 +79,30 @@ def test_parse_answer_for_enterprise_identity_group_normalizes_name_and_stock_co
     assert updates == {
         SHARED_ENTERPRISE_NAME: "石头科技",
         SHARED_STOCK_CODE: "688169",
+    }
+
+
+def test_parse_compound_answer_separates_enterprise_time_goal_and_focus():
+    catalog = shared_slot_catalog()
+
+    updates = parse_compound_answer_for_slots(
+        slot_ids=[
+            SHARED_ENTERPRISE_NAME,
+            SHARED_STOCK_CODE,
+            SHARED_TIME_RANGE,
+            SHARED_REPORT_GOAL,
+            SHARED_ANALYSIS_FOCUS_TAGS,
+        ],
+        slot_catalog=catalog,
+        user_message="石头科技 688169，时间范围近30天，报告目标是生成机器人风险机会报告，分析重点为政策和订单",
+    )
+
+    assert updates == {
+        SHARED_ENTERPRISE_NAME: "石头科技",
+        SHARED_STOCK_CODE: "688169",
+        SHARED_TIME_RANGE: "近30天",
+        SHARED_REPORT_GOAL: "生成机器人风险机会报告",
+        SHARED_ANALYSIS_FOCUS_TAGS: ["政策", "订单"],
     }
 
 
@@ -389,6 +432,80 @@ def test_analysis_intake_marks_ready_when_required_slots_are_prefilled():
     assert result["analysis_session"]["slotValues"][SHARED_ANALYSIS_FOCUS_TAGS] == ["政策", "订单"]
 
 
+def test_analysis_intake_first_turn_compound_prompt_fills_required_slots():
+    result = analysis_intake_node(
+        {
+            "user_message": "石头科技 688169，时间范围近30天，报告目标是生成机器人风险机会报告，分析重点为政策和订单",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_shared_inputs": {},
+            "analysis_module_inputs": {},
+            "analysis_session": create_transient_analysis_session(enabled_modules=["robotics_risk"]),
+            "debug": {},
+        }
+    )
+
+    slot_values = result["analysis_session"]["slotValues"]
+    assert result["needs_clarification"] is False
+    assert result["missing_fields"] == []
+    assert result["analysis_session"]["status"] == "ready"
+    assert slot_values[SHARED_ENTERPRISE_NAME] == "石头科技"
+    assert slot_values[SHARED_STOCK_CODE] == "688169"
+    assert slot_values[SHARED_TIME_RANGE] == "近30天"
+    assert slot_values[SHARED_REPORT_GOAL] == "生成机器人风险机会报告"
+    assert slot_values[SHARED_ANALYSIS_FOCUS_TAGS] == ["政策", "订单"]
+
+
+def test_analysis_intake_follow_up_time_change_does_not_mutate_enterprise(monkeypatch):
+    contract = AnalysisModuleContract(
+        module_id="robotics_risk",
+        display_name="机器人风险机会洞察",
+        required_slots=(
+            SHARED_ENTERPRISE_NAME,
+            SHARED_TIME_RANGE,
+            SHARED_REPORT_GOAL,
+            SHARED_ANALYSIS_FOCUS_TAGS,
+        ),
+        slot_mapping=lambda slots, compatibility, context: {},
+        run=lambda payload: {},
+    )
+    monkeypatch.setattr("app.agent.graph.nodes.get_analysis_module_registry", lambda: {"robotics_risk": contract})
+    session = create_transient_analysis_session(enabled_modules=["robotics_risk"])
+    session["status"] = "collecting"
+    session["revision"] = 1
+    session["slotValues"] = {
+        SHARED_ENTERPRISE_NAME: "石头科技",
+        SHARED_STOCK_CODE: "688169",
+        SHARED_REPORT_GOAL: "生成机器人风险机会报告",
+        SHARED_ANALYSIS_FOCUS_TAGS: ["政策", "订单"],
+    }
+    session["questionPlan"] = [
+        {
+            "groupId": "time_range",
+            "slotIds": [SHARED_TIME_RANGE],
+            "requiredSlotIds": [SHARED_TIME_RANGE],
+            "labels": ["时间范围"],
+            "question": "请补充时间范围。",
+        }
+    ]
+
+    result = analysis_intake_node(
+        {
+            "user_message": "改成近90天",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_shared_inputs": {},
+            "analysis_module_inputs": {},
+            "analysis_session": session,
+            "debug": {},
+        }
+    )
+
+    slot_values = result["analysis_session"]["slotValues"]
+    assert slot_values[SHARED_ENTERPRISE_NAME] == "石头科技"
+    assert slot_values[SHARED_STOCK_CODE] == "688169"
+    assert slot_values[SHARED_TIME_RANGE] == "近90天"
+    assert result["debug"]["analysisIntake"]["changedSlots"] == [SHARED_TIME_RANGE]
+
+
 def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
     contract = AnalysisModuleContract(
         module_id="robotics_risk",
@@ -485,6 +602,69 @@ def test_report_contribution_traceability_validation_rejects_unknown_refs():
         raise AssertionError("expected traceability validation error")
 
 
+def _basic_report_inputs():
+    return {
+        "analysis_session": {"sessionId": "asess_writer", "revision": 3, "enabledModules": ["robotics_risk"]},
+        "handoff_bundle": {
+            "analysisSession": {"sessionId": "asess_writer", "revision": 3},
+            "enabledModules": ["robotics_risk"],
+            "sharedInputSummary": {
+                "enterpriseName": "石头科技",
+                "stockCode": "688169",
+                "timeRange": "近30天",
+                "reportGoal": "形成可下载的风险机会报告",
+                "analysisFocusTags": ["政策", "订单"],
+            },
+            "moduleRunIds": {"robotics_risk": "run-robotics-001"},
+        },
+        "module_results": {
+            "robotics_risk": {
+                "moduleId": "robotics_risk",
+                "displayName": "机器人风险机会洞察",
+                "status": "done",
+                "runId": "run-robotics-001",
+                "summary": "政策支持和订单兑现节奏需要同步跟踪。",
+                "domainAnalysis": {
+                    "moduleId": "robotics_risk",
+                    "domainOutputs": [{"id": "domain_policy_order", "summary": "政策支持和订单兑现节奏需要同步跟踪。"}],
+                    "evidence": [{"id": "source_policy_001", "summary": "公开政策文件提及机器人应用支持。"}],
+                },
+                "reportContribution": {
+                    "moduleId": "robotics_risk",
+                    "displayName": "机器人风险机会洞察",
+                    "status": "done",
+                    "findings": [
+                        {
+                            "id": "finding_policy_order",
+                            "kind": "opportunity",
+                            "title": "政策支持与订单兑现存在联动机会",
+                            "summary": "政策支持提升需求预期，但仍需观察订单兑现节奏。",
+                            "traceRefs": {"domainOutputIds": ["domain_policy_order"], "sourceIds": ["source_policy_001"]},
+                        }
+                    ],
+                    "evidence": [
+                        {
+                            "id": "source_policy_001",
+                            "title": "公开政策文件",
+                            "summary": "政策文件提及机器人应用支持方向。",
+                            "sourceType": "policy",
+                            "traceRefs": {"domainOutputIds": ["domain_policy_order"]},
+                        }
+                    ],
+                    "recommendationInputs": [
+                        {
+                            "id": "recommendation_policy_order",
+                            "title": "跟踪政策落地与订单兑现节奏",
+                            "summary": "围绕政策落地节点与订单公告建立复核清单。",
+                            "traceRefs": {"findingIds": ["finding_policy_order"], "sourceIds": ["source_policy_001"]},
+                        }
+                    ],
+                },
+            }
+        },
+    }
+
+
 def test_generate_analysis_report_omits_unselected_modules_and_renders_visuals():
     visual_asset = normalize_visual_asset(
         {
@@ -564,6 +744,170 @@ def test_generate_analysis_report_omits_unselected_modules_and_renders_visuals()
     assert "modelOutputIds" not in artifact["markdownBody"]
     assert artifact["visualAssets"][0]["downloadUrl"].endswith("/assets/shap_001/download")
     assert "模型贡献不等于现实因果" in artifact["markdownBody"]
+
+
+def test_generate_analysis_report_uses_valid_llm_writer_content():
+    inputs = _basic_report_inputs()
+    writer = _FakeReportWriter(
+        json.dumps(
+            {
+                "title": "石头科技风险机会决策报告",
+                "sections": [
+                    {
+                        "id": "executive_judgement",
+                        "title": "核心判断",
+                        "blocks": [
+                            {
+                                "type": "paragraph",
+                                "text": "石头科技当前应把政策落地节奏与订单兑现作为同一条决策线索来跟踪。",
+                            }
+                        ],
+                    },
+                    {
+                        "id": "key_findings",
+                        "title": "关键发现",
+                        "blocks": [
+                            {
+                                "type": "items",
+                                "items": [
+                                    {
+                                        "title": "政策与订单节奏需要联动观察",
+                                        "readerSummary": "现有材料显示政策支持改善需求预期，但订单兑现仍需要持续核验。",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "id": "evidence_verification",
+                        "title": "来源与核验",
+                        "blocks": [
+                            {
+                                "type": "evidence",
+                                "items": [
+                                    {
+                                        "title": "公开政策材料",
+                                        "readerSummary": "该材料用于支撑政策侧需求预期的判断。",
+                                        "verificationStatus": "已纳入本次分析，仍需后续事实更新复核。",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "id": "recommendations",
+                        "title": "决策建议",
+                        "blocks": [
+                            {
+                                "type": "items",
+                                "items": [
+                                    {
+                                        "title": "建立政策与订单复核清单",
+                                        "readerSummary": "按政策落地节点、订单公告和收入兑现进度进行复核。",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    artifact = generate_analysis_report(**inputs, report_writer=writer)
+
+    assert writer.calls
+    assert artifact["title"] == "石头科技风险机会决策报告"
+    assert "石头科技当前应把政策落地节奏" in artifact["markdownBody"]
+    assert "robotics_risk" not in artifact["markdownBody"]
+    assert "moduleId" not in artifact["markdownBody"]
+    assert any(flag["type"] == "llm_writer" for flag in artifact["qualityFlags"])
+
+
+def test_generate_analysis_report_rejects_unsafe_llm_writer_content():
+    inputs = _basic_report_inputs()
+    writer = _FakeReportWriter(
+        json.dumps(
+            {
+                "title": "石头科技报告",
+                "sections": [
+                    {
+                        "id": "executive_judgement",
+                        "title": "核心判断",
+                        "blocks": [{"type": "paragraph", "text": "moduleId=robotics_risk，run-robotics-001 表明可以新增事实。"}],
+                    },
+                    {
+                        "id": "key_findings",
+                        "title": "关键发现",
+                        "blocks": [{"type": "items", "items": [{"title": "新增事实", "readerSummary": "自行假设的判断。"}]}],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    artifact = generate_analysis_report(**inputs, report_writer=writer)
+
+    assert artifact["status"] == "completed"
+    assert "moduleId=robotics_risk" not in artifact["preview"]
+    assert "run-robotics-001" not in artifact["markdownBody"]
+    assert "自行假设" not in artifact["htmlBody"]
+    assert "政策支持与订单兑现存在联动机会" in artifact["markdownBody"]
+    assert any(flag["type"] == "llm_writer_fallback" for flag in artifact["qualityFlags"])
+
+
+def test_generate_analysis_report_cleans_polluted_subject_and_synthesizes_judgement():
+    inputs = _basic_report_inputs()
+    inputs["handoff_bundle"]["sharedInputSummary"]["enterpriseName"] = "石头科技 688169，时间范围近30天，报告目标是生成风险机会报告"
+
+    artifact = generate_analysis_report(**inputs)
+
+    assert artifact["title"] == "石头科技定制化分析报告"
+    assert artifact["scope"]["targetCompany"] == "石头科技"
+    assert "688169，时间范围" not in artifact["markdownBody"]
+    assert "核心发现包括" not in artifact["markdownBody"]
+    assert "已识别 1 项需要关注的判断方向" in artifact["markdownBody"]
+
+
+def test_report_generation_node_passes_main_llm_to_report_writer():
+    inputs = _basic_report_inputs()
+    writer = _FakeReportWriter(
+        json.dumps(
+            {
+                "title": "石头科技可下载报告",
+                "sections": [
+                    {
+                        "id": "executive_judgement",
+                        "title": "核心判断",
+                        "blocks": [{"type": "paragraph", "text": "报告正文已由写作模型面向读者重写。"}],
+                    },
+                    {
+                        "id": "limitations",
+                        "title": "限制说明",
+                        "blocks": [{"type": "items", "items": [{"title": "复核边界", "readerSummary": "结论需随后续事实更新复核。"}]}],
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    result = report_generation_node(
+        {
+            "analysis_session": inputs["analysis_session"],
+            "analysis_handoff_bundle": inputs["handoff_bundle"],
+            "analysis_results": inputs["module_results"],
+            "main_llm": writer,
+            "debug": {},
+        }
+    )
+
+    assert writer.calls
+    assert result["analysis_report_generated"] is True
+    assert result["analysis_report"]["title"] == "石头科技可下载报告"
+    assert "报告正文已由写作模型面向读者重写" in result["analysis_report"]["preview"]
 
 
 def test_generate_analysis_report_blocks_published_internal_field_leakage():
