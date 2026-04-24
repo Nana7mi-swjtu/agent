@@ -591,6 +591,15 @@ def test_fake_adapters_produce_sources_events_signals_and_payload_refs():
     assert payload["readerPacket"]["executiveSummary"]["headline"]
     assert payload["readerPacket"]["evidenceReferences"]
     assert payload["readerPacket"]["visualSummaries"]
+    assert payload["readerPacket"]["factTableRefs"]
+    assert payload["readerPacket"]["chartCandidateRefs"]
+    assert payload["readerPacket"]["renderedAssetRefs"]
+    assert payload["factTables"]
+    assert payload["chartCandidates"]
+    assert payload["renderedAssets"]
+    opportunity_table = next(item for item in payload["factTables"] if item["tableId"] == "opportunity_themes")
+    assert opportunity_table["rows"][0]["traceRefs"]["sourceIds"]
+    assert opportunity_table["rows"][0]["traceRefs"]["signalIds"]
     source_ids = {item["id"] for item in payload["sources"]}
     for event in payload["events"]:
         assert event["source_document_id"] in source_ids
@@ -640,8 +649,13 @@ def test_document_handoff_payload_contains_sections_citations_and_evidence():
     assert handoff["readerPacket"]["schemaVersion"] == "robotics_reader_packet.v1"
     assert handoff["evidenceReferences"]
     assert handoff["visualSummaries"]
+    assert handoff["factTables"]
+    assert handoff["chartCandidates"]
+    assert handoff["renderedAssets"]
     first_theme = handoff["opportunitySections"][0]
     assert handoff["citationMap"]["themes"][first_theme["id"]]["sourceIds"]
+    assert handoff["citationMap"]["factTables"]["opportunity_themes"]["sourceIds"]
+    assert handoff["citationMap"]["chartCandidates"]["chart_opportunity_theme_strength"]["sourceTableId"] == "opportunity_themes"
     assert handoff["compactMarkdown"].startswith("# 石头科技风险与机会洞察简报")
 
 
@@ -655,6 +669,10 @@ def test_document_handoff_handles_empty_sections_and_metadata_limitations():
     assert empty_result.status == "no_evidence"
     assert not empty_result.opportunities
     assert not empty_result.risks
+    assert empty_result.fact_tables
+    empty_tables = {item["tableId"]: item for item in empty_result.fact_tables}
+    assert empty_tables["opportunity_themes"]["rows"][0]["emptyState"] is True
+    assert empty_tables["risk_themes"]["rows"][0]["emptyState"] is True
     empty_section_by_id = {section["id"]: section for section in empty_handoff["recommendedSections"]}
     assert empty_section_by_id["opportunities"].get("emptyState") == "未发现高置信度机会信号。"
     assert empty_section_by_id["risks"].get("emptyState") == "未发现高置信度风险信号。"
@@ -677,6 +695,23 @@ def test_document_handoff_handles_empty_sections_and_metadata_limitations():
 
     assert handoff["evidenceTable"][0]["metadataOnlyNote"] == "公告正文提取受限"
     assert handoff["evidenceTable"][0]["sourceId"] == "src_meta_001"
+
+
+def test_rendered_assets_include_png_data_urls_and_traceable_chart_links():
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169"),
+        adapters=[
+            GovPolicyAdapter(documents=[_policy_doc()]),
+            CninfoAnnouncementAdapter(documents=[_announcement_doc()]),
+        ],
+    )
+
+    asset = result.rendered_assets[0]
+
+    assert asset["contentType"] == "image/png"
+    assert asset["chartId"]
+    assert asset["sourceTableId"]
+    assert asset["renderPayload"]["dataUrl"].startswith("data:image/png;base64,")
 
 
 def test_subagent_input_normalizes_upstream_evidence_into_request_context():
@@ -803,6 +838,22 @@ def test_reader_writer_can_render_module_brief_from_reader_packet():
               ]
             },
             {
+              "id": "opportunities",
+              "title": "机会信号",
+              "blocks": [
+                {
+                  "type": "tables",
+                  "items": [
+                    {
+                      "tableId": "opportunity_themes",
+                      "title": "机会主题",
+                      "readerSummary": "优先查看结构化表格中的机会主线排序。"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
               "id": "evidence",
               "title": "证据来源",
               "blocks": [
@@ -810,6 +861,7 @@ def test_reader_writer_can_render_module_brief_from_reader_packet():
                   "type": "evidence",
                   "items": [
                     {
+                      "referenceId": "reader_evidence_1",
                       "title": "关于推动智能制造和机器人应用场景建设的政策",
                       "readerSummary": "该政策用于支撑行业需求扩张判断。"
                     }
@@ -830,7 +882,72 @@ def test_reader_writer_can_render_module_brief_from_reader_packet():
 
     assert writer.calls
     assert "优先跟踪政策与设备更新主线" in result.brief_markdown
+    assert "优先查看结构化表格中的机会主线排序" in result.brief_markdown
     assert "关于推动智能制造和机器人应用场景建设的政策" in result.brief_markdown
+
+
+def test_reader_writer_rejects_unsupported_table_and_uncited_evidence():
+    writer = _FakeReaderWriter(
+        """
+        {
+          "sections": [
+            {
+              "id": "executive_summary",
+              "title": "执行摘要",
+              "blocks": [
+                {
+                  "type": "paragraph",
+                  "text": "这是凭空编造的结论。"
+                }
+              ]
+            },
+            {
+              "id": "opportunities",
+              "title": "机会信号",
+              "blocks": [
+                {
+                  "type": "tables",
+                  "items": [
+                    {
+                      "tableId": "invented_table",
+                      "title": "不存在的表格",
+                      "readerSummary": "这里引用了不存在的结构化表格。"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "evidence",
+              "title": "证据来源",
+              "blocks": [
+                {
+                  "type": "evidence",
+                  "items": [
+                    {
+                      "title": "不存在的来源",
+                      "readerSummary": "没有任何引用标识。"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """
+    )
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="优必选", stock_code="09880"),
+        adapters=[GovPolicyAdapter(documents=[_policy_doc()])],
+        reader_writer=writer,
+    )
+
+    assert writer.calls
+    assert "这是凭空编造的结论" not in result.brief_markdown
+    assert "不存在的表格" not in result.brief_markdown
+    assert "结构化表格" in result.brief_markdown
+    assert "机会主题" in result.brief_markdown
 
 
 def test_robotics_subagent_failure_after_run_creation_is_persisted(db_session):

@@ -29,6 +29,8 @@ from app.agent.graph.nodes import (
 )
 from app.agent.reporting import (
     ReportContributionValidationError,
+    build_robotics_domain_analysis,
+    build_robotics_report_contribution,
     generate_analysis_report,
     generate_analysis_report_from_module_artifacts,
     normalize_visual_asset,
@@ -754,11 +756,62 @@ def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
                 "summary": {
                     "opportunity": "政策和订单侧存在增长信号。",
                     "risk": "竞争和招投标节奏存在波动。",
-                }
+                },
+                "opportunities": [{"id": "sig_policy_001", "source_ids": ["src_policy_001"]}],
+                "events": [{"id": "evt_policy_001", "source_document_id": "src_policy_001"}],
             },
             "documentHandoff": {
                 "title": "石头科技风险机会简报",
                 "executiveSummary": {"headline": "政策与订单是当前主线。"},
+                "readerPacket": {
+                    "schemaVersion": "robotics_reader_packet.v1",
+                    "executiveSummary": {"headline": "政策与订单是当前主线。"},
+                    "evidenceReferences": [
+                        {
+                            "id": "evidence_policy_001",
+                            "title": "机器人产业支持政策",
+                            "readerSummary": "该政策用于支撑机会侧判断。",
+                        }
+                    ],
+                    "visualSummaries": [
+                        {
+                            "id": "visual_theme_001",
+                            "title": "机会主题强度分布",
+                            "caption": "用于比较当前机会主线的相对强弱。",
+                        }
+                    ],
+                },
+                "factTables": [
+                    {
+                        "tableId": "opportunity_themes",
+                        "title": "机会主题",
+                        "columns": [{"key": "theme", "label": "主题"}],
+                        "rows": [{"rowId": "opp_01", "cells": {"theme": "政策与设备更新"}}],
+                    }
+                ],
+                "chartCandidates": [
+                    {
+                        "chartId": "chart_theme_001",
+                        "sourceTableId": "opportunity_themes",
+                        "chartType": "bar",
+                        "title": "机会主题强度分布",
+                        "caption": "用于比较当前机会主线的相对强弱。",
+                        "interpretationBoundary": "图中分值用于相对排序。",
+                        "series": [{"label": "政策与设备更新", "value": 88}],
+                    }
+                ],
+                "renderedAssets": [
+                    {
+                        "assetId": "asset_chart_theme_001",
+                        "chartId": "chart_theme_001",
+                        "sourceTableId": "opportunity_themes",
+                        "contentType": "image/png",
+                        "title": "机会主题强度分布",
+                        "caption": "用于比较当前机会主线的相对强弱。",
+                        "altText": "机会主题强度分布",
+                        "renderPayload": {"dataUrl": "data:image/png;base64,ZmFrZQ=="},
+                    }
+                ],
                 "evidenceReferences": [
                     {
                         "id": "evidence_policy_001",
@@ -807,15 +860,27 @@ def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
     assert bundle["sharedInputSummary"]["enterpriseName"] == "石头科技"
     assert bundle["moduleRunIds"]["robotics_risk"] == "run-robotics-001"
     assert bundle["documentHandoffs"]["robotics_risk"]["title"] == "石头科技风险机会简报"
+    assert bundle["moduleReaderPackets"]["robotics_risk"]["schemaVersion"] == "robotics_reader_packet.v1"
+    assert bundle["moduleTabularArtifacts"]["robotics_risk"]["factTables"][0]["tableId"] == "opportunity_themes"
     assert bundle["limitations"] == ["公告样本有限"]
     assert result["analysis_results"]["robotics_risk"]["domainAnalysis"]["moduleId"] == "robotics_risk"
     assert result["analysis_results"]["robotics_risk"]["reportContribution"]["moduleId"] == "robotics_risk"
+    assert result["analysis_results"]["robotics_risk"]["readerPacket"]["schemaVersion"] == "robotics_reader_packet.v1"
+    assert result["analysis_results"]["robotics_risk"]["evidenceReferences"][0]["title"] == "机器人产业支持政策"
+    assert result["analysis_results"]["robotics_risk"]["factTables"][0]["tableId"] == "opportunity_themes"
+    assert result["analysis_results"]["robotics_risk"]["chartCandidates"][0]["chartId"] == "chart_theme_001"
+    assert result["analysis_results"]["robotics_risk"]["renderedAssets"][0]["assetId"] == "asset_chart_theme_001"
+    assert result["analysis_results"]["robotics_risk"]["visualSummaries"][0]["title"] == "机会主题强度分布"
+    assert result["analysis_results"]["robotics_risk"]["result"]["events"][0]["id"] == "evt_policy_001"
     assert result["analysis_report_generated"] is False
     assert result["analysis_report"] == {}
     assert result["analysis_module_artifacts"][0]["moduleId"] == "robotics_risk"
     assert result["analysis_module_artifacts"][0]["moduleRunId"] == "run-robotics-001"
     assert result["analysis_module_artifacts"][0]["executiveSummary"]["headline"] == "政策与订单是当前主线。"
     assert result["analysis_module_artifacts"][0]["evidenceReferences"][0]["title"] == "机器人产业支持政策"
+    assert result["analysis_module_artifacts"][0]["factTables"][0]["tableId"] == "opportunity_themes"
+    assert result["analysis_module_artifacts"][0]["chartCandidates"][0]["chartId"] == "chart_theme_001"
+    assert result["analysis_module_artifacts"][0]["renderedAssets"][0]["assetId"] == "asset_chart_theme_001"
     assert result["analysis_module_artifacts"][0]["visualSummaries"][0]["title"] == "机会主题强度分布"
     assert result["analysis_report_request"]["moduleArtifactIds"] == [
         result["analysis_module_artifacts"][0]["artifactId"]
@@ -919,6 +984,24 @@ def _basic_report_inputs():
                     "moduleId": "robotics_risk",
                     "domainOutputs": [{"id": "domain_policy_order", "summary": "政策支持和订单兑现节奏需要同步跟踪。"}],
                     "evidence": [{"id": "source_policy_001", "summary": "公开政策文件提及机器人应用支持。"}],
+                },
+                "documentHandoff": {
+                    "factTables": [
+                        {
+                            "tableId": "opportunity_themes",
+                            "title": "机会主题",
+                            "columns": [
+                                {"key": "theme", "label": "主题"},
+                                {"key": "impactScore", "label": "影响分"},
+                            ],
+                            "rows": [
+                                {
+                                    "rowId": "opp_theme_001",
+                                    "cells": {"theme": "政策与设备更新", "impactScore": 88},
+                                }
+                            ],
+                        }
+                    ]
                 },
                 "reportContribution": {
                     "moduleId": "robotics_risk",
@@ -1245,7 +1328,66 @@ def test_generate_analysis_report_from_module_artifacts_prefers_semantic_path():
     assert artifact["document"]["renderStyle"] == "dark_research"
     assert "模块原文分析结果" not in artifact["markdownBody"]
     assert "政策支持与订单兑现存在联动机会" in artifact["markdownBody"]
+    assert "结构化表格" in artifact["markdownBody"]
+    assert "机会主题" in artifact["markdownBody"]
+    body_sections = artifact["document"]["pages"][2]["sections"]
+    grounded_tables = next(section for section in body_sections if section["id"] == "grounded_tables")
+    assert any(block["type"] == "table_block" for block in grounded_tables["blocks"])
     assert all(flag["type"] != "degraded_module_text_fallback" for flag in artifact["qualityFlags"])
+
+
+def test_generate_analysis_report_uses_grounded_table_fallback_for_missing_visual_asset():
+    inputs = _basic_report_inputs()
+    module_result = inputs["module_results"]["robotics_risk"]
+    module_result["documentHandoff"] = {
+        "factTables": [
+            {
+                "tableId": "opportunity_themes",
+                "title": "机会主题",
+                "columns": [
+                    {"key": "theme", "label": "主题"},
+                    {"key": "impactScore", "label": "影响分"},
+                ],
+                "rows": [
+                    {
+                        "rowId": "opp_theme_001",
+                        "cells": {"theme": "政策与设备更新", "impactScore": 88},
+                    }
+                ],
+            }
+        ],
+        "chartCandidates": [
+            {
+                "chartId": "chart_theme_001",
+                "sourceTableId": "opportunity_themes",
+                "fallbackTableId": "opportunity_themes",
+                "chartType": "bar",
+                "title": "机会主题强度分布",
+                "caption": "用于比较当前机会主线的相对强弱。",
+                "interpretationBoundary": "图中分值用于相对排序。",
+                "series": [{"label": "政策与设备更新", "value": 88, "rowId": "opp_theme_001"}],
+            }
+        ],
+        "evidenceReferences": [
+            {
+                "id": "source_policy_001",
+                "title": "公开政策文件",
+                "readerSummary": "政策文件提及机器人应用支持方向。",
+            }
+        ],
+    }
+    module_result["domainAnalysis"] = build_robotics_domain_analysis(module_result)
+    module_result["reportContribution"] = build_robotics_report_contribution(
+        module_result,
+        module_result["domainAnalysis"],
+    )
+
+    artifact = generate_analysis_report(**inputs)
+
+    assert artifact["semanticModel"]["visualNarratives"][0]["fallbackTableId"] == "opportunity_themes"
+    assert "机会主题强度分布" in artifact["htmlBody"]
+    assert "图像资产不可用，已按关联结构化表格降级呈现" in artifact["htmlBody"]
+    assert "政策与设备更新" in artifact["htmlBody"]
 
 
 def test_generate_analysis_report_from_module_artifacts_marks_degraded_fallback():
