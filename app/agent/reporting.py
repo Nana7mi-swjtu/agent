@@ -1643,11 +1643,9 @@ def build_analysis_module_artifacts(
         result = module_results.get(module_id)
         if not isinstance(result, dict):
             continue
-        fallback_markdown = _module_fallback_markdown(result)
         display_snapshot = compose_display_markdown(
             result.get("documentHandoff"),
             writer=composer_writer,
-            fallback_markdown=fallback_markdown,
         )
         markdown_body = _clean_text(display_snapshot.get("markdown"))
         if not markdown_body:
@@ -1666,8 +1664,6 @@ def build_analysis_module_artifacts(
                     "status": _clean_text(result.get("status")) or "completed",
                     "contentType": "text/markdown",
                     "markdownBody": markdown_body,
-                    "composedMarkdown": _clean_text(display_snapshot.get("composedMarkdown")),
-                    "fallbackMarkdown": fallback_markdown,
                     "displayComposition": _dict_value(display_snapshot.get("displayComposition")),
                     "executiveSummary": _module_executive_summary(result),
                     "readerPacket": _module_reader_packet(result),
@@ -1777,9 +1773,14 @@ def save_analysis_module_artifacts(
 
 
 def analysis_module_artifact_to_payload(row: AnalysisModuleArtifact, *, include_body: bool = True) -> dict[str, Any]:
+    artifact_json = {
+        key: value
+        for key, value in _dict_value(row.artifact_json).items()
+        if key not in {"composedMarkdown", "fallbackMarkdown"}
+    }
     payload = _drop_empty(
         {
-            **_dict_value(row.artifact_json),
+            **artifact_json,
             "artifactId": row.artifact_id,
             "moduleId": row.module_id,
             "moduleRunId": row.module_run_id,
@@ -1829,7 +1830,8 @@ def generate_analysis_report_from_module_artifacts(
     clean_style = normalize_report_render_style(render_style)
     restored_module_results = _restore_module_results_from_artifact_rows(rows)
     restored_handoff_bundle = _restore_handoff_bundle_from_artifact_rows(rows)
-    if restored_module_results and restored_handoff_bundle.get("enabledModules"):
+    missing_structured_inputs = _missing_structured_report_inputs(rows, restored_module_results)
+    if not missing_structured_inputs and restored_module_results and restored_handoff_bundle.get("enabledModules"):
         artifact = generate_analysis_report(
             analysis_session={
                 "sessionId": rows[0].analysis_session_id or "",
@@ -1844,7 +1846,25 @@ def generate_analysis_report_from_module_artifacts(
         if artifact:
             artifact["sourceModuleArtifactIds"] = [row.artifact_id for row in rows]
     else:
-        artifact = _artifact_report_from_module_text(rows, render_style=clean_style)
+        artifact = _artifact_report_from_missing_structured_inputs(
+            rows,
+            missing_inputs=missing_structured_inputs,
+            render_style=clean_style,
+        )
+    if not artifact:
+        artifact = _artifact_report_from_missing_structured_inputs(
+            rows,
+            missing_inputs=missing_structured_inputs or [
+                {
+                    "artifactId": _clean_text(row.artifact_id),
+                    "moduleId": _clean_text(row.module_id),
+                    "title": _clean_text(row.title) or _clean_text(row.module_id) or "未命名模块",
+                    "reason": "missing_structured_sources",
+                }
+                for row in rows
+            ],
+            render_style=clean_style,
+        )
     artifact["renderStyle"] = clean_style
     artifact["sourceModuleArtifactIds"] = [row.artifact_id for row in rows]
     artifact["downloadMetadata"] = report_download_metadata(_clean_text(artifact.get("reportId")))
@@ -3668,33 +3688,6 @@ def _module_artifact_title(result: dict[str, Any], *, module_id: str) -> str:
         or f"{module_id}分析结果"
     )
 
-
-def _module_fallback_markdown(result: dict[str, Any]) -> str:
-    result_payload = _dict_value(result.get("result"))
-    handoff = _dict_value(result.get("documentHandoff"))
-    body = (
-        _clean_text(result.get("markdownBody"))
-        or _clean_text(result_payload.get("briefMarkdown"))
-        or _clean_text(handoff.get("compactMarkdown"))
-        or _clean_text(result.get("summary"))
-    )
-    if body:
-        return body
-    limitations = result.get("limitations") if isinstance(result.get("limitations"), list) else []
-    if limitations:
-        return "# 模块分析结果\n\n" + "\n".join(f"- {_clean_text(item)}" for item in limitations if _clean_text(item))
-    return ""
-
-
-def _module_text_report_body_from_row(row: AnalysisModuleArtifact) -> str:
-    artifact_payload = _dict_value(row.artifact_json)
-    return (
-        _clean_text(artifact_payload.get("fallbackMarkdown"))
-        or _clean_text(row.text_body)
-        or _clean_text(row.markdown_body)
-    )
-
-
 def _shared_summary_from_module_rows(rows: list[AnalysisModuleArtifact]) -> dict[str, Any]:
     for row in rows:
         metadata = _dict_value(row.metadata_json)
@@ -3755,62 +3748,116 @@ def _restore_handoff_bundle_from_artifact_rows(rows: list[AnalysisModuleArtifact
     )
 
 
-def _artifact_report_from_module_text(
+def _module_has_structured_report_inputs(module_result: dict[str, Any]) -> bool:
+    if _dict_value(module_result.get("documentHandoff")):
+        return True
+    if _dict_value(module_result.get("reportContribution")):
+        return True
+    if _dict_value(module_result.get("domainAnalysis")):
+        return True
+    if _dict_value(module_result.get("readerPacket")):
+        return True
+    for collection_name in ("factTables", "chartCandidates", "renderedAssets", "visualSummaries", "evidenceReferences"):
+        if _list_of_dicts(module_result.get(collection_name)):
+            return True
+    result_payload = _dict_value(module_result.get("result"))
+    if _dict_value(result_payload.get("readerPacket")):
+        return True
+    for collection_name in ("factTables", "chartCandidates", "renderedAssets"):
+        if _list_of_dicts(result_payload.get(collection_name)):
+            return True
+    return False
+
+
+def _missing_structured_report_inputs(
+    rows: list[AnalysisModuleArtifact],
+    restored_module_results: dict[str, dict[str, Any]],
+) -> list[dict[str, str]]:
+    missing_inputs: list[dict[str, str]] = []
+    for row in rows:
+        module_id = _clean_text(row.module_id)
+        title = _clean_text(row.title) or module_id or "未命名模块"
+        module_result = restored_module_results.get(module_id)
+        if not module_result:
+            missing_inputs.append(
+                {
+                    "artifactId": _clean_text(row.artifact_id),
+                    "moduleId": module_id,
+                    "title": title,
+                    "reason": "missing_module_result",
+                }
+            )
+            continue
+        if not _module_has_structured_report_inputs(module_result):
+            missing_inputs.append(
+                {
+                    "artifactId": _clean_text(row.artifact_id),
+                    "moduleId": module_id,
+                    "title": title,
+                    "reason": "missing_structured_sources",
+                }
+            )
+    return missing_inputs
+
+
+def _artifact_report_from_missing_structured_inputs(
     rows: list[AnalysisModuleArtifact],
     *,
+    missing_inputs: list[dict[str, str]],
     render_style: str,
 ) -> dict[str, Any]:
     report_id = _new_report_id()
-    title = "综合分析报告"
-    style_label = _report_style_label(render_style)
+    title = "综合分析报告（结构化输入不足）"
     generated_at = _format_datetime(datetime.utcnow())
     shared_summary = _shared_summary_from_module_rows(rows)
-    toc_items = [row.title for row in rows if row.title]
-    lines = [
-        f"# {title}",
-        "",
-        "## 封面",
-        "",
-        f"- 报告名称：{title}",
-        f"- 生成时间：{generated_at}",
-        f"- 渲染风格：{style_label}",
-        "",
-        "## 目录",
-        "",
-        "- 报告范围",
-        "- 模块分析正文",
-        *[f"- {item}" for item in toc_items],
-        "- 来源与限制",
-        "",
-        "## 报告范围",
-        "",
-        "本报告基于本轮已完成的分析结果整理生成，报告结构由系统固定，渲染风格仅影响最终呈现方式。",
-        "",
-        "## 模块分析正文",
-        "",
+    scope = {
+        "targetCompany": shared_summary.get("enterpriseName", ""),
+        "stockCode": shared_summary.get("stockCode", ""),
+        "timeRange": shared_summary.get("timeRange", ""),
+        "reportGoal": shared_summary.get("reportGoal", ""),
+        "analysisSessionId": rows[0].analysis_session_id,
+        "analysisSessionRevision": int(rows[0].analysis_session_revision or 0),
+        "enabledModules": [row.module_id for row in rows],
+        "moduleRunIds": {row.module_id: row.module_run_id for row in rows if row.module_run_id},
+    }
+    missing_items = [
+        {
+            "title": item.get("title") or item.get("moduleId") or item.get("artifactId") or "未命名模块",
+            "summary": (
+                "缺少可恢复的模块结果元数据，无法进入正式报告生成。"
+                if item.get("reason") == "missing_module_result"
+                else "缺少 `documentHandoff`、报告语义材料、事实表或图表资产等结构化输入，无法进入正式报告生成。"
+            ),
+        }
+        for item in missing_inputs
     ]
-    for row in rows:
-        lines.extend([f"### {row.title}", "", _module_text_report_body_from_row(row), ""])
-    lines.extend(["## 来源与限制", "", "- 本报告仅覆盖当前已完成分析结果；如需更新结论，请先重新执行相关分析。"])
-    markdown_body = "\n".join(lines).strip() + "\n"
-    normalized_sections = [
-        _section(
-            "report_scope",
-            "报告范围",
-            [_paragraph("本报告基于本轮已完成的分析结果整理生成，报告结构由系统固定，渲染风格仅影响最终呈现方式。")],
+    limitations = [
+        _limitation(
+            "report",
+            "所选模块产物不满足正式报告的结构化输入要求。正式报告不会再从展示文本或历史 markdown 快照反向拼接生成。",
+            limitation_id="report_structured_inputs_required",
         ),
-        *[
-            _section(
-                f"module_{row.module_id}",
-                row.title,
-                [_paragraph(_module_text_report_body_from_row(row))],
-            )
-            for row in rows
-        ],
+        _limitation(
+            "report",
+            "如需生成正式报告，请重新运行模块并确保模块产出 `documentHandoff`、事实表、图表资产或其他结构化报告材料。",
+            limitation_id="report_rerun_required",
+        ),
+    ]
+    sections = [
+        _section(
+            "status",
+            "处理结果",
+            [_paragraph("当前未生成正式报告正文。原因是所选模块产物缺少正式报告所需的结构化输入，系统已停止旧的文本拼接回退路径。")],
+        ),
+        _section(
+            "missing_inputs",
+            "缺失项",
+            [_items_block(missing_items, empty_text="未定位到缺失项明细。")],
+        ),
         _section(
             "limitations",
-            "来源与限制",
-            [_items_block([{"title": "边界说明", "summary": "本报告仅覆盖当前已完成分析结果；如需更新结论，请先重新执行相关分析。"}])],
+            "限制说明",
+            [_items_block(limitations)],
         ),
     ]
     artifact = _drop_empty(
@@ -3818,65 +3865,40 @@ def _artifact_report_from_module_text(
             "schemaVersion": REPORT_ARTIFACT_SCHEMA_VERSION,
             "reportId": report_id,
             "title": title,
-            "status": "completed",
+            "status": "degraded",
             "generatedAt": generated_at,
             "renderStyle": render_style,
-            "scope": {
-                "targetCompany": shared_summary.get("enterpriseName", ""),
-                "stockCode": shared_summary.get("stockCode", ""),
-                "timeRange": shared_summary.get("timeRange", ""),
-                "reportGoal": shared_summary.get("reportGoal", ""),
-                "analysisSessionId": rows[0].analysis_session_id,
-                "analysisSessionRevision": int(rows[0].analysis_session_revision or 0),
-                "enabledModules": [row.module_id for row in rows],
-                "moduleRunIds": {row.module_id: row.module_run_id for row in rows if row.module_run_id},
-            },
+            "scope": scope,
             "sectionPlan": [
                 {"id": "cover", "title": "封面"},
                 {"id": "toc", "title": "目录"},
-                {"id": "module_bodies", "title": "模块分析正文"},
-                {"id": "limitations", "title": "来源与限制"},
+                {"id": "status", "title": "处理结果"},
+                {"id": "missing_inputs", "title": "缺失项"},
+                {"id": "limitations", "title": "限制说明"},
             ],
-            "sections": normalized_sections,
-            "document": build_report_document(
-                title=title,
-                scope={
-                    "targetCompany": shared_summary.get("enterpriseName", ""),
-                    "stockCode": shared_summary.get("stockCode", ""),
-                    "timeRange": shared_summary.get("timeRange", ""),
-                    "reportGoal": shared_summary.get("reportGoal", ""),
-                    "analysisSessionId": rows[0].analysis_session_id,
-                    "analysisSessionRevision": int(rows[0].analysis_session_revision or 0),
-                    "enabledModules": [row.module_id for row in rows],
-                    "moduleRunIds": {row.module_id: row.module_run_id for row in rows if row.module_run_id},
-                },
-                body_sections=normalized_sections,
-                render_style=render_style,
-            ),
-            "sourceModuleArtifactIds": [row.artifact_id for row in rows],
+            "sections": sections,
+            "limitations": limitations,
             "qualityFlags": [
-                _quality_flag("degraded_module_text_fallback", "warning", "语义报告素材不可用，已降级为模块原文拼接快照。")
+                _quality_flag("structured_input_missing", "warning", "正式报告所需的结构化输入缺失，已返回明确降级结果。")
             ],
             "rendering": {
                 "style": render_style,
                 "structureLocked": True,
             },
-            "markdownBody": markdown_body,
         }
     )
+    artifact["document"] = build_report_document(
+        title=title,
+        scope=scope,
+        body_sections=sections,
+        render_style=render_style,
+    )
+    markdown_body = render_report_markdown(artifact)
+    artifact["markdownBody"] = markdown_body
     artifact["htmlBody"] = render_report_html(artifact, markdown_body=markdown_body)
     artifact["preview"] = bounded_report_preview(markdown_body)
     artifact["downloadMetadata"] = report_download_metadata(report_id)
     return artifact
-
-
-def _report_style_label(render_style: str) -> str:
-    style_id = normalize_report_render_style(render_style)
-    for style in REPORT_RENDER_STYLES:
-        if style["id"] == style_id:
-            return style["label"]
-    return style_id
-
 
 def _new_report_id() -> str:
     return f"arpt_{uuid.uuid4().hex[:24]}"

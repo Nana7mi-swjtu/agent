@@ -464,15 +464,13 @@ def _build_module_summary(
     executive_summary = handoff_payload.get("executiveSummary", {})
     if isinstance(executive_summary, dict):
         summary_lines = [
+            _clean_text(executive_summary.get("headline")),
             _clean_text(executive_summary.get("opportunity")),
             _clean_text(executive_summary.get("risk")),
         ]
         merged = " ".join(line for line in summary_lines if line)
         if merged:
             return _truncate(merged, limit=300)
-    brief_markdown = _clean_text(result_payload.get("briefMarkdown") or handoff_payload.get("compactMarkdown"))
-    if brief_markdown:
-        return _truncate(brief_markdown, limit=300)
     if limitations:
         return _truncate(limitations[0], limit=300)
     return ""

@@ -313,7 +313,6 @@ class RoboticsInsightResult:
             "sources": [item.to_dict() for item in self.sources],
             "limitations": list(self.limitations),
             "sourceDiagnostics": [item.to_dict() for item in self.source_diagnostics],
-            "briefMarkdown": self.brief_markdown,
             "readerPacket": self.reader_packet.to_dict() if self.reader_packet is not None else {},
             "factTables": [dict(item) for item in self.fact_tables if isinstance(item, dict)],
             "chartCandidates": [dict(item) for item in self.chart_candidates if isinstance(item, dict)],

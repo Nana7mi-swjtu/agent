@@ -141,7 +141,6 @@ def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
             "citationMap": citation_map,
             "limitations": limitations,
             "sourceDiagnostics": [item.to_dict() for item in result.source_diagnostics],
-            "compactMarkdown": _compact_markdown(result.brief_markdown),
         }
     )
 
@@ -426,13 +425,6 @@ def _metadata_only_note(metadata: dict[str, Any]) -> str:
         message = metadata.get("errorMessage") or metadata.get("parseError") or "正文不可用，仅保留元数据。"
         return str(message)
     return ""
-
-
-def _compact_markdown(markdown: str) -> str:
-    lines = [line.rstrip() for line in str(markdown or "").splitlines()]
-    compact = "\n".join(line for line in lines if line.strip())
-    return _compact_text(compact, limit=6000)
-
 
 def _compact_text(value: str, *, limit: int) -> str:
     clean = " ".join(str(value or "").split())
