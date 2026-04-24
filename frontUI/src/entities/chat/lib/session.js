@@ -71,8 +71,6 @@ const normalizeAnalysisModuleArtifact = (raw) => {
     status: String(raw.status || ""),
     contentType: String(raw.contentType || "text/markdown"),
     markdownBody: String(raw.markdownBody || ""),
-    composedMarkdown: String(raw.composedMarkdown || ""),
-    fallbackMarkdown: String(raw.fallbackMarkdown || ""),
     displayComposition: raw.displayComposition && typeof raw.displayComposition === "object" ? raw.displayComposition : null,
     executiveSummary: raw.executiveSummary && typeof raw.executiveSummary === "object" ? raw.executiveSummary : null,
     readerPacket: raw.readerPacket && typeof raw.readerPacket === "object" ? raw.readerPacket : null,
