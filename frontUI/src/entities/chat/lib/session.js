@@ -18,6 +18,8 @@ const normalizeGraph = (raw) => {
 };
 const normalizeGraphMeta = (raw) => (raw && typeof raw === "object" ? raw : null);
 export const normalizeSelectedAnalysisModules = (raw) => normalizeAnalysisModuleIds(raw);
+const normalizeModuleArtifactArray = (raw) =>
+  Array.isArray(raw) ? raw.filter((item) => item && typeof item === "object") : [];
 const normalizeRenderStyles = (raw) =>
   Array.isArray(raw)
     ? raw
@@ -69,7 +71,12 @@ const normalizeAnalysisModuleArtifact = (raw) => {
     status: String(raw.status || ""),
     contentType: String(raw.contentType || "text/markdown"),
     markdownBody: String(raw.markdownBody || ""),
+    executiveSummary: raw.executiveSummary && typeof raw.executiveSummary === "object" ? raw.executiveSummary : null,
+    readerPacket: raw.readerPacket && typeof raw.readerPacket === "object" ? raw.readerPacket : null,
+    evidenceReferences: normalizeModuleArtifactArray(raw.evidenceReferences),
+    visualSummaries: normalizeModuleArtifactArray(raw.visualSummaries),
     analysisSession: raw.analysisSession && typeof raw.analysisSession === "object" ? raw.analysisSession : null,
+    metadata: raw.metadata && typeof raw.metadata === "object" ? raw.metadata : null,
   };
 };
 const normalizeReportGenerationRequest = (raw) => {

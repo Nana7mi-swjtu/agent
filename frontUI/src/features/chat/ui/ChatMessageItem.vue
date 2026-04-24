@@ -76,6 +76,8 @@ const sourcesForMessage = (message) => getMessageSources(message);
 const memoryInfoForMessage = (message) => getMessageMemoryInfo(message);
 const reportForMessage = (message) =>
   message?.analysisReport && typeof message.analysisReport === "object" ? message.analysisReport : null;
+const moduleArtifactForMessage = (message) =>
+  message?.analysisModuleArtifact && typeof message.analysisModuleArtifact === "object" ? message.analysisModuleArtifact : null;
 const reportRequestForMessage = (message) =>
   message?.reportGenerationRequest && typeof message.reportGenerationRequest === "object" ? message.reportGenerationRequest : null;
 const renderStylesForRequest = (request) =>
@@ -122,6 +124,22 @@ const showGroundingMeta = (message) =>
 
 const isPendingAgent = (message) => message?.from === "agent" && Boolean(message?.pending);
 const sourceMeta = (source) => formatSourceMeta(source);
+const moduleEvidenceForMessage = (message) => {
+  const artifact = moduleArtifactForMessage(message);
+  return Array.isArray(artifact?.evidenceReferences) ? artifact.evidenceReferences.slice(0, 5) : [];
+};
+const moduleVisualsForMessage = (message) => {
+  const artifact = moduleArtifactForMessage(message);
+  return Array.isArray(artifact?.visualSummaries) ? artifact.visualSummaries.slice(0, 3) : [];
+};
+const moduleHeadlineForMessage = (message) => {
+  const artifact = moduleArtifactForMessage(message);
+  if (!artifact) return "";
+  return String(artifact?.executiveSummary?.headline || artifact?.readerPacket?.executiveSummary?.headline || "").trim();
+};
+const hasModuleArtifactContext = (message) =>
+  Boolean(moduleArtifactForMessage(message))
+  && (Boolean(moduleHeadlineForMessage(message)) || moduleEvidenceForMessage(message).length > 0 || moduleVisualsForMessage(message).length > 0);
 const graphForMessage = (message) => {
   const graph = message?.graph;
   if (!graph || typeof graph !== "object") return null;
@@ -157,6 +175,37 @@ const graphMetaForMessage = (message) =>
           <p>{{ uiStore.t("assistantWorkingHint") }}</p>
         </div>
         <MarkdownContent v-else :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
+        <div v-if="message.from === 'agent' && !message.pending && hasModuleArtifactContext(message)" class="module-reader-panel">
+          <div v-if="moduleHeadlineForMessage(message)" class="module-reader-headline">{{ moduleHeadlineForMessage(message) }}</div>
+          <div v-if="moduleVisualsForMessage(message).length" class="module-reader-group">
+            <div class="module-reader-title">图表摘要</div>
+            <div class="module-reader-list">
+              <div
+                v-for="item in moduleVisualsForMessage(message)"
+                :key="item.id || `${message.id}_visual_${item.title}`"
+                class="module-reader-card"
+              >
+                <strong>{{ item.title || "图表" }}</strong>
+                <span>{{ item.caption || "图表用于辅助理解当前主题强弱与证据分布。" }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="moduleEvidenceForMessage(message).length" class="module-reader-group">
+            <div class="module-reader-title">证据来源</div>
+            <div class="module-reader-list">
+              <component
+                :is="item.url ? 'a' : 'div'"
+                v-for="item in moduleEvidenceForMessage(message)"
+                :key="item.id || `${message.id}_evidence_${item.title}`"
+                class="module-reader-card"
+                v-bind="item.url ? { href: item.url, target: '_blank', rel: 'noreferrer noopener' } : {}"
+              >
+                <strong>{{ item.title || item.sourceName || "来源" }}</strong>
+                <span>{{ item.readerSummary || item.verificationStatus || item.sourceName || "该来源用于支撑本轮模块判断。" }}</span>
+              </component>
+            </div>
+          </div>
+        </div>
         <div v-if="message.from === 'agent' && !message.pending && reportRequestForMessage(message)" class="analysis-report-preview">
           <div class="analysis-report-title">生成综合报告</div>
           <p class="analysis-report-copy">模块分析结果已完成。它们将作为正式报告的证据与素材输入；下一步仅需选择渲染风格，系统会起草带独立封面、目录和正文结构的正式报告。</p>
@@ -255,6 +304,37 @@ const graphMetaForMessage = (message) =>
       <div class="msg-avatar is-empty"></div>
       <div class="msg-body">
         <MarkdownContent :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
+        <div v-if="message.from === 'agent' && !message.pending && hasModuleArtifactContext(message)" class="module-reader-panel">
+          <div v-if="moduleHeadlineForMessage(message)" class="module-reader-headline">{{ moduleHeadlineForMessage(message) }}</div>
+          <div v-if="moduleVisualsForMessage(message).length" class="module-reader-group">
+            <div class="module-reader-title">图表摘要</div>
+            <div class="module-reader-list">
+              <div
+                v-for="item in moduleVisualsForMessage(message)"
+                :key="item.id || `${message.id}_grouped_visual_${item.title}`"
+                class="module-reader-card"
+              >
+                <strong>{{ item.title || "图表" }}</strong>
+                <span>{{ item.caption || "图表用于辅助理解当前主题强弱与证据分布。" }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="moduleEvidenceForMessage(message).length" class="module-reader-group">
+            <div class="module-reader-title">证据来源</div>
+            <div class="module-reader-list">
+              <component
+                :is="item.url ? 'a' : 'div'"
+                v-for="item in moduleEvidenceForMessage(message)"
+                :key="item.id || `${message.id}_grouped_evidence_${item.title}`"
+                class="module-reader-card"
+                v-bind="item.url ? { href: item.url, target: '_blank', rel: 'noreferrer noopener' } : {}"
+              >
+                <strong>{{ item.title || item.sourceName || "来源" }}</strong>
+                <span>{{ item.readerSummary || item.verificationStatus || item.sourceName || "该来源用于支撑本轮模块判断。" }}</span>
+              </component>
+            </div>
+          </div>
+        </div>
         <div v-if="message.from === 'agent' && !message.pending && reportRequestForMessage(message)" class="analysis-report-preview">
           <div class="analysis-report-title">生成综合报告</div>
           <p class="analysis-report-copy">模块分析结果已完成。它们将作为正式报告的证据与素材输入；下一步仅需选择渲染风格，系统会起草带独立封面、目录和正文结构的正式报告。</p>
@@ -431,6 +511,64 @@ const graphMetaForMessage = (message) =>
   margin-top: 14px;
   padding-left: 14px;
   border-left: 3px solid rgba(31, 157, 116, 0.45);
+}
+
+.module-reader-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(15, 118, 110, 0.12);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(240, 253, 250, 0.9), rgba(255, 255, 255, 0.96)),
+    radial-gradient(circle at top left, rgba(45, 212, 191, 0.08), transparent 42%);
+}
+
+.module-reader-headline {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.module-reader-group {
+  display: grid;
+  gap: 8px;
+}
+
+.module-reader-title {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #0f766e;
+  font-weight: 700;
+}
+
+.module-reader-list {
+  display: grid;
+  gap: 8px;
+}
+
+.module-reader-card {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(15, 118, 110, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
+  text-decoration: none;
+}
+
+.module-reader-card strong {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.module-reader-card span {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-channel);
 }
 
 .analysis-report-title {
