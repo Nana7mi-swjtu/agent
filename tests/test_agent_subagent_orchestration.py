@@ -27,8 +27,10 @@ from app.agent.graph.nodes import (
     report_generation_node,
     search_subagent_node,
 )
+from app.agent.display_composition import DISPLAY_COMPOSITION_PROMPT_VERSION, load_display_composition_prompt
 from app.agent.reporting import (
     ReportContributionValidationError,
+    build_analysis_module_artifacts,
     build_robotics_domain_analysis,
     build_robotics_report_contribution,
     generate_analysis_report,
@@ -938,6 +940,107 @@ def test_analysis_modules_node_passes_main_llm_to_module_runtime_input(monkeypat
     assert captured["reader_writer"] is writer
 
 
+def test_build_analysis_module_artifacts_uses_fixed_prompt_and_composed_snapshot():
+    writer = _FakeReportWriter(
+        "# 石头科技风险与机会洞察简报\n\n## 执行摘要\n\n政策与订单节奏需要联动跟踪。\n\n{{table:opportunity_themes}}\n\n## 关键图表\n\n{{asset:asset_chart_theme_001}}"
+    )
+    artifacts = build_analysis_module_artifacts(
+        analysis_session={"sessionId": "asess_display_001", "revision": 2, "enabledModules": ["robotics_risk"]},
+        module_results={
+            "robotics_risk": {
+                "moduleId": "robotics_risk",
+                "displayName": "机器人风险机会洞察",
+                "status": "done",
+                "runId": "run-display-001",
+                "summary": "政策与订单节奏需要联动跟踪。",
+                "result": {"briefMarkdown": "# 旧版模块 markdown\n\n旧版兜底正文。"},
+                "documentHandoff": {
+                    "title": "石头科技风险与机会洞察简报",
+                    "executiveSummary": {
+                        "headline": "政策与订单是当前主线。",
+                        "opportunity": "政策支持改善需求预期。",
+                        "risk": "订单兑现仍需持续核验。",
+                    },
+                    "factTables": [
+                        {
+                            "tableId": "opportunity_themes",
+                            "title": "机会主题",
+                            "columns": [{"key": "theme", "label": "主题"}],
+                            "rows": [{"rowId": "opp_01", "cells": {"theme": "政策与设备更新"}}],
+                        }
+                    ],
+                    "renderedAssets": [
+                        {
+                            "assetId": "asset_chart_theme_001",
+                            "chartId": "chart_theme_001",
+                            "sourceTableId": "opportunity_themes",
+                            "contentType": "image/png",
+                            "title": "机会主题强度分布",
+                            "caption": "用于比较当前机会主线的相对强弱。",
+                            "renderPayload": {"dataUrl": "data:image/png;base64,ZmFrZQ=="},
+                        }
+                    ],
+                    "sectionResources": {
+                        "opportunities": {
+                            "tableIds": ["opportunity_themes"],
+                            "assetIds": ["asset_chart_theme_001"],
+                        }
+                    },
+                },
+            }
+        },
+        composer_writer=writer,
+    )
+
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert writer.calls
+    assert writer.calls[0][0]["content"] == load_display_composition_prompt()
+    assert artifact["markdownBody"] == artifact["composedMarkdown"]
+    assert "{{table:opportunity_themes}}" in artifact["markdownBody"]
+    assert "{{asset:asset_chart_theme_001}}" in artifact["markdownBody"]
+    assert artifact["fallbackMarkdown"] == "# 旧版模块 markdown\n\n旧版兜底正文。"
+    assert artifact["displayComposition"]["mode"] == "composed"
+    assert artifact["displayComposition"]["promptVersion"] == DISPLAY_COMPOSITION_PROMPT_VERSION
+
+
+def test_build_analysis_module_artifacts_falls_back_when_composed_snapshot_is_invalid():
+    writer = _FakeReportWriter(
+        "# 石头科技风险与机会洞察简报\n\nmoduleId=robotics_risk\n\n{{table:missing_table}}"
+    )
+    artifacts = build_analysis_module_artifacts(
+        analysis_session={"sessionId": "asess_display_002", "revision": 3, "enabledModules": ["robotics_risk"]},
+        module_results={
+            "robotics_risk": {
+                "moduleId": "robotics_risk",
+                "displayName": "机器人风险机会洞察",
+                "status": "done",
+                "runId": "run-display-002",
+                "result": {"briefMarkdown": "# 旧版模块 markdown\n\n旧版兜底正文。"},
+                "documentHandoff": {
+                    "title": "石头科技风险与机会洞察简报",
+                    "factTables": [
+                        {
+                            "tableId": "opportunity_themes",
+                            "title": "机会主题",
+                            "columns": [{"key": "theme", "label": "主题"}],
+                            "rows": [{"rowId": "opp_01", "cells": {"theme": "政策与设备更新"}}],
+                        }
+                    ],
+                },
+            }
+        },
+        composer_writer=writer,
+    )
+
+    artifact = artifacts[0]
+    assert artifact["markdownBody"] == "# 旧版模块 markdown\n\n旧版兜底正文。"
+    assert artifact["fallbackMarkdown"] == "# 旧版模块 markdown\n\n旧版兜底正文。"
+    assert artifact["displayComposition"]["mode"] == "fallback_markdown"
+    assert "blocked_internal_field" in artifact["displayComposition"]["validationErrors"]
+    assert "unknown_table:missing_table" in artifact["displayComposition"]["validationErrors"]
+
+
 def test_report_contribution_traceability_validation_rejects_unknown_refs():
     contribution = {
         "findings": [
@@ -1314,7 +1417,8 @@ def test_generate_analysis_report_from_module_artifacts_prefers_semantic_path():
         title="机器人政策与订单分析",
         status="completed",
         content_type="text/markdown",
-        markdown_body="# 机器人政策与订单分析\n\n模块原文分析结果。",
+        markdown_body="# 石头科技风险与机会洞察简报\n\n## 执行摘要\n\n展示快照只用于前端展示。\n\n{{table:opportunity_themes}}",
+        artifact_json={"fallbackMarkdown": "# 机器人政策与订单分析\n\n模块原文分析结果。"},
         metadata_json={
             "displayName": "机器人风险机会洞察",
             "moduleResult": inputs["module_results"]["robotics_risk"],
@@ -1327,6 +1431,8 @@ def test_generate_analysis_report_from_module_artifacts_prefers_semantic_path():
     assert artifact["rendering"]["style"] == "dark_research"
     assert artifact["document"]["renderStyle"] == "dark_research"
     assert "模块原文分析结果" not in artifact["markdownBody"]
+    assert "展示快照只用于前端展示" not in artifact["markdownBody"]
+    assert "{{table:opportunity_themes}}" not in artifact["markdownBody"]
     assert "政策支持与订单兑现存在联动机会" in artifact["markdownBody"]
     assert "结构化表格" in artifact["markdownBody"]
     assert "机会主题" in artifact["markdownBody"]
