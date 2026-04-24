@@ -42,6 +42,7 @@ def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
         if reader_packet is not None
         else []
     )
+    section_resources = _section_resources(fact_tables=fact_tables, rendered_assets=rendered_assets)
     citation_map = _citation_map(
         opportunities=result.opportunities,
         risks=result.risks,
@@ -86,6 +87,7 @@ def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
                         executive_summary.get("opportunity", ""),
                         executive_summary.get("risk", ""),
                     ],
+                    "resourceRefs": section_resources.get("executive_summary", {}),
                 },
                 {
                     "id": "opportunities",
@@ -93,6 +95,7 @@ def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
                     "title": "机会信号",
                     "items": opportunity_items,
                     "emptyState": "" if opportunity_items else "未发现高置信度机会信号。",
+                    "resourceRefs": section_resources.get("opportunities", {}),
                 },
                 {
                     "id": "risks",
@@ -100,6 +103,7 @@ def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
                     "title": "风险信号",
                     "items": risk_items,
                     "emptyState": "" if risk_items else "未发现高置信度风险信号。",
+                    "resourceRefs": section_resources.get("risks", {}),
                 },
                 {
                     "id": "visuals",
@@ -107,6 +111,7 @@ def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
                     "title": "图表摘要",
                     "items": visual_summaries,
                     "emptyState": "" if visual_summaries else "暂无可展示图表摘要。",
+                    "resourceRefs": section_resources.get("key_visuals", {}),
                 },
                 {
                     "id": "evidence",
@@ -114,6 +119,7 @@ def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
                     "title": "证据与引用",
                     "items": evidence_references or evidence_rows,
                     "emptyState": "" if evidence_references or evidence_rows else "暂无可引用证据。",
+                    "resourceRefs": section_resources.get("evidence", {}),
                 },
                 {
                     "id": "limitations",
@@ -131,6 +137,7 @@ def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
             "evidenceTable": evidence_rows,
             "evidenceReferences": evidence_references,
             "visualSummaries": visual_summaries,
+            "sectionResources": section_resources,
             "citationMap": citation_map,
             "limitations": limitations,
             "sourceDiagnostics": [item.to_dict() for item in result.source_diagnostics],
@@ -243,6 +250,53 @@ def _evidence_rows(sources: list[SourceDocument], events: list[InsightEvent]) ->
             )
         )
     return rows
+
+
+def _section_resources(
+    *,
+    fact_tables: list[dict[str, Any]],
+    rendered_assets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    table_ids = {
+        _clean_text(item.get("tableId"))
+        for item in fact_tables
+        if _clean_text(item.get("tableId"))
+    }
+    assets_by_table: dict[str, list[str]] = {}
+    unassigned_assets: list[str] = []
+    for item in rendered_assets:
+        if not isinstance(item, dict):
+            continue
+        asset_id = _clean_text(item.get("assetId"))
+        if not asset_id:
+            continue
+        table_id = _clean_text(item.get("sourceTableId") or item.get("fallbackTableId"))
+        if table_id:
+            assets_by_table.setdefault(table_id, [])
+            if asset_id not in assets_by_table[table_id]:
+                assets_by_table[table_id].append(asset_id)
+            continue
+        if asset_id not in unassigned_assets:
+            unassigned_assets.append(asset_id)
+
+    def _resource_refs(*resource_table_ids: str) -> dict[str, Any]:
+        clean_table_ids = [table_id for table_id in resource_table_ids if table_id in table_ids]
+        clean_asset_ids: list[str] = []
+        for table_id in clean_table_ids:
+            for asset_id in assets_by_table.get(table_id, []):
+                if asset_id not in clean_asset_ids:
+                    clean_asset_ids.append(asset_id)
+        return _drop_empty({"tableIds": clean_table_ids, "assetIds": clean_asset_ids})
+
+    return _drop_empty(
+        {
+            "executive_summary": _resource_refs("enterprise_snapshot"),
+            "opportunities": _resource_refs("opportunity_themes"),
+            "risks": _resource_refs("risk_themes"),
+            "evidence": _resource_refs("evidence_references", "event_timeline", "source_composition"),
+            "key_visuals": {"assetIds": unassigned_assets} if unassigned_assets else {},
+        }
+    )
 
 
 def _citation_map(

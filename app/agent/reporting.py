@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .display_composition import compose_display_markdown
 from ..models import AnalysisModuleArtifact, AnalysisReport
 
 REPORT_ARTIFACT_SCHEMA_VERSION = "analysis_report_artifact.v1"
@@ -1631,6 +1632,7 @@ def build_analysis_module_artifacts(
     analysis_session: dict[str, Any],
     module_results: dict[str, dict[str, Any]],
     module_ids: list[str] | None = None,
+    composer_writer: Any | None = None,
 ) -> list[dict[str, Any]]:
     session_payload = _dict_value(analysis_session)
     ordered_module_ids = _string_list(module_ids or session_payload.get("enabledModules"))
@@ -1641,7 +1643,13 @@ def build_analysis_module_artifacts(
         result = module_results.get(module_id)
         if not isinstance(result, dict):
             continue
-        markdown_body = _module_markdown_body(result)
+        fallback_markdown = _module_fallback_markdown(result)
+        display_snapshot = compose_display_markdown(
+            result.get("documentHandoff"),
+            writer=composer_writer,
+            fallback_markdown=fallback_markdown,
+        )
+        markdown_body = _clean_text(display_snapshot.get("markdown"))
         if not markdown_body:
             continue
         title = _module_artifact_title(result, module_id=module_id)
@@ -1658,6 +1666,9 @@ def build_analysis_module_artifacts(
                     "status": _clean_text(result.get("status")) or "completed",
                     "contentType": "text/markdown",
                     "markdownBody": markdown_body,
+                    "composedMarkdown": _clean_text(display_snapshot.get("composedMarkdown")),
+                    "fallbackMarkdown": fallback_markdown,
+                    "displayComposition": _dict_value(display_snapshot.get("displayComposition")),
                     "executiveSummary": _module_executive_summary(result),
                     "readerPacket": _module_reader_packet(result),
                     "evidenceReferences": _module_evidence_references(result),
@@ -3658,7 +3669,7 @@ def _module_artifact_title(result: dict[str, Any], *, module_id: str) -> str:
     )
 
 
-def _module_markdown_body(result: dict[str, Any]) -> str:
+def _module_fallback_markdown(result: dict[str, Any]) -> str:
     result_payload = _dict_value(result.get("result"))
     handoff = _dict_value(result.get("documentHandoff"))
     body = (
@@ -3673,6 +3684,15 @@ def _module_markdown_body(result: dict[str, Any]) -> str:
     if limitations:
         return "# 模块分析结果\n\n" + "\n".join(f"- {_clean_text(item)}" for item in limitations if _clean_text(item))
     return ""
+
+
+def _module_text_report_body_from_row(row: AnalysisModuleArtifact) -> str:
+    artifact_payload = _dict_value(row.artifact_json)
+    return (
+        _clean_text(artifact_payload.get("fallbackMarkdown"))
+        or _clean_text(row.text_body)
+        or _clean_text(row.markdown_body)
+    )
 
 
 def _shared_summary_from_module_rows(rows: list[AnalysisModuleArtifact]) -> dict[str, Any]:
@@ -3770,7 +3790,7 @@ def _artifact_report_from_module_text(
         "",
     ]
     for row in rows:
-        lines.extend([f"### {row.title}", "", row.markdown_body or row.text_body or "", ""])
+        lines.extend([f"### {row.title}", "", _module_text_report_body_from_row(row), ""])
     lines.extend(["## 来源与限制", "", "- 本报告仅覆盖当前已完成分析结果；如需更新结论，请先重新执行相关分析。"])
     markdown_body = "\n".join(lines).strip() + "\n"
     normalized_sections = [
@@ -3783,7 +3803,7 @@ def _artifact_report_from_module_text(
             _section(
                 f"module_{row.module_id}",
                 row.title,
-                [_paragraph(row.markdown_body or row.text_body or "")],
+                [_paragraph(_module_text_report_body_from_row(row))],
             )
             for row in rows
         ],

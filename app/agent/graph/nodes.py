@@ -1105,6 +1105,7 @@ def analysis_modules_node(state: AgentState):
             analysis_session=session,
             module_results=results,
             module_ids=enabled_modules,
+            composer_writer=state.get("main_llm"),
         )
         report_request = build_report_generation_request(
             analysis_session=session,

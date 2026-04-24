@@ -14,6 +14,7 @@ import {
 import {
   getModuleEvidence as moduleEvidenceForMessage,
   getModuleFallbackCharts as moduleFallbackChartsForMessage,
+  resolveModuleDisplayMarkdown as moduleDisplayMarkdownForMessage,
   getModuleHeadline as moduleHeadlineForMessage,
   getModuleRenderableAssets as moduleRenderableAssetsForMessage,
   getModuleRenderedAssetSrc as moduleRenderedAssetSrc,
@@ -168,7 +169,7 @@ const graphMetaForMessage = (message) =>
           </div>
           <p>{{ uiStore.t("assistantWorkingHint") }}</p>
         </div>
-        <MarkdownContent v-else :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
+        <MarkdownContent v-else :source="moduleDisplayMarkdownForMessage(message)" :markdown="message.from === 'agent'" class="msg-content" />
         <div v-if="message.from === 'agent' && !message.pending && hasModuleArtifactContext(message)" class="module-reader-panel">
           <div v-if="moduleHeadlineForMessage(message)" class="module-reader-headline">{{ moduleHeadlineForMessage(message) }}</div>
           <div v-if="moduleTablesForMessage(message).length" class="module-reader-group">
@@ -351,7 +352,7 @@ const graphMetaForMessage = (message) =>
     <template v-else>
       <div class="msg-avatar is-empty"></div>
       <div class="msg-body">
-        <MarkdownContent :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
+        <MarkdownContent :source="moduleDisplayMarkdownForMessage(message)" :markdown="message.from === 'agent'" class="msg-content" />
         <div v-if="message.from === 'agent' && !message.pending && hasModuleArtifactContext(message)" class="module-reader-panel">
           <div v-if="moduleHeadlineForMessage(message)" class="module-reader-headline">{{ moduleHeadlineForMessage(message) }}</div>
           <div v-if="moduleTablesForMessage(message).length" class="module-reader-group">
