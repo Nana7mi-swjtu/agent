@@ -560,7 +560,7 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
     assert payload["analysisResults"]["robotics_risk"]["runId"] == "rrisk_parent_001"
     assert "analysisReport" not in payload
     assert payload["analysisModuleArtifacts"][0]["artifactId"].startswith("mart_")
-    assert "政策支持和订单增长" in payload["analysisModuleArtifacts"][0]["markdownBody"]
+    assert payload["analysisModuleArtifacts"][0]["markdownBody"] == "# 石头科技风险机会简报"
     assert payload["analysisReportRequest"]["moduleArtifactIds"] == [
         payload["analysisModuleArtifacts"][0]["artifactId"]
     ]
@@ -720,6 +720,7 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
     assert generated.status_code == 200
     generated_report = generated.get_json()["data"]["analysisReport"]
     assert generated_report["reportId"].startswith("arpt_")
+    assert generated_report["status"] == "degraded"
     assert generated_report["renderStyle"] == "brand_cover"
     assert generated_report["previewUrl"].endswith("/preview?format=pdf")
     detail = client.get(
@@ -731,7 +732,9 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
     artifact_payload = detail.get_json()["data"]["artifact"]
     assert "## 封面" in markdown_body
     assert "## 目录" in markdown_body
-    assert "模块原文分析结果" in markdown_body
+    assert "结构化输入不足" in markdown_body
+    assert "文本拼接回退路径" in markdown_body
+    assert "模块原文分析结果" not in markdown_body
     assert artifact_payload["document"]["pages"][0]["type"] == "cover"
     assert artifact_payload["document"]["pages"][1]["type"] == "table_of_contents"
     assert artifact_payload["document"]["pages"][2]["type"] == "body"
@@ -750,6 +753,7 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
     )
     assert regenerated.status_code == 200
     assert regenerated.get_json()["data"]["analysisReport"]["renderStyle"] == "dark_research"
+    assert regenerated.get_json()["data"]["analysisReport"]["status"] == "degraded"
 
 
 def test_workspace_chat_persists_report_and_supports_downloads(client, db_session, monkeypatch):

@@ -587,7 +587,7 @@ def test_fake_adapters_produce_sources_events_signals_and_payload_refs():
     assert len(payload["sources"]) == 3
     assert payload["events"]
     assert payload["opportunities"]
-    assert payload["briefMarkdown"].startswith("# 石头科技风险与机会洞察简报")
+    assert "briefMarkdown" not in payload
     assert payload["readerPacket"]["executiveSummary"]["headline"]
     assert payload["readerPacket"]["evidenceReferences"]
     assert payload["readerPacket"]["visualSummaries"]
@@ -659,7 +659,7 @@ def test_document_handoff_payload_contains_sections_citations_and_evidence():
     assert handoff["citationMap"]["themes"][first_theme["id"]]["sourceIds"]
     assert handoff["citationMap"]["factTables"]["opportunity_themes"]["sourceIds"]
     assert handoff["citationMap"]["chartCandidates"]["chart_opportunity_theme_strength"]["sourceTableId"] == "opportunity_themes"
-    assert handoff["compactMarkdown"].startswith("# 石头科技风险与机会洞察简报")
+    assert "compactMarkdown" not in handoff
 
 
 def test_document_handoff_handles_empty_sections_and_metadata_limitations():

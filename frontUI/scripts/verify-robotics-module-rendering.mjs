@@ -3,18 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { normalizeChatMessage } from "../src/entities/chat/lib/session.js";
-import {
-  getModuleEvidence,
-  getModuleFallbackCharts,
-  getModuleHeadline,
-  getModuleRenderableAssets,
-  getModuleRenderedAssetSrc,
-  getModuleTableCellText,
-  getModuleTableColumns,
-  getModuleTableRows,
-  getModuleTables,
-  hasModuleArtifactContext,
-} from "../src/features/chat/lib/moduleArtifactPreview.js";
+import { resolveModuleDisplayMarkdown } from "../src/features/chat/lib/moduleArtifactPreview.js";
 
 const root = resolve(import.meta.dirname, "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
@@ -26,10 +15,17 @@ const message = normalizeChatMessage({
   analysisModuleArtifact: {
     artifactId: "artifact_robotics_001",
     moduleId: "robotics_risk",
-    executiveSummary: { headline: "政策与订单是当前主线。" },
-    evidenceReferences: [
-      { id: "evidence_001", title: "公开政策文件", readerSummary: "该政策用于支撑机会侧判断。" },
-    ],
+    markdownBody: [
+      "# 机器人行业风险机会分析",
+      "",
+      "## 机会判断",
+      "",
+      "政策与订单是当前主线。",
+      "",
+      "{{table:opportunity_themes}}",
+      "",
+      "{{asset:asset_theme_001}}",
+    ].join("\n"),
     factTables: [
       {
         tableId: "opportunity_themes",
@@ -45,91 +41,67 @@ const message = normalizeChatMessage({
           },
         ],
       },
-      {
-        tableId: "risk_themes",
-        title: "风险主题",
-        columns: [{ key: "theme", label: "主题" }],
-        rows: [{ rowId: "risk_001", cells: { theme: "监管与标准门槛" } }],
-      },
-      {
-        tableId: "source_composition",
-        title: "证据来源构成",
-        columns: [{ key: "sourceType", label: "来源类型" }],
-        rows: [{ rowId: "src_001", cells: { sourceType: "政策" } }],
-      },
-      {
-        tableId: "event_timeline",
-        title: "事件时间线",
-        columns: [{ key: "publishedAt", label: "日期" }],
-        rows: [{ rowId: "evt_001", cells: { publishedAt: "2026-04-24" } }],
-      },
-    ],
-    chartCandidates: [
-      {
-        chartId: "chart_theme_001",
-        title: "机会主题强度分布",
-        caption: "比较当前机会主线的相对强弱。",
-      },
-      {
-        chartId: "chart_source_001",
-        title: "证据来源构成",
-        caption: "当前未生成图片资产，保留候选与表格回退。",
-      },
     ],
     renderedAssets: [
       {
         assetId: "asset_theme_001",
         chartId: "chart_theme_001",
         title: "机会主题强度分布",
+        caption: "比较当前机会主线的相对强弱。",
+        interpretationBoundary: "图中分值仅用于相对排序。",
         contentType: "image/png",
         renderPayload: { dataUrl: "data:image/png;base64,ZmFrZQ==" },
       },
-      {
-        assetId: "asset_empty_001",
-        chartId: "chart_unused_001",
-        title: "空图像",
-      },
-    ],
-    visualSummaries: [
-      {
-        id: "visual_source_001",
-        title: "证据来源构成",
-        caption: "来源构成仍可通过说明卡片回退展示。",
-      },
     ],
   },
 });
 
-assert.equal(getModuleHeadline(message), "政策与订单是当前主线。");
-assert.equal(getModuleEvidence(message).length, 1);
-assert.equal(getModuleTables(message).length, 3);
-assert.equal(getModuleTableColumns(getModuleTables(message)[0]).length, 2);
-assert.equal(getModuleTableRows(getModuleTables(message)[0]).length, 1);
-assert.equal(getModuleTableCellText(getModuleTableRows(getModuleTables(message)[0])[0], "impactScore"), "88");
-assert.equal(getModuleRenderableAssets(message).length, 1);
-assert.equal(getModuleRenderedAssetSrc(getModuleRenderableAssets(message)[0]), "data:image/png;base64,ZmFrZQ==");
-assert.equal(getModuleFallbackCharts(message).length, 1);
-assert.equal(getModuleFallbackCharts(message)[0].chartId, "chart_source_001");
-assert.equal(hasModuleArtifactContext(message), true);
+const resolvedMarkdown = resolveModuleDisplayMarkdown(message);
 
-const fallbackOnlyMessage = normalizeChatMessage({
-  id: "m_robotics_fallback",
+assert.match(resolvedMarkdown, /政策与订单是当前主线。/);
+assert.match(resolvedMarkdown, /\*\*机会主题\*\*/);
+assert.match(resolvedMarkdown, /\| 主题 \| 影响分 \|/);
+assert.match(resolvedMarkdown, /\| 政策与设备更新 \| 88 \|/);
+assert.match(resolvedMarkdown, /!\[机会主题强度分布\]\(data:image\/png;base64,ZmFrZQ==\)/);
+assert.match(resolvedMarkdown, /解读边界：图中分值仅用于相对排序。/);
+assert.doesNotMatch(resolvedMarkdown, /\{\{table:/);
+assert.doesNotMatch(resolvedMarkdown, /\{\{asset:/);
+
+const fallbackAssetMessage = normalizeChatMessage({
+  id: "m_robotics_asset_fallback",
   from: "agent",
-  text: "模块结果",
   analysisModuleArtifact: {
     artifactId: "artifact_robotics_002",
     moduleId: "robotics_risk",
-    visualSummaries: [{ id: "visual_001", title: "图表摘要", caption: "回退说明卡片。" }],
+    markdownBody: "## 风险判断\n\n{{asset:asset_risk_001}}",
+    factTables: [
+      {
+        tableId: "risk_themes",
+        title: "风险主题",
+        columns: [{ key: "theme", label: "主题" }],
+        rows: [{ rowId: "risk_001", cells: { theme: "监管与标准门槛" } }],
+      },
+    ],
+    renderedAssets: [
+      {
+        assetId: "asset_risk_001",
+        title: "风险主题强度分布",
+        caption: "当前未生成图片资产，回退到关联表格。",
+        sourceTableId: "risk_themes",
+        fallbackTableId: "risk_themes",
+      },
+    ],
   },
 });
 
-assert.equal(getModuleRenderableAssets(fallbackOnlyMessage).length, 0);
-assert.equal(getModuleFallbackCharts(fallbackOnlyMessage)[0].id, "visual_001");
+const fallbackResolvedMarkdown = resolveModuleDisplayMarkdown(fallbackAssetMessage);
+assert.match(fallbackResolvedMarkdown, /\*\*风险主题\*\*/);
+assert.match(fallbackResolvedMarkdown, /\| 主题 \|/);
+assert.match(fallbackResolvedMarkdown, /\| 监管与标准门槛 \|/);
 
 const componentSource = read("src/features/chat/ui/ChatMessageItem.vue");
-assert.match(componentSource, /module-reader-table/);
-assert.match(componentSource, /module-reader-image/);
-assert.match(componentSource, /结构化表格/);
-assert.match(componentSource, /图表预览/);
+assert.doesNotMatch(componentSource, /module-reader-panel/);
+assert.doesNotMatch(componentSource, /结构化表格/);
+assert.doesNotMatch(componentSource, /图表预览/);
 
-console.log("Robotics module table and visual rendering verified.");
+console.log("Robotics module rendering verified on the single markdown path.");

@@ -996,10 +996,11 @@ def test_build_analysis_module_artifacts_uses_fixed_prompt_and_composed_snapshot
     artifact = artifacts[0]
     assert writer.calls
     assert writer.calls[0][0]["content"] == load_display_composition_prompt()
-    assert artifact["markdownBody"] == artifact["composedMarkdown"]
+    assert artifact["markdownBody"].startswith("# 石头科技风险与机会洞察简报")
     assert "{{table:opportunity_themes}}" in artifact["markdownBody"]
     assert "{{asset:asset_chart_theme_001}}" in artifact["markdownBody"]
-    assert artifact["fallbackMarkdown"] == "# 旧版模块 markdown\n\n旧版兜底正文。"
+    assert "composedMarkdown" not in artifact
+    assert "fallbackMarkdown" not in artifact
     assert artifact["displayComposition"]["mode"] == "composed"
     assert artifact["displayComposition"]["promptVersion"] == DISPLAY_COMPOSITION_PROMPT_VERSION
 
@@ -1034,9 +1035,9 @@ def test_build_analysis_module_artifacts_falls_back_when_composed_snapshot_is_in
     )
 
     artifact = artifacts[0]
-    assert artifact["markdownBody"] == "# 旧版模块 markdown\n\n旧版兜底正文。"
-    assert artifact["fallbackMarkdown"] == "# 旧版模块 markdown\n\n旧版兜底正文。"
-    assert artifact["displayComposition"]["mode"] == "fallback_markdown"
+    assert artifact["markdownBody"] == "# 石头科技风险与机会洞察简报"
+    assert "fallbackMarkdown" not in artifact
+    assert artifact["displayComposition"]["mode"] == "fallback_handoff"
     assert "blocked_internal_field" in artifact["displayComposition"]["validationErrors"]
     assert "unknown_table:missing_table" in artifact["displayComposition"]["validationErrors"]
 
@@ -1439,7 +1440,7 @@ def test_generate_analysis_report_from_module_artifacts_prefers_semantic_path():
     body_sections = artifact["document"]["pages"][2]["sections"]
     grounded_tables = next(section for section in body_sections if section["id"] == "grounded_tables")
     assert any(block["type"] == "table_block" for block in grounded_tables["blocks"])
-    assert all(flag["type"] != "degraded_module_text_fallback" for flag in artifact["qualityFlags"])
+    assert all(flag["type"] != "structured_input_missing" for flag in artifact["qualityFlags"])
 
 
 def test_generate_analysis_report_uses_grounded_table_fallback_for_missing_visual_asset():
@@ -1516,8 +1517,11 @@ def test_generate_analysis_report_from_module_artifacts_marks_degraded_fallback(
 
     artifact = generate_analysis_report_from_module_artifacts([row], render_style="professional")
 
-    assert "模块原文分析结果" in artifact["markdownBody"]
-    assert any(flag["type"] == "degraded_module_text_fallback" for flag in artifact["qualityFlags"])
+    assert artifact["status"] == "degraded"
+    assert "模块原文分析结果" not in artifact["markdownBody"]
+    assert "结构化输入" in artifact["markdownBody"]
+    assert "文本拼接回退路径" in artifact["markdownBody"]
+    assert any(flag["type"] == "structured_input_missing" for flag in artifact["qualityFlags"])
 
 
 def test_generate_analysis_report_blocks_published_internal_field_leakage():
