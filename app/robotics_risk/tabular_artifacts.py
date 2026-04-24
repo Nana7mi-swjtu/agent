@@ -180,42 +180,7 @@ def build_fact_tables(
         trace_refs={"sourceIds": all_source_ids, "eventIds": all_event_ids},
     )
 
-    event_frame = pd.DataFrame(
-        [
-            {
-                "rowId": item.id,
-                "publishedAt": _clean_text(item.published_at),
-                "direction": _clean_text(item.direction),
-                "dimension": _clean_text(item.dimension),
-                "title": _clean_text(item.title),
-                "summary": _clean_text(item.summary),
-                "sourceType": _clean_text(item.source_type),
-                "sourceId": _clean_text(item.source_document_id),
-            }
-            for item in events
-        ]
-    )
-    if not event_frame.empty:
-        event_frame["publishedAtSort"] = pd.to_datetime(event_frame["publishedAt"], errors="coerce")
-        event_frame = event_frame.sort_values(by=["publishedAtSort", "title"], ascending=[True, True], na_position="last")
-    event_rows = [
-        {
-            "rowId": _clean_text(record.get("rowId")) or f"event_timeline_{index:02d}",
-            "cells": {
-                "publishedAt": _clean_text(record.get("publishedAt")) or "-",
-                "direction": _clean_text(record.get("direction")) or "-",
-                "dimension": _clean_text(record.get("dimension")) or "-",
-                "title": _clean_text(record.get("title")) or "事件",
-                "summary": _clean_text(record.get("summary")),
-                "sourceType": _clean_text(record.get("sourceType")) or "-",
-            },
-            "traceRefs": {
-                "sourceIds": [_clean_text(record.get("sourceId"))] if _clean_text(record.get("sourceId")) else [],
-                "eventIds": [_clean_text(record.get("rowId"))] if _clean_text(record.get("rowId")) else [],
-            },
-        }
-        for index, record in enumerate(event_frame.to_dict(orient="records") if not event_frame.empty else [], start=1)
-    ]
+    event_rows = _build_event_timeline_rows(events)
     event_timeline = build_fact_table(
         table_id="event_timeline",
         title="事件时间线",
@@ -422,6 +387,73 @@ def render_chart_assets(
             )
         )
     return assets
+
+
+def _build_event_timeline_rows(events: list[InsightEvent]) -> list[dict[str, Any]]:
+    sorted_events = sorted(
+        events,
+        key=lambda item: (_parse_datetime(item.published_at), _clean_text(item.title), _clean_text(item.id)),
+    )
+    rows: list[dict[str, Any]] = []
+    policy_row_index: dict[tuple[str, str], int] = {}
+    for event in sorted_events:
+        source_id = _clean_text(event.source_document_id)
+        published_at = _clean_text(event.published_at)
+        if event.source_type == "gov_policy" and source_id:
+            key = (source_id, published_at)
+            existing_index = policy_row_index.get(key)
+            if existing_index is not None:
+                rows[existing_index] = _merge_policy_timeline_row(rows[existing_index], event)
+                continue
+            policy_row_index[key] = len(rows)
+        rows.append(_build_event_timeline_row(event=event, index=len(rows) + 1))
+    return rows
+
+
+def _build_event_timeline_row(*, event: InsightEvent, index: int) -> dict[str, Any]:
+    row_id = _clean_text(event.id) or f"event_timeline_{index:02d}"
+    source_id = _clean_text(event.source_document_id)
+    event_id = _clean_text(event.id)
+    return {
+        "rowId": row_id,
+        "cells": {
+            "publishedAt": _clean_text(event.published_at) or "-",
+            "direction": _clean_text(event.direction) or "-",
+            "dimension": _clean_text(event.dimension) or "-",
+            "title": _clean_text(event.title) or "事件",
+            "summary": _clean_text(event.summary),
+            "sourceType": _clean_text(event.source_type) or "-",
+        },
+        "traceRefs": {
+            "sourceIds": [source_id] if source_id else [],
+            "eventIds": [event_id] if event_id else [],
+        },
+    }
+
+
+def _merge_policy_timeline_row(row: dict[str, Any], event: InsightEvent) -> dict[str, Any]:
+    cells = dict(row.get("cells") or {})
+    trace_refs = normalize_trace_refs(row.get("traceRefs"))
+    directions = _dedupe([*_split_joined_text(cells.get("direction")), _clean_text(event.direction)])
+    dimensions = _dedupe([*_split_joined_text(cells.get("dimension")), _clean_text(event.dimension)])
+    summaries = _dedupe([*_split_joined_text(cells.get("summary"), delimiter="；"), _clean_text(event.summary)])
+    trace_refs["sourceIds"] = _dedupe([*trace_refs.get("sourceIds", []), _clean_text(event.source_document_id)])
+    trace_refs["eventIds"] = _dedupe([*trace_refs.get("eventIds", []), _clean_text(event.id)])
+    cells["direction"] = " / ".join(directions) if directions else "-"
+    cells["dimension"] = " / ".join(dimensions) if dimensions else "-"
+    cells["summary"] = "；".join(summaries)
+    return {
+        **row,
+        "cells": cells,
+        "traceRefs": trace_refs,
+    }
+
+
+def _split_joined_text(value: Any, *, delimiter: str = "/") -> list[str]:
+    text = _clean_text(value)
+    if not text:
+        return []
+    return _dedupe(part.strip() for part in text.split(delimiter))
 
 
 def _build_theme_table(

@@ -58,14 +58,13 @@ class RoboticsEvidenceRepository:
         self,
         *,
         cache_key: str,
-        keywords: list[str],
         source_scopes: list[str] | None = None,
         matched_segments: list[str] | None = None,
         policy_domains: list[str] | None = None,
         published_since: datetime | None,
     ) -> list[RoboticsPolicyDocument]:
         stmt = select(RoboticsPolicyDocument).where(RoboticsPolicyDocument.status.notin_(NEGATIVE_STATUSES))
-        stmt = stmt.where(_policy_lookup_filter(cache_key=cache_key, keywords=keywords))
+        stmt = stmt.where(RoboticsPolicyDocument.cache_key == cache_key)
         if published_since is not None:
             stmt = stmt.where(
                 or_(
@@ -531,15 +530,6 @@ def bidding_row_to_source_document(row: RoboticsBiddingDocument) -> SourceDocume
         relevance_scope=relevance_scope,
         metadata=metadata,
     )
-
-
-def _policy_lookup_filter(*, cache_key: str, keywords: list[str]):
-    clauses = [RoboticsPolicyDocument.cache_key == cache_key]
-    for keyword in _clean_values(keywords):
-        pattern = f"%{keyword}%"
-        clauses.append(RoboticsPolicyDocument.title.like(pattern))
-        clauses.append(RoboticsPolicyDocument.content_text.like(pattern))
-    return or_(*clauses)
 
 
 def _policy_row_matches_metadata(
