@@ -173,6 +173,9 @@ def normalize_visual_asset(value: Any, *, module_id: str) -> dict[str, Any]:
             "schemaVersion": VISUAL_ASSET_SCHEMA_VERSION,
             "assetId": asset_id,
             "moduleId": _clean_text(payload.get("moduleId") or module_id),
+            "chartId": _clean_text(payload.get("chartId") or payload.get("originatingChartId")),
+            "sourceTableId": _clean_text(payload.get("sourceTableId") or payload.get("originatingSourceTableId")),
+            "fallbackTableId": _clean_text(payload.get("fallbackTableId") or payload.get("sourceTableId") or payload.get("originatingSourceTableId")),
             "type": asset_type,
             "subtype": _clean_text(payload.get("subtype")),
             "title": _clean_text(payload.get("title")) or "分析图表",
@@ -221,10 +224,13 @@ def build_robotics_domain_analysis(module_result: dict[str, Any]) -> dict[str, A
     handoff = _dict_value(module_result.get("documentHandoff"))
     module_id = _clean_text(module_result.get("moduleId")) or "robotics_risk"
     evidence = _list_of_dicts(handoff.get("evidenceTable"))
-    evidence_references = _list_of_dicts(handoff.get("evidenceReferences")) or evidence
-    opportunities = _list_of_dicts(handoff.get("opportunitySections"))
-    risks = _list_of_dicts(handoff.get("riskSections"))
-    visuals = _list_of_dicts(handoff.get("visualSummaries"))
+    evidence_references = _module_evidence_references(module_result) or evidence
+    opportunities = _list_of_dicts(handoff.get("opportunitySections")) or _list_of_dicts(result.get("opportunities"))
+    risks = _list_of_dicts(handoff.get("riskSections")) or _list_of_dicts(result.get("risks"))
+    fact_tables = _module_fact_tables(module_result)
+    chart_candidates = _module_chart_candidates(module_result)
+    rendered_assets = _module_rendered_assets(module_result)
+    visuals = rendered_assets or chart_candidates or _module_visual_summaries(module_result)
     return _drop_empty(
         {
             "schemaVersion": DOMAIN_ANALYSIS_SCHEMA_VERSION,
@@ -242,6 +248,8 @@ def build_robotics_domain_analysis(module_result: dict[str, Any]) -> dict[str, A
             "diagnostics": _list_of_dicts(module_result.get("sourceDiagnostics")),
             "modelOutputs": [],
             "visualAssets": _robotics_visual_assets(visuals, module_id=module_id),
+            "factTables": fact_tables,
+            "chartCandidates": chart_candidates,
             "limitations": _normalize_limitations(module_result.get("limitations"), module_id=module_id),
             "sourceReferences": _list_of_dicts(module_result.get("sourceReferences")),
             "rawResult": result,
@@ -252,11 +260,12 @@ def build_robotics_domain_analysis(module_result: dict[str, Any]) -> dict[str, A
 def build_robotics_report_contribution(module_result: dict[str, Any], domain_analysis: dict[str, Any]) -> dict[str, Any]:
     module_id = _clean_text(module_result.get("moduleId")) or "robotics_risk"
     handoff = _dict_value(module_result.get("documentHandoff"))
-    opportunities = _list_of_dicts(handoff.get("opportunitySections"))
-    risks = _list_of_dicts(handoff.get("riskSections"))
+    result = _dict_value(module_result.get("result"))
+    opportunities = _list_of_dicts(handoff.get("opportunitySections")) or _list_of_dicts(result.get("opportunities"))
+    risks = _list_of_dicts(handoff.get("riskSections")) or _list_of_dicts(result.get("risks"))
     evidence = _list_of_dicts(handoff.get("evidenceTable"))
-    evidence_references = _list_of_dicts(handoff.get("evidenceReferences")) or evidence
-    visuals = _list_of_dicts(handoff.get("visualSummaries"))
+    evidence_references = _module_evidence_references(module_result) or evidence
+    visuals = _module_rendered_assets(module_result) or _module_chart_candidates(module_result) or _module_visual_summaries(module_result)
     findings = [
         *_robotics_findings(opportunities, module_id=module_id, kind="opportunity"),
         *_robotics_findings(risks, module_id=module_id, kind="risk"),
@@ -364,6 +373,7 @@ def generate_analysis_report(
     )
     semantic_model["chapterOutline"] = chapter_outline
     sections = _build_semantic_report_sections(semantic_model, chapter_outline=chapter_outline)
+    structured_sections = list(sections)
     published_forbidden_values = _published_forbidden_values(
         enabled_modules=enabled_modules,
         module_run_ids=module_run_ids,
@@ -383,7 +393,7 @@ def generate_analysis_report(
         )
         if writer_result.get("ok"):
             writer_title = _clean_text(writer_result.get("title")) or title
-            sections = _list_of_dicts(writer_result.get("sections"))
+            sections = _merge_structured_sections(_list_of_dicts(writer_result.get("sections")), structured_sections)
             writer_quality_flags.append(_quality_flag("llm_writer", "info", "已使用受约束的报告写作模型润色正文。"))
         else:
             reason = _clean_text(writer_result.get("reason")) or "写作模型输出未通过校验"
@@ -568,6 +578,8 @@ def build_report_semantic_model(
             semantic_limitations.append(semantic)
 
     semantic_limitations = _dedupe_semantic_items(semantic_limitations)
+    fact_tables = _semantic_fact_tables(module_results, blocked_terms=blocked_terms)
+    visual_narratives = _attach_visual_fallback_tables(_dedupe_semantic_items(visual_narratives), fact_tables)
     executive_judgements = _executive_judgements_from_semantics(
         status=status,
         findings=key_findings,
@@ -597,8 +609,9 @@ def build_report_semantic_model(
             "opportunitySignals": _dedupe_semantic_items(opportunity_signals),
             "drivers": _dedupe_semantic_items(drivers),
             "evidenceChains": _dedupe_semantic_items(evidence_chains),
+            "factTables": fact_tables,
             "modelExplanations": _dedupe_semantic_items(model_explanations),
-            "visualNarratives": _dedupe_semantic_items(visual_narratives),
+            "visualNarratives": visual_narratives,
             "recommendations": _dedupe_semantic_items(recommendations),
             "limitations": semantic_limitations,
             "qualityFlags": [],
@@ -704,6 +717,68 @@ def _reader_packet_item(item: dict[str, Any]) -> dict[str, Any]:
             "优先级": _clean_text(item.get("priority")),
         }
     )
+
+
+def _semantic_fact_tables(module_results: list[dict[str, Any]], *, blocked_terms: set[str]) -> list[dict[str, Any]]:
+    tables: list[dict[str, Any]] = []
+    for result in module_results:
+        if not isinstance(result, dict):
+            continue
+        module_id = _clean_text(result.get("moduleId"))
+        display_name = _clean_text(result.get("displayName"))
+        for table in _module_fact_tables(result):
+            if not isinstance(table, dict):
+                continue
+            table_id = _clean_text(table.get("tableId"))
+            columns = [
+                {
+                    "key": _clean_text(item.get("key")),
+                    "label": _reader_text(item.get("label") or item.get("key"), blocked_terms=blocked_terms),
+                }
+                for item in _list_of_dicts(table.get("columns"))[:6]
+                if _clean_text(item.get("key"))
+            ]
+            rows = []
+            for row in _list_of_dicts(table.get("rows"))[:8]:
+                cells = _dict_value(row.get("cells"))
+                rows.append(
+                    _drop_empty(
+                        {
+                            "rowId": _clean_text(row.get("rowId")),
+                            "cells": {
+                                column["key"]: _reader_table_cell(cells.get(column["key"]), blocked_terms=blocked_terms)
+                                for column in columns
+                            },
+                            "emptyState": bool(row.get("emptyState")) or None,
+                        }
+                    )
+                )
+            if not table_id or not columns or not rows:
+                continue
+            tables.append(
+                _drop_empty(
+                    {
+                        "id": f"{module_id}_{table_id}" if module_id else table_id,
+                        "moduleId": module_id,
+                        "displayName": display_name,
+                        "tableId": table_id,
+                        "title": _reader_text(table.get("title") or table_id, blocked_terms=blocked_terms),
+                        "description": _reader_text(table.get("description"), blocked_terms=blocked_terms),
+                        "emptyText": _reader_text(table.get("emptyText"), blocked_terms=blocked_terms),
+                        "columns": columns,
+                        "rows": rows,
+                    }
+                )
+            )
+    return tables
+
+
+def _reader_table_cell(value: Any, *, blocked_terms: set[str]) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    return _reader_text(value, blocked_terms=blocked_terms)
 
 
 def _extract_writer_payload(response: Any) -> dict[str, Any] | None:
@@ -812,6 +887,19 @@ def _validate_written_report(*, title: str, sections: list[dict[str, Any]], forb
     return errors
 
 
+def _merge_structured_sections(written_sections: list[dict[str, Any]], base_sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged = [dict(item) for item in written_sections if isinstance(item, dict)]
+    existing_ids = {_clean_text(item.get("id")) for item in merged}
+    preserve_ids = {"evidence_verification", "grounded_tables", "model_visual_interpretation"}
+    for section in base_sections:
+        if not isinstance(section, dict):
+            continue
+        section_id = _clean_text(section.get("id"))
+        if section_id in preserve_ids and section_id not in existing_ids:
+            merged.append(section)
+    return merged
+
+
 def build_report_chapter_outline(semantic_model: dict[str, Any], *, enabled_modules: list[str]) -> list[dict[str, Any]]:
     selected_modules = set(_string_list(enabled_modules))
     outline: list[dict[str, Any]] = [
@@ -847,6 +935,8 @@ def build_report_chapter_outline(semantic_model: dict[str, Any], *, enabled_modu
         )
     if _list_of_dicts(semantic_model.get("evidenceChains")):
         outline.append({"id": "evidence_verification", "title": "来源与核验", "family": "fixed", "origin": "skeleton"})
+    if _list_of_dicts(semantic_model.get("factTables")):
+        outline.append({"id": "grounded_tables", "title": "结构化表格", "family": "module_driven", "origin": "selected_modules"})
     if _list_of_dicts(semantic_model.get("visualNarratives")) or _list_of_dicts(semantic_model.get("modelExplanations")):
         outline.append(
             {
@@ -930,6 +1020,14 @@ def _build_semantic_report_sections(
             [_evidence_table_block(semantic_model.get("evidenceChains"))],
         )
     )
+    if _list_of_dicts(semantic_model.get("factTables")):
+        sections.append(
+            _section(
+                "grounded_tables",
+                outline_by_id.get("grounded_tables") or "结构化表格",
+                [_table_block(item) for item in _list_of_dicts(semantic_model.get("factTables"))[:4]],
+            )
+        )
     visual_blocks = []
     if _list_of_dicts(semantic_model.get("visualNarratives")):
         visual_blocks.append(_visual_figure_block(semantic_model.get("visualNarratives")))
@@ -1343,6 +1441,7 @@ def _render_report_document_html(document: dict[str, Any], *, title: str) -> str
         ".report-toc li{margin:0 0 10px 0}"
         ".report-items,.report-evidence{margin:0;padding-left:20px}"
         ".report-items li,.report-evidence li{margin:0 0 10px 0}"
+        ".report-table-block{margin:0 0 14px 0}"
         ".report-visual{border:1px solid #d8dee8;border-radius:12px;padding:12px 14px;background:#f8fbff;margin:0 0 12px 0}"
         "img{max-width:100%;height:auto}table{border-collapse:collapse;width:100%}td,th{border:1px solid #d8dee8;padding:6px}"
         "</style></head><body>"
@@ -1445,14 +1544,51 @@ def _render_report_html_block(block: Any) -> str:
             parts.append(f"<li>{html.escape(text)}</li>")
         parts.append("</ul>")
         return "".join(parts)
+    if block_type == "table_block":
+        table = _dict_value(block.get("table"))
+        columns = _list_of_dicts(table.get("columns"))
+        rows = _list_of_dicts(table.get("rows"))
+        if not columns:
+            return ""
+        parts = ["<div class=\"report-table-block\">"]
+        title = _clean_text(block.get("title") or table.get("title"))
+        if title:
+            parts.append(f"<strong>{html.escape(title)}</strong>")
+        parts.append("<table><thead><tr>")
+        for column in columns:
+            label = _clean_text(column.get("label") or column.get("key"))
+            parts.append(f"<th>{html.escape(label)}</th>")
+        parts.append("</tr></thead><tbody>")
+        for row in rows:
+            cells = _dict_value(row.get("cells"))
+            parts.append("<tr>")
+            for column in columns:
+                value = cells.get(_clean_text(column.get("key")))
+                parts.append(f"<td>{html.escape(_clean_text(value) or '-')}</td>")
+            parts.append("</tr>")
+        parts.append("</tbody></table></div>")
+        return "".join(parts)
     if block_type in {"visuals", "visual_figure"}:
         parts: list[str] = []
         for asset in _list_of_dicts(block.get("items")):
             title = _clean_text(asset.get("title")) or "图表"
             caption = _clean_text(asset.get("caption") or asset.get("readerSummary") or asset.get("description"))
             boundary = _clean_text(asset.get("interpretationBoundary"))
+            data_url = _report_pdf_asset_data_url(asset)
+            fallback_table = _visual_fallback_table(asset)
             parts.append("<div class=\"report-visual\">")
             parts.append(f"<strong>{html.escape(title)}</strong>")
+            if data_url:
+                parts.append(
+                    f"<img src=\"{html.escape(data_url, quote=True)}\" alt=\"{html.escape(_clean_text(asset.get('altText')) or title, quote=True)}\">"
+                )
+            elif fallback_table:
+                parts.append("<p>图像资产不可用，已按关联结构化表格降级呈现。</p>")
+                parts.append(_render_report_html_block({"type": "table_block", "table": fallback_table}))
+            else:
+                summary = _clean_text(asset.get("fallbackText")) or caption or boundary or title
+                if summary:
+                    parts.append(f"<p>{html.escape(summary)}</p>")
             if caption:
                 parts.append(f"<p>{html.escape(caption)}</p>")
             if boundary:
@@ -1525,6 +1661,9 @@ def build_analysis_module_artifacts(
                     "executiveSummary": _module_executive_summary(result),
                     "readerPacket": _module_reader_packet(result),
                     "evidenceReferences": _module_evidence_references(result),
+                    "factTables": _module_fact_tables(result),
+                    "chartCandidates": _module_chart_candidates(result),
+                    "renderedAssets": _module_rendered_assets(result),
                     "visualSummaries": _module_visual_summaries(result),
                     "analysisSession": {
                         "sessionId": _clean_text(session_payload.get("sessionId")),
@@ -2093,6 +2232,31 @@ def _report_pdf_segments_from_block(block: Any) -> list[str]:
             verification = _clean_text(item.get("verificationStatus"))
             items.append("<li>" + html.escape(" ".join(part for part in (title, summary, verification) if part)) + "</li>")
         return ["<ul>" + "".join(items) + "</ul>"] if items else ["<p>暂无可引用来源。</p>"]
+    if block_type == "table_block":
+        table = _dict_value(block.get("table"))
+        columns = _list_of_dicts(table.get("columns"))
+        rows = _list_of_dicts(table.get("rows"))
+        if not columns:
+            return []
+        parts = []
+        title = _clean_text(block.get("title") or table.get("title"))
+        if title:
+            parts.append(f"<p><strong>{html.escape(title)}</strong></p>")
+        table_html = ["<table><thead><tr>"]
+        for column in columns:
+            label = _clean_text(column.get("label") or column.get("key"))
+            table_html.append(f"<th>{html.escape(label)}</th>")
+        table_html.append("</tr></thead><tbody>")
+        for row in rows:
+            cells = _dict_value(row.get("cells"))
+            table_html.append("<tr>")
+            for column in columns:
+                value = _clean_text(cells.get(_clean_text(column.get("key")))) or "-"
+                table_html.append(f"<td>{html.escape(value)}</td>")
+            table_html.append("</tr>")
+        table_html.append("</tbody></table>")
+        parts.append("".join(table_html))
+        return parts
     if block_type in {"visuals", "visual_figure"}:
         segments: list[str] = []
         for asset in _list_of_dicts(block.get("items")):
@@ -2100,6 +2264,7 @@ def _report_pdf_segments_from_block(block: Any) -> list[str]:
             caption = _clean_text(asset.get("caption") or asset.get("readerSummary") or asset.get("description"))
             boundary = _clean_text(asset.get("interpretationBoundary"))
             data_url = _report_pdf_asset_data_url(asset)
+            fallback_table = _visual_fallback_table(asset)
             if data_url:
                 parts = [
                     "<figure>",
@@ -2110,6 +2275,23 @@ def _report_pdf_segments_from_block(block: Any) -> list[str]:
                     parts.append(f"<figcaption>{html.escape(figcaption)}</figcaption>")
                 parts.append("</figure>")
                 segments.append("".join(parts))
+            elif fallback_table:
+                fallback_note = " ".join(
+                    part
+                    for part in (
+                        caption or "",
+                        boundary or "",
+                        "图像资产不可用，已按关联结构化表格降级呈现。",
+                    )
+                    if part
+                )
+                segments.append(
+                    "<div class=\"pdf-visual-fallback\">"
+                    f"<p><strong>{html.escape(title)}</strong></p>"
+                    f"<p>{html.escape(fallback_note)}</p>"
+                    "</div>"
+                )
+                segments.extend(_report_pdf_segments_from_block({"type": "table_block", "table": fallback_table}))
             else:
                 summary = caption or boundary or _clean_text(asset.get("fallbackText")) or title
                 segments.append(
@@ -2153,6 +2335,11 @@ def _report_pdf_image_segment(line: str, asset_lookup: dict[str, dict[str, Any]]
         f"<p>{html.escape(fallback)}</p>"
         "</div>"
     )
+
+
+def _visual_fallback_table(item: dict[str, Any]) -> dict[str, Any]:
+    table = _dict_value(item.get("fallbackTable"))
+    return table if _list_of_dicts(table.get("columns")) else {}
 
 
 def _report_pdf_asset_lookup(artifact: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -2398,6 +2585,23 @@ def _append_markdown_block(lines: list[str], block: Any) -> None:
             if support:
                 lines.append(f"  - 支撑关系：{support}")
         lines.append("")
+    elif block_type == "table_block":
+        table = _dict_value(block.get("table"))
+        columns = _list_of_dicts(table.get("columns"))
+        rows = _list_of_dicts(table.get("rows"))
+        if not columns:
+            return
+        title = _clean_text(block.get("title") or table.get("title"))
+        if title:
+            lines.extend([f"**{title}**", ""])
+        header = "| " + " | ".join(_escape_table_markdown(_clean_text(item.get("label") or item.get("key"))) for item in columns) + " |"
+        separator = "| " + " | ".join("---" for _ in columns) + " |"
+        lines.extend([header, separator])
+        for row in rows:
+            cells = _dict_value(row.get("cells"))
+            values = [_escape_table_markdown(_clean_text(cells.get(_clean_text(column.get("key")))) or "-") for column in columns]
+            lines.append("| " + " | ".join(values) + " |")
+        lines.append("")
     elif block_type in {"visuals", "visual_figure"}:
         for asset in block.get("items", []) if isinstance(block.get("items"), list) else []:
             if not isinstance(asset, dict):
@@ -2406,8 +2610,17 @@ def _append_markdown_block(lines: list[str], block: Any) -> None:
             url = _clean_text(asset.get("downloadUrl"))
             alt = _clean_text(asset.get("altText") or title)
             caption = _clean_text(asset.get("caption") or asset.get("readerSummary") or asset.get("description"))
+            fallback_table = _visual_fallback_table(asset)
             if url and str(asset.get("type", "")).lower() == "image":
                 lines.append(f"![{alt}]({url})")
+            elif fallback_table:
+                lines.append(f"- **{title or '图表'}**：{caption or alt or '图像资产不可用，已按关联结构化表格降级呈现。'}")
+                boundary = _clean_text(asset.get("interpretationBoundary"))
+                if boundary:
+                    lines.append(f"  - 解读边界：{boundary}")
+                lines.append("")
+                _append_markdown_block(lines, {"type": "table_block", "table": fallback_table})
+                continue
             else:
                 lines.append(f"- **{title or '图表'}**：{caption or alt}")
                 fallback = _clean_text(asset.get("fallbackText"))
@@ -2548,6 +2761,8 @@ def _semantic_visual_narrative(item: dict[str, Any], *, blocked_terms: set[str])
     title = _reader_text(item.get("title"), blocked_terms=blocked_terms) or "分析图表"
     caption = _reader_text(item.get("caption") or item.get("description"), blocked_terms=blocked_terms)
     render_payload = _dict_value(item.get("renderPayload"))
+    source_table_id = _clean_text(item.get("sourceTableId") or render_payload.get("sourceTableId"))
+    fallback_table_id = _clean_text(item.get("fallbackTableId") or render_payload.get("fallbackTableId") or source_table_id)
     fallback = _reader_text(render_payload.get("text") or render_payload.get("summary") or item.get("inlineContent"), blocked_terms=blocked_terms)
     limitations = _list_of_dicts(item.get("limitations"))
     limitation_text = "；".join(_reader_text(entry.get("summary"), blocked_terms=blocked_terms) for entry in limitations if _reader_text(entry.get("summary"), blocked_terms=blocked_terms))
@@ -2565,8 +2780,39 @@ def _semantic_visual_narrative(item: dict[str, Any], *, blocked_terms: set[str])
             "altText": _reader_text(item.get("altText"), blocked_terms=blocked_terms) or title,
             "interpretationBoundary": boundary,
             "assetRef": _clean_text(item.get("assetId") or item.get("id")),
+            "type": _clean_text(item.get("type")),
+            "contentType": _clean_text(item.get("contentType")),
+            "downloadUrl": _clean_text(item.get("downloadUrl")),
+            "renderPayload": render_payload,
+            "chartId": _clean_text(item.get("chartId")),
+            "sourceTableId": source_table_id,
+            "fallbackTableId": fallback_table_id,
         }
     )
+
+
+def _attach_visual_fallback_tables(items: list[dict[str, Any]], fact_tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    table_lookup = {
+        _clean_text(table.get("tableId")): table
+        for table in fact_tables
+        if isinstance(table, dict) and _clean_text(table.get("tableId"))
+    }
+    enriched: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        fallback_table_id = _clean_text(item.get("fallbackTableId") or item.get("sourceTableId"))
+        fallback_table = table_lookup.get(fallback_table_id)
+        enriched.append(
+            _drop_empty(
+                {
+                    **item,
+                    "fallbackTableId": fallback_table_id,
+                    "fallbackTable": fallback_table,
+                }
+            )
+        )
+    return enriched
 
 
 def _semantic_recommendation(item: dict[str, Any], *, blocked_terms: set[str], grounded_finding_ids: set[str]) -> dict[str, Any]:
@@ -2986,15 +3232,32 @@ def _robotics_recommendations(findings: list[dict[str, Any]], *, module_id: str)
 def _robotics_visual_assets(items: list[dict[str, Any]], *, module_id: str) -> list[dict[str, Any]]:
     assets: list[dict[str, Any]] = []
     for item in items:
-        visual_id = _clean_text(item.get("id"))
+        if not isinstance(item, dict):
+            continue
+        if _clean_text(item.get("assetId")) or _clean_text(item.get("contentType")):
+            assets.append(normalize_visual_asset(item, module_id=module_id))
+            continue
+        visual_id = _clean_text(item.get("id") or item.get("chartId"))
         if not visual_id:
             continue
         render_payload = _dict_value(item.get("renderPayload"))
+        if not render_payload and _clean_text(item.get("chartType")):
+            render_payload = _drop_empty(
+                {
+                    "chartType": _clean_text(item.get("chartType")),
+                    "series": _list_of_dicts(item.get("series")),
+                    "sourceTableId": _clean_text(item.get("sourceTableId")),
+                    "fallbackTableId": _clean_text(item.get("fallbackTableId") or item.get("sourceTableId")),
+                }
+            )
         assets.append(
             normalize_visual_asset(
                 {
                     "assetId": f"{module_id}_{visual_id}",
                     "moduleId": module_id,
+                    "chartId": _clean_text(item.get("chartId")) or visual_id,
+                    "sourceTableId": _clean_text(item.get("sourceTableId")),
+                    "fallbackTableId": _clean_text(item.get("fallbackTableId") or item.get("sourceTableId")),
                     "type": _robotics_visual_asset_type(item),
                     "title": _clean_text(item.get("title")) or "机器人行业图表",
                     "caption": _clean_text(item.get("caption")),
@@ -3041,6 +3304,8 @@ def _robotics_visual_asset_type(item: dict[str, Any]) -> str:
 
 
 def _module_reader_packet(result: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(result.get("readerPacket"), dict) and result.get("readerPacket"):
+        return _dict_value(result.get("readerPacket"))
     handoff = _dict_value(result.get("documentHandoff"))
     if isinstance(handoff.get("readerPacket"), dict) and handoff.get("readerPacket"):
         return _dict_value(handoff.get("readerPacket"))
@@ -3054,16 +3319,65 @@ def _module_executive_summary(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _module_evidence_references(result: dict[str, Any]) -> list[dict[str, Any]]:
+    references = _list_of_dicts(result.get("evidenceReferences"))
+    if references:
+        return references
     handoff = _dict_value(result.get("documentHandoff"))
     references = _list_of_dicts(handoff.get("evidenceReferences"))
+    if references:
+        return references
+    reader_packet = _module_reader_packet(result)
+    references = _list_of_dicts(reader_packet.get("evidenceReferences"))
     if references:
         return references
     return _list_of_dicts(handoff.get("evidenceTable"))
 
 
-def _module_visual_summaries(result: dict[str, Any]) -> list[dict[str, Any]]:
+def _module_fact_tables(result: dict[str, Any]) -> list[dict[str, Any]]:
+    tables = _list_of_dicts(result.get("factTables"))
+    if tables:
+        return tables
     handoff = _dict_value(result.get("documentHandoff"))
-    return _list_of_dicts(handoff.get("visualSummaries"))
+    tables = _list_of_dicts(handoff.get("factTables"))
+    if tables:
+        return tables
+    result_payload = _dict_value(result.get("result"))
+    return _list_of_dicts(result_payload.get("factTables"))
+
+
+def _module_chart_candidates(result: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = _list_of_dicts(result.get("chartCandidates"))
+    if candidates:
+        return candidates
+    handoff = _dict_value(result.get("documentHandoff"))
+    candidates = _list_of_dicts(handoff.get("chartCandidates"))
+    if candidates:
+        return candidates
+    result_payload = _dict_value(result.get("result"))
+    return _list_of_dicts(result_payload.get("chartCandidates"))
+
+
+def _module_rendered_assets(result: dict[str, Any]) -> list[dict[str, Any]]:
+    assets = _list_of_dicts(result.get("renderedAssets"))
+    if assets:
+        return assets
+    handoff = _dict_value(result.get("documentHandoff"))
+    assets = _list_of_dicts(handoff.get("renderedAssets"))
+    if assets:
+        return assets
+    result_payload = _dict_value(result.get("result"))
+    return _list_of_dicts(result_payload.get("renderedAssets"))
+
+
+def _module_visual_summaries(result: dict[str, Any]) -> list[dict[str, Any]]:
+    visuals = _list_of_dicts(result.get("visualSummaries"))
+    if visuals:
+        return visuals
+    handoff = _dict_value(result.get("documentHandoff"))
+    visuals = _list_of_dicts(handoff.get("visualSummaries"))
+    if visuals:
+        return visuals
+    return _list_of_dicts(_module_reader_packet(result).get("visualSummaries"))
 
 
 def _truncate_text(value: str, *, limit: int) -> str:
@@ -3275,6 +3589,16 @@ def _evidence_table_block(items: Any) -> dict[str, Any]:
     return {"type": "evidence_table", "items": _list_of_dicts(items)}
 
 
+def _table_block(table: Any) -> dict[str, Any]:
+    payload = _dict_value(table)
+    return {
+        "type": "table_block",
+        "title": _clean_text(payload.get("title")),
+        "table": payload,
+        "layout": "full_width",
+    }
+
+
 def _visual_block(items: Any) -> dict[str, Any]:
     return {"type": "visuals", "items": _list_of_dicts(items)}
 
@@ -3300,6 +3624,10 @@ def _inline_markdown_to_html(value: str) -> str:
     escaped = html.escape(value)
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
     return escaped
+
+
+def _escape_table_markdown(value: str) -> str:
+    return str(value or "-").replace("|", "\\|").replace("\n", "<br>")
 
 
 def _image_markdown_to_html(line: str) -> str:
