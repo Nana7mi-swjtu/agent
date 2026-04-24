@@ -252,6 +252,10 @@ class RoboticsReaderPacket:
     risks: list[RoboticsReaderTheme] = field(default_factory=list)
     evidence_references: list[RoboticsReaderEvidenceReference] = field(default_factory=list)
     visual_summaries: list[RoboticsReaderVisual] = field(default_factory=list)
+    fact_table_refs: list[str] = field(default_factory=list)
+    chart_candidate_refs: list[str] = field(default_factory=list)
+    rendered_asset_refs: list[str] = field(default_factory=list)
+    interpretation_boundaries: list[str] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -266,6 +270,10 @@ class RoboticsReaderPacket:
                 "risks": [item.to_dict() for item in self.risks],
                 "evidenceReferences": [item.to_dict() for item in self.evidence_references],
                 "visualSummaries": [item.to_dict() for item in self.visual_summaries],
+                "factTableRefs": list(self.fact_table_refs),
+                "chartCandidateRefs": list(self.chart_candidate_refs),
+                "renderedAssetRefs": list(self.rendered_asset_refs),
+                "interpretationBoundaries": list(self.interpretation_boundaries),
                 "limitations": list(self.limitations),
             }
         )
@@ -285,6 +293,9 @@ class RoboticsInsightResult:
     limitations: list[str]
     brief_markdown: str
     reader_packet: RoboticsReaderPacket | None = None
+    fact_tables: list[dict[str, Any]] = field(default_factory=list)
+    chart_candidates: list[dict[str, Any]] = field(default_factory=list)
+    rendered_assets: list[dict[str, Any]] = field(default_factory=list)
     status: str = "done"
     source_diagnostics: list[SourceRetrievalDiagnostic] = field(default_factory=list)
 
@@ -304,5 +315,8 @@ class RoboticsInsightResult:
             "sourceDiagnostics": [item.to_dict() for item in self.source_diagnostics],
             "briefMarkdown": self.brief_markdown,
             "readerPacket": self.reader_packet.to_dict() if self.reader_packet is not None else {},
+            "factTables": [dict(item) for item in self.fact_tables if isinstance(item, dict)],
+            "chartCandidates": [dict(item) for item in self.chart_candidates if isinstance(item, dict)],
+            "renderedAssets": [dict(item) for item in self.rendered_assets if isinstance(item, dict)],
         }
         return _drop_empty(payload)

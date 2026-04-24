@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from flask import has_app_context
 
+from ...analysis_artifacts import normalize_chart_candidate, normalize_fact_table, normalize_rendered_asset
 from ...robotics_risk import run_robotics_risk_subagent
 from ..reporting import (
     build_robotics_domain_analysis,
@@ -213,6 +214,15 @@ def normalize_analysis_module_output(
     handoff_payload = payload.get("documentHandoff", {})
     if not isinstance(handoff_payload, dict):
         handoff_payload = {}
+    reader_packet = _module_reader_packet_payload(handoff_payload=handoff_payload, result_payload=result_payload)
+    evidence_references = _module_evidence_reference_payloads(
+        handoff_payload=handoff_payload,
+        reader_packet=reader_packet,
+    )
+    fact_tables = _module_fact_table_payloads(handoff_payload=handoff_payload, result_payload=result_payload)
+    chart_candidates = _module_chart_candidate_payloads(handoff_payload=handoff_payload, result_payload=result_payload)
+    rendered_assets = _module_rendered_asset_payloads(handoff_payload=handoff_payload, result_payload=result_payload)
+    visual_summaries = _module_visual_summary_payloads(handoff_payload=handoff_payload, reader_packet=reader_packet)
     limitations = _normalize_string_list(payload.get("limitations"))
     run_id = _clean_text(payload.get("runId") or payload.get("run_id"))
     source_references = (
@@ -240,6 +250,12 @@ def normalize_analysis_module_output(
             "runId": run_id,
             "documentHandoff": handoff_payload,
             "result": result_payload,
+            "readerPacket": reader_packet,
+            "evidenceReferences": evidence_references,
+            "factTables": fact_tables,
+            "chartCandidates": chart_candidates,
+            "renderedAssets": rendered_assets,
+            "visualSummaries": visual_summaries,
             "targetCompany": payload.get("targetCompany")
             if isinstance(payload.get("targetCompany"), dict)
             else payload.get("target_company", {}),
@@ -304,6 +320,28 @@ def build_analysis_handoff_bundle(
         for module_id, result in module_results.items()
         if isinstance(result, dict) and isinstance(result.get("documentHandoff"), dict) and result.get("documentHandoff")
     }
+    module_reader_packets = {
+        module_id: _dict_items(result.get("readerPacket"))
+        for module_id, result in module_results.items()
+        if isinstance(result, dict) and _dict_items(result.get("readerPacket"))
+    }
+    module_tabular_artifacts = {
+        module_id: _drop_empty(
+            {
+                "evidenceReferences": _list_of_dicts(result.get("evidenceReferences")),
+                "factTables": _list_of_dicts(result.get("factTables")),
+                "chartCandidates": _list_of_dicts(result.get("chartCandidates")),
+                "renderedAssets": _list_of_dicts(result.get("renderedAssets")),
+                "visualSummaries": _list_of_dicts(result.get("visualSummaries")),
+            }
+        )
+        for module_id, result in module_results.items()
+        if isinstance(result, dict)
+        and any(
+            _list_of_dicts(result.get(key))
+            for key in ("evidenceReferences", "factTables", "chartCandidates", "renderedAssets", "visualSummaries")
+        )
+    }
     module_summaries = {
         module_id: str(result.get("summary", "")).strip()
         for module_id, result in module_results.items()
@@ -333,6 +371,8 @@ def build_analysis_handoff_bundle(
             "moduleRunIds": module_run_ids,
             "moduleSummaries": module_summaries,
             "documentHandoffs": document_handoffs,
+            "moduleReaderPackets": module_reader_packets,
+            "moduleTabularArtifacts": module_tabular_artifacts,
             "unsupportedModules": unsupported,
             "staleModules": stale_modules,
             "limitations": limitations,
@@ -490,6 +530,74 @@ def _normalize_string_list(value: Any) -> list[str]:
     return _string_list(value)
 
 
+def _module_reader_packet_payload(
+    *,
+    handoff_payload: dict[str, Any],
+    result_payload: dict[str, Any],
+) -> dict[str, Any]:
+    if isinstance(handoff_payload.get("readerPacket"), dict) and handoff_payload.get("readerPacket"):
+        return _dict_items(handoff_payload.get("readerPacket"))
+    return _dict_items(result_payload.get("readerPacket"))
+
+
+def _module_evidence_reference_payloads(
+    *,
+    handoff_payload: dict[str, Any],
+    reader_packet: dict[str, Any],
+) -> list[dict[str, Any]]:
+    references = _list_of_dicts(handoff_payload.get("evidenceReferences"))
+    if references:
+        return references
+    references = _list_of_dicts(reader_packet.get("evidenceReferences"))
+    if references:
+        return references
+    return _list_of_dicts(handoff_payload.get("evidenceTable"))
+
+
+def _module_fact_table_payloads(
+    *,
+    handoff_payload: dict[str, Any],
+    result_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    tables = _list_of_dicts(handoff_payload.get("factTables"))
+    if tables:
+        return [normalize_fact_table(item) for item in tables]
+    return [normalize_fact_table(item) for item in _list_of_dicts(result_payload.get("factTables"))]
+
+
+def _module_chart_candidate_payloads(
+    *,
+    handoff_payload: dict[str, Any],
+    result_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    candidates = _list_of_dicts(handoff_payload.get("chartCandidates"))
+    if candidates:
+        return [normalize_chart_candidate(item) for item in candidates]
+    return [normalize_chart_candidate(item) for item in _list_of_dicts(result_payload.get("chartCandidates"))]
+
+
+def _module_rendered_asset_payloads(
+    *,
+    handoff_payload: dict[str, Any],
+    result_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    assets = _list_of_dicts(handoff_payload.get("renderedAssets"))
+    if assets:
+        return [normalize_rendered_asset(item) for item in assets]
+    return [normalize_rendered_asset(item) for item in _list_of_dicts(result_payload.get("renderedAssets"))]
+
+
+def _module_visual_summary_payloads(
+    *,
+    handoff_payload: dict[str, Any],
+    reader_packet: dict[str, Any],
+) -> list[dict[str, Any]]:
+    visuals = _list_of_dicts(handoff_payload.get("visualSummaries"))
+    if visuals:
+        return visuals
+    return _list_of_dicts(reader_packet.get("visualSummaries"))
+
+
 def _truncate(value: str, *, limit: int) -> str:
     clean = " ".join(str(value or "").split())
     if len(clean) <= limit:
@@ -514,6 +622,12 @@ def _string_list(value: Any) -> list[str]:
         if clean and clean not in result:
             result.append(clean)
     return result
+
+
+def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _drop_empty(value: Any) -> Any:

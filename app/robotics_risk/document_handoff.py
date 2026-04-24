@@ -18,6 +18,9 @@ DOCUMENT_TYPE = "robotics_risk_opportunity_brief"
 
 def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
     reader_packet = result.reader_packet
+    fact_tables = [dict(item) for item in result.fact_tables if isinstance(item, dict)]
+    chart_candidates = [dict(item) for item in result.chart_candidates if isinstance(item, dict)]
+    rendered_assets = [dict(item) for item in result.rendered_assets if isinstance(item, dict)]
     opportunity_items = (
         [_theme_entry(item) for item in reader_packet.opportunities]
         if reader_packet is not None
@@ -46,6 +49,9 @@ def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
         theme_sections=[*opportunity_items, *risk_items],
         evidence_references=evidence_references,
         visual_summaries=visual_summaries,
+        fact_tables=fact_tables,
+        chart_candidates=chart_candidates,
+        rendered_assets=rendered_assets,
     )
     limitations = list(result.limitations)
     company_name = str(result.target_company.get("name") or result.enterprise_profile.name or "目标企业").strip()
@@ -119,6 +125,9 @@ def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
             "readerPacket": reader_packet.to_dict() if reader_packet is not None else {},
             "opportunitySections": opportunity_items,
             "riskSections": risk_items,
+            "factTables": fact_tables,
+            "chartCandidates": chart_candidates,
+            "renderedAssets": rendered_assets,
             "evidenceTable": evidence_rows,
             "evidenceReferences": evidence_references,
             "visualSummaries": visual_summaries,
@@ -244,6 +253,9 @@ def _citation_map(
     theme_sections: list[dict[str, Any]],
     evidence_references: list[dict[str, Any]],
     visual_summaries: list[dict[str, Any]],
+    fact_tables: list[dict[str, Any]],
+    chart_candidates: list[dict[str, Any]],
+    rendered_assets: list[dict[str, Any]],
 ) -> dict[str, Any]:
     signals = [*opportunities, *risks]
     return _drop_empty(
@@ -287,6 +299,36 @@ def _citation_map(
                 }
                 for item in visual_summaries
                 if _clean_text(item.get("id"))
+            },
+            "factTables": {
+                _clean_text(item.get("tableId")): {
+                    "sourceIds": _trace_list(item, "sourceIds"),
+                    "eventIds": _trace_list(item, "eventIds"),
+                    "signalIds": _trace_list(item, "signalIds"),
+                }
+                for item in fact_tables
+                if _clean_text(item.get("tableId"))
+            },
+            "chartCandidates": {
+                _clean_text(item.get("chartId")): {
+                    "sourceIds": _trace_list(item, "sourceIds"),
+                    "eventIds": _trace_list(item, "eventIds"),
+                    "signalIds": _trace_list(item, "signalIds"),
+                    "sourceTableId": _clean_text(item.get("sourceTableId")),
+                }
+                for item in chart_candidates
+                if _clean_text(item.get("chartId"))
+            },
+            "renderedAssets": {
+                _clean_text(item.get("assetId")): {
+                    "sourceIds": _trace_list(item, "sourceIds"),
+                    "eventIds": _trace_list(item, "eventIds"),
+                    "signalIds": _trace_list(item, "signalIds"),
+                    "chartId": _clean_text(item.get("chartId")),
+                    "sourceTableId": _clean_text(item.get("sourceTableId")),
+                }
+                for item in rendered_assets
+                if _clean_text(item.get("assetId"))
             },
             "sections": {
                 "opportunities": sorted(
@@ -359,3 +401,9 @@ def _drop_empty(value: Any) -> Any:
 
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _trace_list(item: dict[str, Any], key: str) -> list[str]:
+    trace_refs = item.get("traceRefs") if isinstance(item.get("traceRefs"), dict) else {}
+    values = trace_refs.get(key) if isinstance(trace_refs.get(key), list) else item.get(key, [])
+    return [str(value).strip() for value in values if str(value or "").strip()]

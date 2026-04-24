@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .reader import build_reader_packet, render_reader_brief
+from .tabular_artifacts import build_robotics_tabular_artifacts
 from .schemas import (
     AnalysisScope,
     EnterpriseProfile,
@@ -39,6 +40,27 @@ def build_result(
         sources=sources,
         limitations=limitations,
     )
+    fact_tables, chart_candidates, rendered_assets = build_robotics_tabular_artifacts(
+        target_company=target_company,
+        analysis_scope=analysis_scope,
+        profile=profile,
+        reader_packet=reader_packet,
+        events=events,
+        sources=sources,
+        limitations=limitations,
+    )
+    reader_packet.fact_table_refs = [str(item.get("tableId")) for item in fact_tables if isinstance(item, dict) and item.get("tableId")]
+    reader_packet.chart_candidate_refs = [
+        str(item.get("chartId")) for item in chart_candidates if isinstance(item, dict) and item.get("chartId")
+    ]
+    reader_packet.rendered_asset_refs = [
+        str(item.get("assetId")) for item in rendered_assets if isinstance(item, dict) and item.get("assetId")
+    ]
+    reader_packet.interpretation_boundaries = [
+        str(item.get("interpretationBoundary"))
+        for item in [*chart_candidates, *rendered_assets]
+        if isinstance(item, dict) and str(item.get("interpretationBoundary") or "").strip()
+    ]
     summary = {
         "opportunity": reader_packet.executive_summary.get("opportunity", ""),
         "risk": reader_packet.executive_summary.get("risk", ""),
@@ -49,6 +71,9 @@ def build_result(
         profile=profile,
         reader_packet=reader_packet,
         reader_writer=reader_writer,
+        fact_tables=fact_tables,
+        chart_candidates=chart_candidates,
+        rendered_assets=rendered_assets,
     )
     return RoboticsInsightResult(
         module=MODULE_ID,
@@ -64,5 +89,8 @@ def build_result(
         limitations=limitations,
         brief_markdown=brief,
         reader_packet=reader_packet,
+        fact_tables=fact_tables,
+        chart_candidates=chart_candidates,
+        rendered_assets=rendered_assets,
         source_diagnostics=list(source_diagnostics or []),
     )
