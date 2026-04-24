@@ -30,10 +30,12 @@ from app.agent.graph.nodes import (
 from app.agent.reporting import (
     ReportContributionValidationError,
     generate_analysis_report,
+    generate_analysis_report_from_module_artifacts,
     normalize_visual_asset,
     render_report_pdf,
     validate_report_contribution_traceability,
 )
+from app.models import AnalysisModuleArtifact
 from app.robotics_risk.cache import RoboticsEvidenceCache
 
 
@@ -563,6 +565,160 @@ def test_analysis_intake_follow_up_time_change_does_not_mutate_enterprise(monkey
     assert result["debug"]["analysisIntake"]["changedSlots"] == [SHARED_TIME_RANGE]
 
 
+def test_analysis_intake_follow_up_time_only_reply_does_not_overwrite_enterprise(monkeypatch):
+    contract = AnalysisModuleContract(
+        module_id="robotics_risk",
+        display_name="机器人风险机会洞察",
+        required_slots=(
+            SHARED_ENTERPRISE_NAME,
+            SHARED_TIME_RANGE,
+            SHARED_REPORT_GOAL,
+            SHARED_ANALYSIS_FOCUS_TAGS,
+        ),
+        slot_mapping=lambda slots, compatibility, context: {},
+        run=lambda payload: {},
+    )
+    monkeypatch.setattr("app.agent.graph.nodes.get_analysis_module_registry", lambda: {"robotics_risk": contract})
+    session = create_transient_analysis_session(enabled_modules=["robotics_risk"])
+    session["status"] = "collecting"
+    session["revision"] = 1
+    session["slotValues"] = {
+        SHARED_ENTERPRISE_NAME: "石头科技",
+        SHARED_STOCK_CODE: "688169",
+        SHARED_REPORT_GOAL: "生成机器人风险机会报告",
+        SHARED_ANALYSIS_FOCUS_TAGS: ["政策", "订单"],
+    }
+    session["questionPlan"] = [
+        {
+            "groupId": "time_range",
+            "slotIds": [SHARED_TIME_RANGE],
+            "requiredSlotIds": [SHARED_TIME_RANGE],
+            "labels": ["时间范围"],
+            "question": "请补充时间范围。",
+        }
+    ]
+
+    result = analysis_intake_node(
+        {
+            "user_message": "一年",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_shared_inputs": {},
+            "analysis_module_inputs": {},
+            "analysis_session": session,
+            "debug": {},
+        }
+    )
+
+    slot_values = result["analysis_session"]["slotValues"]
+    assert slot_values[SHARED_ENTERPRISE_NAME] == "石头科技"
+    assert slot_values[SHARED_STOCK_CODE] == "688169"
+    assert slot_values[SHARED_TIME_RANGE] == "一年"
+    assert result["debug"]["analysisIntake"]["changedSlots"] == [SHARED_TIME_RANGE]
+
+
+def test_analysis_intake_follow_up_focus_only_reply_does_not_overwrite_enterprise(monkeypatch):
+    contract = AnalysisModuleContract(
+        module_id="robotics_risk",
+        display_name="机器人风险机会洞察",
+        required_slots=(
+            SHARED_ENTERPRISE_NAME,
+            SHARED_TIME_RANGE,
+            SHARED_REPORT_GOAL,
+            SHARED_ANALYSIS_FOCUS_TAGS,
+        ),
+        slot_mapping=lambda slots, compatibility, context: {},
+        run=lambda payload: {},
+    )
+    monkeypatch.setattr("app.agent.graph.nodes.get_analysis_module_registry", lambda: {"robotics_risk": contract})
+    session = create_transient_analysis_session(enabled_modules=["robotics_risk"])
+    session["status"] = "collecting"
+    session["revision"] = 1
+    session["slotValues"] = {
+        SHARED_ENTERPRISE_NAME: "石头科技",
+        SHARED_STOCK_CODE: "688169",
+        SHARED_TIME_RANGE: "近90天",
+        SHARED_REPORT_GOAL: "生成机器人风险机会报告",
+    }
+    session["questionPlan"] = [
+        {
+            "groupId": "analysis_focus",
+            "slotIds": [SHARED_ANALYSIS_FOCUS_TAGS],
+            "requiredSlotIds": [SHARED_ANALYSIS_FOCUS_TAGS],
+            "labels": ["分析重点"],
+            "question": "请补充分析重点。",
+        }
+    ]
+
+    result = analysis_intake_node(
+        {
+            "user_message": "政策",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_shared_inputs": {},
+            "analysis_module_inputs": {},
+            "analysis_session": session,
+            "debug": {},
+        }
+    )
+
+    slot_values = result["analysis_session"]["slotValues"]
+    assert slot_values[SHARED_ENTERPRISE_NAME] == "石头科技"
+    assert slot_values[SHARED_STOCK_CODE] == "688169"
+    assert slot_values[SHARED_ANALYSIS_FOCUS_TAGS] == ["政策"]
+    assert result["debug"]["analysisIntake"]["changedSlots"] == [SHARED_ANALYSIS_FOCUS_TAGS]
+
+
+def test_analysis_intake_explicit_correction_can_update_resolved_enterprise(monkeypatch):
+    contract = AnalysisModuleContract(
+        module_id="robotics_risk",
+        display_name="机器人风险机会洞察",
+        required_slots=(
+            SHARED_ENTERPRISE_NAME,
+            SHARED_TIME_RANGE,
+            SHARED_REPORT_GOAL,
+            SHARED_ANALYSIS_FOCUS_TAGS,
+        ),
+        slot_mapping=lambda slots, compatibility, context: {},
+        run=lambda payload: {},
+    )
+    monkeypatch.setattr("app.agent.graph.nodes.get_analysis_module_registry", lambda: {"robotics_risk": contract})
+    session = create_transient_analysis_session(enabled_modules=["robotics_risk"])
+    session["status"] = "collecting"
+    session["revision"] = 1
+    session["slotValues"] = {
+        SHARED_ENTERPRISE_NAME: "石头科技",
+        SHARED_STOCK_CODE: "688169",
+        SHARED_TIME_RANGE: "近90天",
+        SHARED_REPORT_GOAL: "生成机器人风险机会报告",
+    }
+    session["questionPlan"] = [
+        {
+            "groupId": "analysis_focus",
+            "slotIds": [SHARED_ANALYSIS_FOCUS_TAGS],
+            "requiredSlotIds": [SHARED_ANALYSIS_FOCUS_TAGS],
+            "labels": ["分析重点"],
+            "question": "请补充分析重点。",
+        }
+    ]
+
+    result = analysis_intake_node(
+        {
+            "user_message": "企业改成优必选",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_shared_inputs": {},
+            "analysis_module_inputs": {},
+            "analysis_session": session,
+            "debug": {},
+        }
+    )
+
+    slot_values = result["analysis_session"]["slotValues"]
+    assert slot_values[SHARED_ENTERPRISE_NAME] == "优必选"
+    assert SHARED_ANALYSIS_FOCUS_TAGS not in slot_values
+    assert result["needs_clarification"] is True
+    assert "分析重点" in result["clarification_question"]
+    assert result["debug"]["analysisIntake"]["changedSlots"] == [SHARED_ENTERPRISE_NAME]
+
+
 def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
     contract = AnalysisModuleContract(
         module_id="robotics_risk",
@@ -975,6 +1131,74 @@ def test_report_generation_node_passes_main_llm_to_report_writer():
     assert result["analysis_report_generated"] is True
     assert result["analysis_report"]["title"] == "石头科技可下载报告"
     assert "报告正文已由写作模型面向读者重写" in result["analysis_report"]["preview"]
+
+
+def test_generate_analysis_report_persists_dynamic_outline_and_render_style():
+    artifact = generate_analysis_report(**_basic_report_inputs(), render_style="brand_cover")
+
+    outline_titles = [item["title"] for item in artifact["sectionPlan"]]
+    assert artifact["renderStyle"] == "brand_cover"
+    assert artifact["rendering"]["style"] == "brand_cover"
+    assert artifact["document"]["renderStyle"] == "brand_cover"
+    assert artifact["semanticModel"]["chapterOutline"][2]["title"] == "关键发现"
+    assert "外部环境与风险机会评估" in outline_titles
+    assert artifact["document"]["chapterOutline"][3]["title"] == "外部环境与风险机会评估"
+
+
+def test_generate_analysis_report_from_module_artifacts_prefers_semantic_path():
+    inputs = _basic_report_inputs()
+    row = AnalysisModuleArtifact(
+        artifact_id="mart_semantic_001",
+        user_id=1,
+        workspace_id="ws-semantic",
+        role="investor",
+        conversation_id="conv-semantic",
+        analysis_session_id="asess_writer",
+        analysis_session_revision=3,
+        module_id="robotics_risk",
+        module_run_id="run-robotics-001",
+        title="机器人政策与订单分析",
+        status="completed",
+        content_type="text/markdown",
+        markdown_body="# 机器人政策与订单分析\n\n模块原文分析结果。",
+        metadata_json={
+            "displayName": "机器人风险机会洞察",
+            "moduleResult": inputs["module_results"]["robotics_risk"],
+        },
+    )
+
+    artifact = generate_analysis_report_from_module_artifacts([row], render_style="dark_research")
+
+    assert artifact["renderStyle"] == "dark_research"
+    assert artifact["rendering"]["style"] == "dark_research"
+    assert artifact["document"]["renderStyle"] == "dark_research"
+    assert "模块原文分析结果" not in artifact["markdownBody"]
+    assert "政策支持与订单兑现存在联动机会" in artifact["markdownBody"]
+    assert all(flag["type"] != "degraded_module_text_fallback" for flag in artifact["qualityFlags"])
+
+
+def test_generate_analysis_report_from_module_artifacts_marks_degraded_fallback():
+    row = AnalysisModuleArtifact(
+        artifact_id="mart_fallback_001",
+        user_id=1,
+        workspace_id="ws-fallback",
+        role="investor",
+        conversation_id="conv-fallback",
+        analysis_session_id="asess_fallback",
+        analysis_session_revision=1,
+        module_id="robotics_risk",
+        module_run_id="run-fallback-001",
+        title="机器人政策与订单分析",
+        status="completed",
+        content_type="text/markdown",
+        markdown_body="# 机器人政策与订单分析\n\n模块原文分析结果。",
+        metadata_json={"displayName": "机器人风险机会洞察"},
+    )
+
+    artifact = generate_analysis_report_from_module_artifacts([row], render_style="professional")
+
+    assert "模块原文分析结果" in artifact["markdownBody"]
+    assert any(flag["type"] == "degraded_module_text_fallback" for flag in artifact["qualityFlags"])
 
 
 def test_generate_analysis_report_blocks_published_internal_field_leakage():
