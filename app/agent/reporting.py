@@ -221,8 +221,10 @@ def build_robotics_domain_analysis(module_result: dict[str, Any]) -> dict[str, A
     handoff = _dict_value(module_result.get("documentHandoff"))
     module_id = _clean_text(module_result.get("moduleId")) or "robotics_risk"
     evidence = _list_of_dicts(handoff.get("evidenceTable"))
+    evidence_references = _list_of_dicts(handoff.get("evidenceReferences")) or evidence
     opportunities = _list_of_dicts(handoff.get("opportunitySections"))
     risks = _list_of_dicts(handoff.get("riskSections"))
+    visuals = _list_of_dicts(handoff.get("visualSummaries"))
     return _drop_empty(
         {
             "schemaVersion": DOMAIN_ANALYSIS_SCHEMA_VERSION,
@@ -235,11 +237,11 @@ def build_robotics_domain_analysis(module_result: dict[str, Any]) -> dict[str, A
                 *_robotics_signal_domain_outputs(opportunities, output_type="opportunity"),
                 *_robotics_signal_domain_outputs(risks, output_type="risk"),
             ],
-            "evidence": _normalize_contribution_items(evidence, "evidence", module_id=module_id),
+            "evidence": _normalize_contribution_items(evidence_references, "evidence", module_id=module_id),
             "reasoningTrace": _robotics_reasoning_trace(opportunities, risks, module_id=module_id),
             "diagnostics": _list_of_dicts(module_result.get("sourceDiagnostics")),
             "modelOutputs": [],
-            "visualAssets": [],
+            "visualAssets": _robotics_visual_assets(visuals, module_id=module_id),
             "limitations": _normalize_limitations(module_result.get("limitations"), module_id=module_id),
             "sourceReferences": _list_of_dicts(module_result.get("sourceReferences")),
             "rawResult": result,
@@ -253,6 +255,8 @@ def build_robotics_report_contribution(module_result: dict[str, Any], domain_ana
     opportunities = _list_of_dicts(handoff.get("opportunitySections"))
     risks = _list_of_dicts(handoff.get("riskSections"))
     evidence = _list_of_dicts(handoff.get("evidenceTable"))
+    evidence_references = _list_of_dicts(handoff.get("evidenceReferences")) or evidence
+    visuals = _list_of_dicts(handoff.get("visualSummaries"))
     findings = [
         *_robotics_findings(opportunities, module_id=module_id, kind="opportunity"),
         *_robotics_findings(risks, module_id=module_id, kind="risk"),
@@ -263,12 +267,12 @@ def build_robotics_report_contribution(module_result: dict[str, Any], domain_ana
             "displayName": module_result.get("displayName"),
             "status": module_result.get("status"),
             "findings": findings,
-            "evidence": evidence,
+            "evidence": evidence_references,
             "attributionInputs": _robotics_attribution_inputs(findings, module_id=module_id),
             "logicInputs": _robotics_logic_inputs(findings, module_id=module_id),
             "recommendationInputs": _robotics_recommendations(findings, module_id=module_id),
             "modelOutputs": [],
-            "visualAssets": [],
+            "visualAssets": _robotics_visual_assets(visuals, module_id=module_id),
             "attachments": [],
             "limitations": module_result.get("limitations"),
         },
@@ -1518,6 +1522,10 @@ def build_analysis_module_artifacts(
                     "status": _clean_text(result.get("status")) or "completed",
                     "contentType": "text/markdown",
                     "markdownBody": markdown_body,
+                    "executiveSummary": _module_executive_summary(result),
+                    "readerPacket": _module_reader_packet(result),
+                    "evidenceReferences": _module_evidence_references(result),
+                    "visualSummaries": _module_visual_summaries(result),
                     "analysisSession": {
                         "sessionId": _clean_text(session_payload.get("sessionId")),
                         "revision": _safe_int(session_payload.get("revision"), default=0),
@@ -1621,6 +1629,7 @@ def save_analysis_module_artifacts(
 def analysis_module_artifact_to_payload(row: AnalysisModuleArtifact, *, include_body: bool = True) -> dict[str, Any]:
     payload = _drop_empty(
         {
+            **_dict_value(row.artifact_json),
             "artifactId": row.artifact_id,
             "moduleId": row.module_id,
             "moduleRunId": row.module_run_id,
@@ -2867,10 +2876,11 @@ def _robotics_signal_domain_outputs(items: list[dict[str, Any]], *, output_type:
                         "id": signal_id,
                         "type": output_type,
                         "title": _clean_text(item.get("title")),
-                        "summary": _clean_text(item.get("reasoning")),
+                        "summary": _robotics_reader_summary(item),
                         "sourceIds": _string_list(item.get("sourceIds")),
-                        "eventIds": _string_list(item.get("relatedEventIds")),
+                        "eventIds": _robotics_event_ids(item),
                         "confidence": item.get("confidence"),
+                        "impactScore": item.get("impactScore"),
                     }
                 )
             )
@@ -2881,7 +2891,7 @@ def _robotics_reasoning_trace(opportunities: list[dict[str, Any]], risks: list[d
     trace: list[dict[str, Any]] = []
     for item in [*opportunities, *risks]:
         signal_id = _clean_text(item.get("id"))
-        reasoning = _clean_text(item.get("reasoning"))
+        reasoning = _robotics_basis_summary(item)
         if signal_id and reasoning:
             trace.append(
                 {
@@ -2908,10 +2918,10 @@ def _robotics_findings(items: list[dict[str, Any]], *, module_id: str, kind: str
                 "type": "finding",
                 "kind": kind,
                 "title": _clean_text(item.get("title")) or ("机会信号" if kind == "opportunity" else "风险信号"),
-                "summary": _clean_text(item.get("reasoning")),
+                "summary": _robotics_reader_summary(item),
                 "confidence": item.get("confidence"),
                 "sourceIds": source_ids,
-                "eventIds": _string_list(item.get("relatedEventIds")),
+                "eventIds": _robotics_event_ids(item),
                 "traceRefs": {"domainOutputIds": [signal_id], "sourceIds": source_ids},
             }
         )
@@ -2971,6 +2981,96 @@ def _robotics_recommendations(findings: list[dict[str, Any]], *, module_id: str)
             }
         )
     return recommendations
+
+
+def _robotics_visual_assets(items: list[dict[str, Any]], *, module_id: str) -> list[dict[str, Any]]:
+    assets: list[dict[str, Any]] = []
+    for item in items:
+        visual_id = _clean_text(item.get("id"))
+        if not visual_id:
+            continue
+        render_payload = _dict_value(item.get("renderPayload"))
+        assets.append(
+            normalize_visual_asset(
+                {
+                    "assetId": f"{module_id}_{visual_id}",
+                    "moduleId": module_id,
+                    "type": _robotics_visual_asset_type(item),
+                    "title": _clean_text(item.get("title")) or "机器人行业图表",
+                    "caption": _clean_text(item.get("caption")),
+                    "description": _clean_text(item.get("caption")),
+                    "altText": _clean_text(item.get("title")) or "机器人行业图表",
+                    "renderPayload": render_payload,
+                    "traceRefs": {
+                        "sourceIds": _string_list(item.get("sourceIds")),
+                        "eventIds": _string_list(item.get("eventIds")),
+                        "domainOutputIds": _string_list(item.get("signalIds")),
+                    },
+                    "limitations": [_clean_text(item.get("interpretationBoundary"))],
+                },
+                module_id=module_id,
+            )
+        )
+    return assets
+
+
+def _robotics_reader_summary(item: dict[str, Any]) -> str:
+    return _clean_text(item.get("summary") or item.get("readerSummary") or item.get("reasoning"))
+
+
+def _robotics_basis_summary(item: dict[str, Any]) -> str:
+    pieces = [
+        _clean_text(item.get("basisSummary") or item.get("reasoning")),
+        _clean_text(item.get("interpretationBoundary")),
+    ]
+    clean = " ".join(piece for piece in pieces if piece)
+    return _truncate_text(clean, limit=280) if clean else ""
+
+
+def _robotics_event_ids(item: dict[str, Any]) -> list[str]:
+    return _string_list(item.get("eventIds") or item.get("relatedEventIds"))
+
+
+def _robotics_visual_asset_type(item: dict[str, Any]) -> str:
+    chart_type = _clean_text(_dict_value(item.get("renderPayload")).get("chartType")).lower()
+    if chart_type == "heatmap":
+        return "heatmap"
+    if chart_type == "timeline":
+        return "timeline"
+    return "chart"
+
+
+def _module_reader_packet(result: dict[str, Any]) -> dict[str, Any]:
+    handoff = _dict_value(result.get("documentHandoff"))
+    if isinstance(handoff.get("readerPacket"), dict) and handoff.get("readerPacket"):
+        return _dict_value(handoff.get("readerPacket"))
+    result_payload = _dict_value(result.get("result"))
+    return _dict_value(result_payload.get("readerPacket"))
+
+
+def _module_executive_summary(result: dict[str, Any]) -> dict[str, Any]:
+    handoff = _dict_value(result.get("documentHandoff"))
+    return _dict_value(handoff.get("executiveSummary"))
+
+
+def _module_evidence_references(result: dict[str, Any]) -> list[dict[str, Any]]:
+    handoff = _dict_value(result.get("documentHandoff"))
+    references = _list_of_dicts(handoff.get("evidenceReferences"))
+    if references:
+        return references
+    return _list_of_dicts(handoff.get("evidenceTable"))
+
+
+def _module_visual_summaries(result: dict[str, Any]) -> list[dict[str, Any]]:
+    handoff = _dict_value(result.get("documentHandoff"))
+    return _list_of_dicts(handoff.get("visualSummaries"))
+
+
+def _truncate_text(value: str, *, limit: int) -> str:
+    clean = " ".join(str(value or "").split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 3].rstrip() + "..."
 
 
 def _collect_traceable_ids(contribution: dict[str, Any], domain_analysis: dict[str, Any]) -> set[str]:

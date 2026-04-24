@@ -182,6 +182,7 @@ def run_robotics_risk_subagent(
     adapters: Iterable[EvidenceSourceAdapter] | None = None,
     evidence_cache: Any | None = None,
     company_resolver: Any | None = None,
+    reader_writer: Any | None = None,
     now_factory: Callable[[], datetime] | None = None,
     id_factory: Callable[[], str] | None = None,
 ) -> RoboticsRiskSubagentOutput:
@@ -226,6 +227,7 @@ def run_robotics_risk_subagent(
             adapters=_select_adapters(adapters=adapters, controls=normalized.source_controls),
             evidence_cache=evidence_cache if normalized.source_controls.prefer_cache else None,
             company_resolver=company_resolver,
+            reader_writer=reader_writer,
         )
         status = _result_status(result)
         result_payload = result.to_dict()

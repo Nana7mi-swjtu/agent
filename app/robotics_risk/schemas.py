@@ -146,6 +146,132 @@ class InsightSignal:
 
 
 @dataclass
+class RoboticsReaderTheme:
+    id: str
+    type: str
+    title: str
+    summary: str
+    basis_summary: str = ""
+    interpretation_boundary: str = ""
+    confidence: float | None = None
+    impact_score: int | None = None
+    categories: list[str] = field(default_factory=list)
+    source_ids: list[str] = field(default_factory=list)
+    event_ids: list[str] = field(default_factory=list)
+    signal_ids: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "id": self.id,
+                "type": self.type,
+                "title": self.title,
+                "summary": self.summary,
+                "basisSummary": self.basis_summary,
+                "interpretationBoundary": self.interpretation_boundary,
+                "confidence": self.confidence,
+                "impactScore": self.impact_score,
+                "categories": list(self.categories),
+                "sourceIds": list(self.source_ids),
+                "eventIds": list(self.event_ids),
+                "signalIds": list(self.signal_ids),
+            }
+        )
+
+
+@dataclass
+class RoboticsReaderEvidenceReference:
+    id: str
+    title: str
+    source_type: str
+    source_name: str
+    reader_summary: str
+    published_at: str = ""
+    url: str = ""
+    locator: str = ""
+    relevance_scope: str = ""
+    verification_status: str = ""
+    event_ids: list[str] = field(default_factory=list)
+    source_ids: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "id": self.id,
+                "title": self.title,
+                "sourceType": self.source_type,
+                "sourceName": self.source_name,
+                "readerSummary": self.reader_summary,
+                "publishedAt": self.published_at,
+                "url": self.url,
+                "locator": self.locator,
+                "relevanceScope": self.relevance_scope,
+                "verificationStatus": self.verification_status,
+                "eventIds": list(self.event_ids),
+                "sourceIds": list(self.source_ids),
+            }
+        )
+
+
+@dataclass
+class RoboticsReaderVisual:
+    id: str
+    type: str
+    title: str
+    caption: str
+    interpretation_boundary: str = ""
+    render_payload: dict[str, Any] = field(default_factory=dict)
+    source_ids: list[str] = field(default_factory=list)
+    event_ids: list[str] = field(default_factory=list)
+    signal_ids: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "id": self.id,
+                "type": self.type,
+                "title": self.title,
+                "caption": self.caption,
+                "interpretationBoundary": self.interpretation_boundary,
+                "renderPayload": dict(self.render_payload or {}),
+                "sourceIds": list(self.source_ids),
+                "eventIds": list(self.event_ids),
+                "signalIds": list(self.signal_ids),
+            }
+        )
+
+
+@dataclass
+class RoboticsReaderPacket:
+    schema_version: str
+    target_company: dict[str, Any]
+    analysis_scope: dict[str, Any]
+    enterprise_profile: dict[str, Any]
+    executive_summary: dict[str, str]
+    opportunities: list[RoboticsReaderTheme] = field(default_factory=list)
+    risks: list[RoboticsReaderTheme] = field(default_factory=list)
+    evidence_references: list[RoboticsReaderEvidenceReference] = field(default_factory=list)
+    visual_summaries: list[RoboticsReaderVisual] = field(default_factory=list)
+    limitations: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _drop_empty(
+            {
+                "schemaVersion": self.schema_version,
+                "targetCompany": dict(self.target_company or {}),
+                "analysisScope": dict(self.analysis_scope or {}),
+                "enterpriseProfile": dict(self.enterprise_profile or {}),
+                "executiveSummary": dict(self.executive_summary or {}),
+                "opportunities": [item.to_dict() for item in self.opportunities],
+                "risks": [item.to_dict() for item in self.risks],
+                "evidenceReferences": [item.to_dict() for item in self.evidence_references],
+                "visualSummaries": [item.to_dict() for item in self.visual_summaries],
+                "limitations": list(self.limitations),
+            }
+        )
+
+
+@dataclass
 class RoboticsInsightResult:
     module: str
     target_company: dict[str, Any]
@@ -158,6 +284,7 @@ class RoboticsInsightResult:
     sources: list[SourceDocument]
     limitations: list[str]
     brief_markdown: str
+    reader_packet: RoboticsReaderPacket | None = None
     status: str = "done"
     source_diagnostics: list[SourceRetrievalDiagnostic] = field(default_factory=list)
 
@@ -176,5 +303,6 @@ class RoboticsInsightResult:
             "limitations": list(self.limitations),
             "sourceDiagnostics": [item.to_dict() for item in self.source_diagnostics],
             "briefMarkdown": self.brief_markdown,
+            "readerPacket": self.reader_packet.to_dict() if self.reader_packet is not None else {},
         }
         return _drop_empty(payload)

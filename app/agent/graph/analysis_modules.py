@@ -341,15 +341,21 @@ def build_analysis_handoff_bundle(
 
 
 def _run_robotics_risk_module(payload: dict[str, Any]) -> Any:
+    reader_writer = payload.get("readerWriter")
     if not has_app_context():
-        return run_robotics_risk_subagent(payload)
+        return run_robotics_risk_subagent(payload, reader_writer=reader_writer)
 
     from ...db import session_scope
     from ...robotics_risk.cache import RoboticsEvidenceCache
 
     with session_scope() as db:
         evidence_cache = RoboticsEvidenceCache(db)
-        return run_robotics_risk_subagent(payload, db=db, evidence_cache=evidence_cache)
+        return run_robotics_risk_subagent(
+            payload,
+            db=db,
+            evidence_cache=evidence_cache,
+            reader_writer=reader_writer,
+        )
 
 
 def _map_robotics_risk_runtime_input(
@@ -372,6 +378,7 @@ def _map_robotics_risk_runtime_input(
             "dimensions": _string_list(dimensions),
             "sourceControls": source_controls if isinstance(source_controls, dict) else {},
             "conversationContext": _clean_text(context.get("conversationContext")),
+            "readerWriter": context.get("readerWriter"),
             "metadata": _drop_empty(
                 {
                     "reportGoal": _clean_text(slot_values.get(SHARED_REPORT_GOAL)),

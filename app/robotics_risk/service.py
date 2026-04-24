@@ -28,6 +28,7 @@ def analyze_robotics_enterprise_risk_opportunity(
     adapters: Iterable[EvidenceSourceAdapter] | None = None,
     evidence_cache: Any | None = None,
     company_resolver: Any | None = None,
+    reader_writer: Any | None = None,
 ) -> RoboticsInsightResult:
     normalized_request = _normalize_request(request)
     if not normalized_request.enterprise_name.strip():
@@ -76,6 +77,7 @@ def analyze_robotics_enterprise_risk_opportunity(
         sources=documents,
         limitations=_dedupe(limitations),
         source_diagnostics=source_diagnostics,
+        reader_writer=reader_writer,
     )
 
 

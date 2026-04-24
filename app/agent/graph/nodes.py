@@ -637,6 +637,22 @@ def _analysis_bundle_system_section(state: AgentState) -> str:
             lines.append(header)
             if summary:
                 lines.append(summary)
+            handoff = item.get("documentHandoff", {})
+            if isinstance(handoff, dict):
+                executive_summary = handoff.get("executiveSummary", {})
+                if isinstance(executive_summary, dict):
+                    headline = str(executive_summary.get("headline", "")).strip()
+                    if headline:
+                        lines.append(f"headline={headline}")
+                evidence_refs = handoff.get("evidenceReferences", [])
+                if isinstance(evidence_refs, list) and evidence_refs:
+                    evidence_titles = [
+                        str(ref.get("title", "")).strip()
+                        for ref in evidence_refs[:3]
+                        if isinstance(ref, dict) and str(ref.get("title", "")).strip()
+                    ]
+                    if evidence_titles:
+                        lines.append("evidenceRefs=" + "；".join(evidence_titles))
             if source_count <= 0:
                 lines.append(
                     "证据边界：该模块未返回可引用来源。主回答不得基于行业常识、公开基本面、模型记忆或未列明来源生成风险/机会判断；只能说明当前没有证据、列出失败/空结果状态，并建议补采或重试。"
@@ -998,6 +1014,7 @@ def analysis_modules_node(state: AgentState):
     context = {
         "conversationContext": _conversation_context(state),
         "userMessage": str(state.get("user_message", "")).strip(),
+        "readerWriter": state.get("main_llm"),
     }
     results: dict[str, dict[str, Any]] = _dict_payload(session.get("moduleResults"))
     needs_clarification = False
