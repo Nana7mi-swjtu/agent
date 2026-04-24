@@ -440,6 +440,42 @@ def test_gov_policy_adapter_handles_redirect_shell_and_json_list_fallback():
     assert result.diagnostics[0].raw_count == 1
 
 
+def test_gov_policy_adapter_rejects_irrelevant_json_fallback_candidates():
+    relevant_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/2026-04/03/content_robot.htm"
+    irrelevant_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/2026-04/03/content_ftz.htm"
+    redirect_html = '<script>window.location.href="https://sousuo.www.gov.cn/zcwjk/policyDocumentLibrary?q=&t=zhengcelibrary"</script>'
+    list_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/TONGYONGGAILAN.json"
+    list_html = '<script>$.ajax({ url: "./TONGYONGGAILAN.json", success: function(resultP){ FY_DATA = resultP; } })</script>'
+    json_payload = (
+        "["
+        f'{{"TITLE":"国务院办公厅关于推动机器人应用场景建设的意见","URL":"{relevant_url}","DOCRELPUBTIME":"2026-04-03","DOCID":"content_robot"}},'
+        f'{{"TITLE":"国务院关于印发（中国（内蒙古）自由贸易试验区总体方案）的通知","URL":"{irrelevant_url}","DOCRELPUBTIME":"2026-04-03","DOCID":"content_ftz"}}'
+        "]"
+    )
+    detail_html = '<h1>国务院办公厅关于推动机器人应用场景建设的意见</h1><div class="pages_content">政策鼓励服务机器人和清洁机器人应用，推动设备更新。</div>'
+    client = FakeGovPolicyClient(
+        search_html=redirect_html,
+        list_html=list_html,
+        json_pages={
+            list_url: json_payload,
+            "https://www.gov.cn/zhengce/zhengceku/state_council/TONGYONGGAILAN.json": json_payload,
+            "https://www.gov.cn/zhengce/zhengceku/department/TONGYONGGAILAN.json": "[]",
+        },
+        detail_pages={relevant_url: detail_html, irrelevant_url: "<h1>无关政策</h1>"},
+    )
+    adapter = GovPolicyAdapter(client=client, max_queries=1, detail_fetch_limit=2)
+
+    result = adapter.collect(
+        request=RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天", context="扫地机器人"),
+        profile=EnterpriseProfile(name="石头科技", segments=["扫地机器人"], keywords=["扫地机器人", "服务机器人"]),
+    )
+
+    assert len(result.documents) == 1
+    assert result.documents[0].url == relevant_url
+    assert relevant_url in client.details
+    assert irrelevant_url not in client.details
+
+
 def test_ceb_bidding_candidate_and_detail_parsing_records_metadata_and_attachments():
     list_html = """
     <html><body>
@@ -1204,6 +1240,61 @@ def test_live_gov_policy_cache_persists_metadata_and_reuses_without_rag_rows(db_
     assert db_session.query(RagIndexJob).count() == 0
 
 
+def test_policy_cache_does_not_reuse_other_company_generic_policy_rows(db_session):
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    cache = RoboticsEvidenceCache(db_session, now_factory=lambda: now)
+    request_a = RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天", context="扫地机器人")
+    request_b = RoboticsInsightRequest(enterprise_name="埃斯顿", time_range="近30天", context="工业机器人")
+    adapter_a = CountingAdapter(
+        source_type="gov_policy",
+        documents=[
+            SourceDocument(
+                id="policy-a",
+                source_type="gov_policy",
+                source_name="国务院政策文件库",
+                title="关于推动服务机器人应用场景建设的意见",
+                content="政策鼓励服务机器人和清洁机器人应用。",
+                published_at="2026-04-01",
+                authority_score=0.95,
+                relevance_scope="industry",
+            )
+        ],
+    )
+    adapter_b = CountingAdapter(
+        source_type="gov_policy",
+        documents=[
+            SourceDocument(
+                id="policy-b",
+                source_type="gov_policy",
+                source_name="国务院政策文件库",
+                title="关于推动工业机器人标准化和设备更新的意见",
+                content="政策推动工业机器人标准化和设备更新。",
+                published_at="2026-04-02",
+                authority_score=0.95,
+                relevance_scope="industry",
+            )
+        ],
+    )
+
+    first = analyze_robotics_enterprise_risk_opportunity(
+        request_a,
+        adapters=[adapter_a],
+        evidence_cache=cache,
+    )
+    second = analyze_robotics_enterprise_risk_opportunity(
+        request_b,
+        adapters=[adapter_b],
+        evidence_cache=cache,
+    )
+
+    assert first.sources
+    assert second.sources
+    assert adapter_a.calls == 1
+    assert adapter_b.calls == 1
+    assert [source.title for source in second.sources] == ["关于推动工业机器人标准化和设备更新的意见"]
+    assert db_session.query(RoboticsPolicyDocument).count() == 2
+
+
 def test_metadata_only_gov_policy_is_attributed_and_limited():
     policy_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/2026-04/01/content_meta.htm"
     search_html = f'<a href="{policy_url}">国务院办公厅关于机器人标准化工作的意见</a><span>2026-04-01</span>'
@@ -1350,6 +1441,35 @@ def test_bidding_market_demand_confidence_increases_with_policy_reinforcement():
     assert set(demand_signal.source_ids) & {"policy-bid-reinforce", "bid-reinforce"}
     assert demand_signal.confidence >= 0.75
     assert "验证" in demand_signal.reasoning
+
+
+def test_policy_timeline_deduplicates_same_document_rule_matches():
+    policy = SourceDocument(
+        id="policy-dedupe",
+        source_type="gov_policy",
+        source_name="国务院政策文件库",
+        title="关于推动机器人设备更新、政府采购和标准化建设的意见",
+        content="政策鼓励政府采购服务机器人，推动设备更新和智能制造，开放养老医疗应用场景，并提出标准化与数据安全要求。",
+        published_at="2026-04-01",
+        authority_score=0.95,
+        relevance_scope="industry",
+        metadata={"matchedSegments": ["服务机器人"], "sourceScope": "state_council"},
+    )
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", context="扫地机器人"),
+        adapters=[GovPolicyAdapter(documents=[policy])],
+    )
+
+    tables = {item["tableId"]: item for item in result.fact_tables}
+    timeline_rows = [row for row in tables["event_timeline"]["rows"] if not row.get("emptyState")]
+    timeline_chart = next(item for item in result.chart_candidates if item["chartId"] == "chart_event_timeline")
+
+    assert len(result.events) > 1
+    assert len(timeline_rows) == 1
+    assert timeline_rows[0]["cells"]["title"] == policy.title
+    assert len(timeline_rows[0]["traceRefs"]["eventIds"]) > 1
+    assert len(timeline_chart["series"]) == 1
 
 
 def test_stale_partial_cache_refreshes_only_affected_source(db_session):
