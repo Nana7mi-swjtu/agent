@@ -286,6 +286,7 @@ def generate_analysis_report(
     handoff_bundle: dict[str, Any],
     module_results: dict[str, dict[str, Any]],
     report_writer: Any | None = None,
+    render_style: str = DEFAULT_REPORT_RENDER_STYLE,
 ) -> dict[str, Any] | None:
     if not isinstance(handoff_bundle, dict) or not isinstance(module_results, dict):
         return None
@@ -348,11 +349,17 @@ def generate_analysis_report(
         module_results=included_results,
         limitations=limitations,
     )
+    clean_style = normalize_report_render_style(render_style)
     semantic_model["qualityFlags"] = [
         *_list_of_dicts(semantic_model.get("qualityFlags")),
         *_semantic_quality_flags(semantic_model, stale_modules=stale_modules),
     ]
-    sections = _build_semantic_report_sections(semantic_model)
+    chapter_outline = build_report_chapter_outline(
+        semantic_model,
+        enabled_modules=enabled_modules,
+    )
+    semantic_model["chapterOutline"] = chapter_outline
+    sections = _build_semantic_report_sections(semantic_model, chapter_outline=chapter_outline)
     published_forbidden_values = _published_forbidden_values(
         enabled_modules=enabled_modules,
         module_run_ids=module_run_ids,
@@ -398,7 +405,16 @@ def generate_analysis_report(
             "moduleSummaries": _module_summaries(contributions, included_results),
             "semanticModel": semantic_model,
             "internalTraceIndex": _dict_value(semantic_model.get("internalTraceIndex")),
-            "sectionPlan": [{"id": section.get("id"), "title": section.get("title")} for section in sections if isinstance(section, dict)],
+            "sectionPlan": [
+                {
+                    "id": _clean_text(item.get("id")),
+                    "title": _clean_text(item.get("title")),
+                    "family": _clean_text(item.get("family")),
+                    "origin": _clean_text(item.get("origin")),
+                }
+                for item in chapter_outline
+                if isinstance(item, dict) and _clean_text(item.get("title"))
+            ],
             "sections": sections,
             "findings": _list_of_dicts(semantic_model.get("keyFindings")),
             "attributionChains": _list_of_dicts(semantic_model.get("drivers")),
@@ -410,8 +426,9 @@ def generate_analysis_report(
             "attachments": _with_report_asset_urls(report_id, _all_items(contributions, "attachments")),
             "limitations": _list_of_dicts(semantic_model.get("limitations")),
             "qualityFlags": _list_of_dicts(semantic_model.get("qualityFlags")),
+            "renderStyle": clean_style,
             "rendering": {
-                "style": DEFAULT_REPORT_RENDER_STYLE,
+                "style": clean_style,
                 "structureLocked": True,
             },
         }
@@ -420,7 +437,9 @@ def generate_analysis_report(
         title=writer_title,
         scope=artifact.get("scope"),
         body_sections=sections,
-        render_style=_clean_text(_dict_value(artifact.get("rendering")).get("style")) or DEFAULT_REPORT_RENDER_STYLE,
+        render_style=_clean_text(artifact.get("renderStyle") or _dict_value(artifact.get("rendering")).get("style"))
+        or DEFAULT_REPORT_RENDER_STYLE,
+        chapter_outline=chapter_outline,
     )
     markdown_body = render_report_markdown(artifact)
     html_body = render_report_html(artifact, markdown_body=markdown_body)
@@ -789,10 +808,68 @@ def _validate_written_report(*, title: str, sections: list[dict[str, Any]], forb
     return errors
 
 
-def _build_semantic_report_sections(semantic_model: dict[str, Any]) -> list[dict[str, Any]]:
+def build_report_chapter_outline(semantic_model: dict[str, Any], *, enabled_modules: list[str]) -> list[dict[str, Any]]:
+    selected_modules = set(_string_list(enabled_modules))
+    outline: list[dict[str, Any]] = [
+        {"id": "report_scope", "title": "报告范围", "family": "fixed", "origin": "skeleton"},
+        {"id": "executive_judgement", "title": "核心判断", "family": "fixed", "origin": "skeleton"},
+    ]
+    if _list_of_dicts(semantic_model.get("keyFindings")):
+        outline.append(
+            {
+                "id": "key_findings",
+                "title": _dynamic_chapter_title("key_findings", selected_modules),
+                "family": "module_driven",
+                "origin": "selected_modules",
+            }
+        )
+    if _list_of_dicts(semantic_model.get("riskSignals")) or _list_of_dicts(semantic_model.get("opportunitySignals")):
+        outline.append(
+            {
+                "id": "risk_opportunity_assessment",
+                "title": _dynamic_chapter_title("risk_opportunity_assessment", selected_modules),
+                "family": "module_driven",
+                "origin": "selected_modules",
+            }
+        )
+    if _list_of_dicts(semantic_model.get("drivers")):
+        outline.append(
+            {
+                "id": "attribution_logic",
+                "title": _dynamic_chapter_title("attribution_logic", selected_modules),
+                "family": "module_driven",
+                "origin": "selected_modules",
+            }
+        )
+    if _list_of_dicts(semantic_model.get("evidenceChains")):
+        outline.append({"id": "evidence_verification", "title": "来源与核验", "family": "fixed", "origin": "skeleton"})
+    if _list_of_dicts(semantic_model.get("visualNarratives")) or _list_of_dicts(semantic_model.get("modelExplanations")):
+        outline.append(
+            {
+                "id": "model_visual_interpretation",
+                "title": _dynamic_chapter_title("model_visual_interpretation", selected_modules),
+                "family": "module_driven",
+                "origin": "selected_modules",
+            }
+        )
+    outline.append({"id": "recommendations", "title": "决策建议", "family": "fixed", "origin": "skeleton"})
+    outline.append({"id": "limitations", "title": "来源与限制", "family": "fixed", "origin": "skeleton"})
+    return outline
+
+
+def _build_semantic_report_sections(
+    semantic_model: dict[str, Any],
+    *,
+    chapter_outline: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     intent = _dict_value(semantic_model.get("reportIntent"))
     subject = _dict_value(semantic_model.get("subject"))
     scope = _dict_value(semantic_model.get("scope"))
+    outline_by_id = {
+        _clean_text(item.get("id")): _clean_text(item.get("title"))
+        for item in _list_of_dicts(chapter_outline)
+        if _clean_text(item.get("id")) and _clean_text(item.get("title"))
+    }
     sections: list[dict[str, Any]] = []
     scope_items = [
         {"title": "企业", "summary": _clean_text(subject.get("name"))},
@@ -800,29 +877,130 @@ def _build_semantic_report_sections(semantic_model: dict[str, Any]) -> list[dict
         {"title": "时间范围", "summary": _clean_text(scope.get("timeRange"))},
         {"title": "报告目标", "summary": _clean_text(intent.get("goal"))},
     ]
-    sections.append(_section("report_scope", "报告范围", [_items_block([item for item in scope_items if item.get("summary")])]))
-    sections.append(_section("executive_judgement", "核心判断", [_items_block(semantic_model.get("executiveJudgements"), empty_text="当前输入不足以形成可支撑的核心判断。")]))
-    sections.append(_section("key_findings", "关键发现", [_items_block(semantic_model.get("keyFindings"), empty_text="当前未形成可支撑的实质性发现。")]))
+    sections.append(
+        _section(
+            "report_scope",
+            outline_by_id.get("report_scope") or "报告范围",
+            [_items_block([item for item in scope_items if item.get("summary")])],
+        )
+    )
+    sections.append(
+        _section(
+            "executive_judgement",
+            outline_by_id.get("executive_judgement") or "核心判断",
+            [_highlight_cards_block(semantic_model.get("executiveJudgements"), empty_text="当前输入不足以形成可支撑的核心判断。")],
+        )
+    )
+    sections.append(
+        _section(
+            "key_findings",
+            outline_by_id.get("key_findings") or "关键发现",
+            [_highlight_cards_block(semantic_model.get("keyFindings"), empty_text="当前未形成可支撑的实质性发现。")],
+        )
+    )
     signal_blocks = []
     if _list_of_dicts(semantic_model.get("riskSignals")):
-        signal_blocks.append(_items_block(semantic_model.get("riskSignals")))
+        signal_blocks.append(_highlight_cards_block(semantic_model.get("riskSignals")))
     if _list_of_dicts(semantic_model.get("opportunitySignals")):
-        signal_blocks.append(_items_block(semantic_model.get("opportunitySignals")))
+        signal_blocks.append(_highlight_cards_block(semantic_model.get("opportunitySignals")))
     if signal_blocks:
-        sections.append(_section("risk_opportunity_assessment", "风险与机会评估", signal_blocks))
+        sections.append(
+            _section(
+                "risk_opportunity_assessment",
+                outline_by_id.get("risk_opportunity_assessment") or "风险与机会评估",
+                signal_blocks,
+            )
+        )
     if _list_of_dicts(semantic_model.get("drivers")):
-        sections.append(_section("attribution_logic", "归因与逻辑拆解", [_items_block(semantic_model.get("drivers"))]))
-    sections.append(_section("evidence_verification", "来源与核验", [_evidence_block(semantic_model.get("evidenceChains"))]))
+        sections.append(
+            _section(
+                "attribution_logic",
+                outline_by_id.get("attribution_logic") or "归因与逻辑拆解",
+                [_items_block(semantic_model.get("drivers"))],
+            )
+        )
+    sections.append(
+        _section(
+            "evidence_verification",
+            outline_by_id.get("evidence_verification") or "来源与核验",
+            [_evidence_table_block(semantic_model.get("evidenceChains"))],
+        )
+    )
     visual_blocks = []
     if _list_of_dicts(semantic_model.get("visualNarratives")):
-        visual_blocks.append(_visual_block(semantic_model.get("visualNarratives")))
+        visual_blocks.append(_visual_figure_block(semantic_model.get("visualNarratives")))
     if _list_of_dicts(semantic_model.get("modelExplanations")):
-        visual_blocks.append(_items_block(semantic_model.get("modelExplanations")))
+        visual_blocks.append(_stat_strip_block(semantic_model.get("modelExplanations")))
     if visual_blocks:
-        sections.append(_section("model_visual_interpretation", "模型与图表解读", visual_blocks))
-    sections.append(_section("recommendations", "决策建议", [_items_block(semantic_model.get("recommendations"), empty_text="当前未形成可追溯的决策建议。")]))
-    sections.append(_section("limitations", "限制说明", [_items_block(semantic_model.get("limitations"), empty_text="暂无额外限制。")]))
+        sections.append(
+            _section(
+                "model_visual_interpretation",
+                outline_by_id.get("model_visual_interpretation") or "模型与图表解读",
+                visual_blocks,
+            )
+        )
+    sections.append(
+        _section(
+            "recommendations",
+            outline_by_id.get("recommendations") or "决策建议",
+            [_items_block(semantic_model.get("recommendations"), empty_text="当前未形成可追溯的决策建议。")],
+        )
+    )
+    sections.append(
+        _section(
+            "limitations",
+            outline_by_id.get("limitations") or "来源与限制",
+            [_callout_block("边界说明", _limitations_summary(_list_of_dicts(semantic_model.get("limitations"))))],
+        )
+    )
     return [section for section in sections if section.get("blocks")]
+
+
+def _dynamic_chapter_title(section_id: str, selected_modules: set[str]) -> str:
+    if section_id == "key_findings":
+        if "enterprise_operations" in selected_modules:
+            return "经营表现与关键发现"
+        if "bankruptcy_risk" in selected_modules:
+            return "财务健康与关键发现"
+        return "关键发现"
+    if section_id == "risk_opportunity_assessment":
+        if "robotics_risk" in selected_modules:
+            return "外部环境与风险机会评估"
+        if "bankruptcy_risk" in selected_modules:
+            return "风险暴露与压力评估"
+        return "风险与机会评估"
+    if section_id == "attribution_logic":
+        if "enterprise_operations" in selected_modules:
+            return "经营驱动与逻辑拆解"
+        return "归因与逻辑拆解"
+    if section_id == "model_visual_interpretation":
+        if "bankruptcy_risk" in selected_modules:
+            return "财务健康与模型解读"
+        if "robotics_risk" in selected_modules:
+            return "事件信号与图表解读"
+        return "模型与图表解读"
+    return section_id
+
+
+def _default_section_intro(section_title: str) -> str:
+    title = _clean_text(section_title)
+    if not title:
+        return ""
+    return f"{title}章节基于当前已完成模块的证据、判断与限制进行统一编排。"
+
+
+def _limitations_summary(limitations: list[dict[str, Any]]) -> str:
+    if not limitations:
+        return "当前未发现额外限制说明。"
+    summaries = [
+        _clean_text(item.get("readerSummary") or item.get("summary") or item.get("description") or item.get("title"))
+        for item in limitations
+        if isinstance(item, dict)
+    ]
+    summaries = [item for item in summaries if item]
+    if not summaries:
+        return "当前报告仅覆盖可验证证据，未纳入无法确认的附加结论。"
+    return "；".join(summaries[:3])
 
 
 def validate_published_report(*bodies: str, forbidden_values: list[str] | None = None) -> list[str]:
@@ -982,33 +1160,66 @@ def build_report_document(
     scope: dict[str, Any] | None,
     body_sections: list[dict[str, Any]],
     render_style: str,
+    chapter_outline: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     scope_payload = _dict_value(scope)
     cover_items = [
-        {"title": "报告标题", "summary": _clean_text(title)},
-        {"title": "目标对象", "summary": _clean_text(scope_payload.get("targetCompany"))},
-        {"title": "股票代码", "summary": _clean_text(scope_payload.get("stockCode"))},
-        {"title": "时间范围", "summary": _clean_text(scope_payload.get("timeRange"))},
-        {"title": "报告目标", "summary": _clean_text(scope_payload.get("reportGoal"))},
+        {"label": "目标对象", "value": _clean_text(scope_payload.get("targetCompany"))},
+        {"label": "股票代码", "value": _clean_text(scope_payload.get("stockCode"))},
+        {"label": "时间范围", "value": _clean_text(scope_payload.get("timeRange"))},
+        {"label": "报告目标", "value": _clean_text(scope_payload.get("reportGoal"))},
     ]
-    toc_items = [
-        {"id": _clean_text(section.get("id")), "title": _clean_text(section.get("title"))}
-        for section in body_sections
-        if isinstance(section, dict) and _clean_text(section.get("title"))
+    outline_payload = [
+        _drop_empty(
+            {
+                "id": _clean_text(item.get("id")),
+                "title": _clean_text(item.get("title")),
+                "family": _clean_text(item.get("family")),
+                "origin": _clean_text(item.get("origin")),
+            }
+        )
+        for item in _list_of_dicts(chapter_outline)
+        if _clean_text(item.get("title"))
     ]
+    if not outline_payload:
+        outline_payload = [
+            {"id": _clean_text(section.get("id")), "title": _clean_text(section.get("title")), "origin": "body_section"}
+            for section in body_sections
+            if isinstance(section, dict) and _clean_text(section.get("title"))
+        ]
+    toc_items = [{"id": item.get("id"), "title": item.get("title")} for item in outline_payload if item.get("title")]
+    composed_sections = []
+    for section in body_sections:
+        if not isinstance(section, dict):
+            continue
+        section_title = _clean_text(section.get("title"))
+        intro_text = _clean_text(section.get("intro")) or _default_section_intro(section_title)
+        blocks = section.get("blocks") if isinstance(section.get("blocks"), list) else []
+        composed_sections.append(
+            {
+                **section,
+                "blocks": [
+                    *([_section_intro_block(intro_text)] if intro_text else []),
+                    *blocks,
+                ],
+            }
+        )
     return _drop_empty(
         {
             "schemaVersion": REPORT_DOCUMENT_SCHEMA_VERSION,
             "renderStyle": normalize_report_render_style(render_style),
             "structureLocked": True,
+            "chapterOutline": outline_payload,
             "pages": [
                 {
                     "id": "cover",
                     "type": "cover",
                     "title": "封面",
                     "blocks": [
-                        _paragraph("本报告面向决策阅读场景整理当前已完成的分析结果与限制说明。"),
-                        _items_block([item for item in cover_items if item.get("summary")]),
+                        _hero_block(title),
+                        _subtitle_block("模块输出作为证据与素材输入，正式报告正文由报告层统一编排。"),
+                        _meta_grid_block([item for item in cover_items if item.get("value")]),
+                        _callout_block("阅读说明", "本报告包含独立封面与正式正文结构，章节会依据本次已启用分析模块动态组织。"),
                     ],
                 },
                 {
@@ -1021,7 +1232,7 @@ def build_report_document(
                     "id": "body",
                     "type": "body",
                     "title": "正文",
-                    "sections": [section for section in body_sections if isinstance(section, dict)],
+                    "sections": composed_sections,
                 },
             ],
         }
@@ -1042,6 +1253,7 @@ def _report_document_from_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         body_sections=sections,
         render_style=_clean_text(payload.get("renderStyle") or _dict_value(payload.get("rendering")).get("style"))
         or DEFAULT_REPORT_RENDER_STYLE,
+        chapter_outline=_list_of_dicts(payload.get("sectionPlan") or _dict_value(payload.get("semanticModel")).get("chapterOutline")),
     )
 
 
@@ -1114,6 +1326,13 @@ def _render_report_document_html(document: dict[str, Any], *, title: str) -> str
         ".report-page-cover .report-page-frame{min-height:720px;display:flex;flex-direction:column;justify-content:center;background:linear-gradient(160deg,#0f766e 0%,#14b8a6 52%,#ccfbf1 100%);color:#f8fafc}"
         ".report-page-cover h2{font-size:14px;letter-spacing:.12em;text-transform:uppercase;opacity:.9}"
         ".report-page-cover p,.report-page-cover li{color:#ecfeff}"
+        ".report-hero{font-size:34px;line-height:1.15;font-weight:700;margin:0 0 18px 0}"
+        ".report-subtitle{font-size:16px;max-width:42rem;margin:0 0 22px 0;opacity:.92}"
+        ".report-meta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0 24px}"
+        ".report-meta-item{padding:14px 16px;border-radius:14px;background:rgba(255,255,255,.14);backdrop-filter:blur(10px)}"
+        ".report-meta-label{display:block;font-size:12px;letter-spacing:.06em;text-transform:uppercase;opacity:.82;margin-bottom:6px}"
+        ".report-section-intro{font-size:14px;color:#475569;margin:0 0 14px 0}"
+        ".report-callout{border-left:4px solid #14b8a6;background:#ecfeff;padding:12px 14px;border-radius:12px;margin:0 0 16px 0;color:#134e4a}"
         ".report-page h2,.report-page h3{line-height:1.25}"
         ".report-page-cover .report-items li strong{color:#fff}"
         ".report-toc{margin:0;padding-left:20px}"
@@ -1141,15 +1360,53 @@ def _render_report_html_block(block: Any) -> str:
     if not isinstance(block, dict):
         return ""
     block_type = _clean_text(block.get("type"))
+    if block_type == "hero":
+        title = _clean_text(block.get("title"))
+        return f"<div class=\"report-hero\">{html.escape(title)}</div>" if title else ""
+    if block_type == "subtitle":
+        text = _clean_text(block.get("text"))
+        return f"<p class=\"report-subtitle\">{html.escape(text)}</p>" if text else ""
+    if block_type == "meta_grid":
+        items = _list_of_dicts(block.get("items"))
+        if not items:
+            return ""
+        parts = ["<div class=\"report-meta-grid\">"]
+        for item in items:
+            label = _clean_text(item.get("label") or item.get("title"))
+            value = _clean_text(item.get("value") or item.get("summary"))
+            if not label or not value:
+                continue
+            parts.append(
+                "<div class=\"report-meta-item\">"
+                f"<span class=\"report-meta-label\">{html.escape(label)}</span>"
+                f"<strong>{html.escape(value)}</strong>"
+                "</div>"
+            )
+        parts.append("</div>")
+        return "".join(parts)
+    if block_type == "section_intro":
+        text = _clean_text(block.get("text"))
+        return f"<p class=\"report-section-intro\">{html.escape(text)}</p>" if text else ""
+    if block_type == "callout":
+        title = _clean_text(block.get("title"))
+        text = _clean_text(block.get("text"))
+        if not title and not text:
+            return ""
+        return (
+            "<div class=\"report-callout\">"
+            + (f"<strong>{html.escape(title)}</strong>" if title else "")
+            + (f"<p>{html.escape(text)}</p>" if text else "")
+            + "</div>"
+        )
     if block_type == "paragraph":
         text = _clean_text(block.get("text"))
         return f"<p>{_inline_markdown_to_html(text)}</p>" if text else ""
-    if block_type == "items":
+    if block_type in {"items", "highlight_cards", "stat_strip"}:
         items = _list_of_dicts(block.get("items"))
         if not items:
             empty_text = _clean_text(block.get("emptyText"))
             return f"<p>{html.escape(empty_text)}</p>" if empty_text else ""
-        parts = ["<ul class=\"report-items\">"]
+        parts = [f"<ul class=\"report-items report-{block_type}\">"]
         for item in items:
             title = _clean_text(item.get("title") or item.get("claim") or item.get("action") or item.get("name"))
             summary = _clean_text(
@@ -1171,7 +1428,7 @@ def _render_report_html_block(block: Any) -> str:
             parts.append("<li>" + " ".join(body or [html.escape(title or summary)]) + "</li>")
         parts.append("</ul>")
         return "".join(parts)
-    if block_type == "evidence":
+    if block_type in {"evidence", "evidence_table"}:
         items = _list_of_dicts(block.get("items"))
         if not items:
             return "<p>暂无可引用来源。</p>"
@@ -1184,7 +1441,7 @@ def _render_report_html_block(block: Any) -> str:
             parts.append(f"<li>{html.escape(text)}</li>")
         parts.append("</ul>")
         return "".join(parts)
-    if block_type == "visuals":
+    if block_type in {"visuals", "visual_figure"}:
         parts: list[str] = []
         for asset in _list_of_dicts(block.get("items")):
             title = _clean_text(asset.get("title")) or "图表"
@@ -1411,7 +1668,24 @@ def generate_analysis_report_from_module_artifacts(
     if not rows:
         return None
     clean_style = normalize_report_render_style(render_style)
-    artifact = _artifact_report_from_module_text(rows, render_style=clean_style)
+    restored_module_results = _restore_module_results_from_artifact_rows(rows)
+    restored_handoff_bundle = _restore_handoff_bundle_from_artifact_rows(rows)
+    if restored_module_results and restored_handoff_bundle.get("enabledModules"):
+        artifact = generate_analysis_report(
+            analysis_session={
+                "sessionId": rows[0].analysis_session_id or "",
+                "revision": int(rows[0].analysis_session_revision or 0),
+                "enabledModules": restored_handoff_bundle.get("enabledModules", []),
+            },
+            handoff_bundle=restored_handoff_bundle,
+            module_results=restored_module_results,
+            report_writer=report_writer,
+            render_style=clean_style,
+        )
+        if artifact:
+            artifact["sourceModuleArtifactIds"] = [row.artifact_id for row in rows]
+    else:
+        artifact = _artifact_report_from_module_text(rows, render_style=clean_style)
     artifact["renderStyle"] = clean_style
     artifact["sourceModuleArtifactIds"] = [row.artifact_id for row in rows]
     artifact["downloadMetadata"] = report_download_metadata(_clean_text(artifact.get("reportId")))
@@ -1752,10 +2026,32 @@ def _report_pdf_segments_from_block(block: Any) -> list[str]:
     if not isinstance(block, dict):
         return []
     block_type = _clean_text(block.get("type"))
+    if block_type == "hero":
+        title = _clean_text(block.get("title"))
+        return [f"<h1>{html.escape(title)}</h1>"] if title else []
+    if block_type == "subtitle":
+        text = _clean_text(block.get("text"))
+        return [f"<p>{html.escape(text)}</p>"] if text else []
+    if block_type == "meta_grid":
+        items = []
+        for item in _list_of_dicts(block.get("items")):
+            label = _clean_text(item.get("label") or item.get("title"))
+            value = _clean_text(item.get("value") or item.get("summary"))
+            if label and value:
+                items.append(f"<li><strong>{html.escape(label)}</strong> {html.escape(value)}</li>")
+        return ["<ul>" + "".join(items) + "</ul>"] if items else []
+    if block_type == "section_intro":
+        text = _clean_text(block.get("text"))
+        return [f"<p>{html.escape(text)}</p>"] if text else []
+    if block_type == "callout":
+        title = _clean_text(block.get("title"))
+        text = _clean_text(block.get("text"))
+        body = " ".join(part for part in (title, text) if part)
+        return [f"<div class=\"pdf-visual-fallback\"><p>{html.escape(body)}</p></div>"] if body else []
     if block_type == "paragraph":
         text = _clean_text(block.get("text"))
         return [f"<p>{_inline_markdown_to_html(text)}</p>"] if text else []
-    if block_type == "items":
+    if block_type in {"items", "highlight_cards", "stat_strip"}:
         items = []
         for item in _list_of_dicts(block.get("items")):
             title = _clean_text(item.get("title") or item.get("claim") or item.get("action") or item.get("name"))
@@ -1780,7 +2076,7 @@ def _report_pdf_segments_from_block(block: Any) -> list[str]:
             empty_text = _clean_text(block.get("emptyText"))
             return [f"<p>{html.escape(empty_text)}</p>"] if empty_text else []
         return ["<ul>" + "".join(items) + "</ul>"]
-    if block_type == "evidence":
+    if block_type in {"evidence", "evidence_table"}:
         items = []
         for item in _list_of_dicts(block.get("items")):
             title = _clean_text(item.get("title") or item.get("sourceDescription")) or "来源"
@@ -1788,7 +2084,7 @@ def _report_pdf_segments_from_block(block: Any) -> list[str]:
             verification = _clean_text(item.get("verificationStatus"))
             items.append("<li>" + html.escape(" ".join(part for part in (title, summary, verification) if part)) + "</li>")
         return ["<ul>" + "".join(items) + "</ul>"] if items else ["<p>暂无可引用来源。</p>"]
-    if block_type == "visuals":
+    if block_type in {"visuals", "visual_figure"}:
         segments: list[str] = []
         for asset in _list_of_dicts(block.get("items")):
             title = _clean_text(asset.get("title")) or "图表"
@@ -2007,11 +2303,38 @@ def _append_markdown_block(lines: list[str], block: Any) -> None:
     if not isinstance(block, dict):
         return
     block_type = _clean_text(block.get("type"))
-    if block_type == "paragraph":
+    if block_type == "hero":
+        title = _clean_text(block.get("title"))
+        if title:
+            lines.extend([f"**{title}**", ""])
+    elif block_type == "subtitle":
         text = _clean_text(block.get("text"))
         if text:
             lines.extend([text, ""])
-    elif block_type == "items":
+    elif block_type == "meta_grid":
+        items = _list_of_dicts(block.get("items"))
+        for item in items:
+            label = _clean_text(item.get("label") or item.get("title"))
+            value = _clean_text(item.get("value") or item.get("summary"))
+            if label and value:
+                lines.append(f"- {label}：{value}")
+        if items:
+            lines.append("")
+    elif block_type == "section_intro":
+        text = _clean_text(block.get("text"))
+        if text:
+            lines.extend([text, ""])
+    elif block_type == "callout":
+        title = _clean_text(block.get("title"))
+        text = _clean_text(block.get("text"))
+        summary = "：".join(part for part in (title, text) if part)
+        if summary:
+            lines.extend([summary, ""])
+    elif block_type == "paragraph":
+        text = _clean_text(block.get("text"))
+        if text:
+            lines.extend([text, ""])
+    elif block_type in {"items", "highlight_cards", "stat_strip"}:
         items = block.get("items", [])
         if not isinstance(items, list) or not items:
             empty_text = _clean_text(block.get("emptyText"))
@@ -2045,7 +2368,7 @@ def _append_markdown_block(lines: list[str], block: Any) -> None:
             if boundary:
                 lines.append(f"  - 解读边界：{boundary}")
         lines.append("")
-    elif block_type == "evidence":
+    elif block_type in {"evidence", "evidence_table"}:
         evidence = block.get("items", [])
         if not isinstance(evidence, list) or not evidence:
             lines.extend(["暂无可引用来源。", ""])
@@ -2066,7 +2389,7 @@ def _append_markdown_block(lines: list[str], block: Any) -> None:
             if support:
                 lines.append(f"  - 支撑关系：{support}")
         lines.append("")
-    elif block_type == "visuals":
+    elif block_type in {"visuals", "visual_figure"}:
         for asset in block.get("items", []) if isinstance(block.get("items"), list) else []:
             if not isinstance(asset, dict):
                 continue
@@ -2816,16 +3139,52 @@ def _paragraph(text: str) -> dict[str, Any]:
     return {"type": "paragraph", "text": _clean_text(text)}
 
 
+def _hero_block(title: str) -> dict[str, Any]:
+    return {"type": "hero", "title": _clean_text(title)}
+
+
+def _subtitle_block(text: str) -> dict[str, Any]:
+    return {"type": "subtitle", "text": _clean_text(text)}
+
+
+def _meta_grid_block(items: Any) -> dict[str, Any]:
+    return {"type": "meta_grid", "items": _list_of_dicts(items)}
+
+
+def _section_intro_block(text: str) -> dict[str, Any]:
+    return {"type": "section_intro", "text": _clean_text(text)}
+
+
+def _callout_block(title: str, text: str) -> dict[str, Any]:
+    return {"type": "callout", "title": _clean_text(title), "text": _clean_text(text)}
+
+
 def _items_block(items: Any, *, empty_text: str = "") -> dict[str, Any]:
     return {"type": "items", "items": _list_of_dicts(items), "emptyText": empty_text}
+
+
+def _highlight_cards_block(items: Any, *, empty_text: str = "") -> dict[str, Any]:
+    return {"type": "highlight_cards", "items": _list_of_dicts(items), "emptyText": empty_text}
 
 
 def _evidence_block(items: Any) -> dict[str, Any]:
     return {"type": "evidence", "items": _list_of_dicts(items)}
 
 
+def _evidence_table_block(items: Any) -> dict[str, Any]:
+    return {"type": "evidence_table", "items": _list_of_dicts(items)}
+
+
 def _visual_block(items: Any) -> dict[str, Any]:
     return {"type": "visuals", "items": _list_of_dicts(items)}
+
+
+def _visual_figure_block(items: Any) -> dict[str, Any]:
+    return {"type": "visual_figure", "items": _list_of_dicts(items)}
+
+
+def _stat_strip_block(items: Any) -> dict[str, Any]:
+    return {"type": "stat_strip", "items": _list_of_dicts(items)}
 
 
 def _trace_label(item: dict[str, Any]) -> str:
@@ -2906,6 +3265,46 @@ def _shared_summary_from_module_rows(rows: list[AnalysisModuleArtifact]) -> dict
                 }
             )
     return {}
+
+
+def _restore_module_results_from_artifact_rows(rows: list[AnalysisModuleArtifact]) -> dict[str, dict[str, Any]]:
+    restored: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        metadata = _dict_value(row.metadata_json)
+        module_result = _dict_value(metadata.get("moduleResult"))
+        if not module_result:
+            continue
+        module_id = _clean_text(row.module_id) or _clean_text(module_result.get("moduleId"))
+        if not module_id:
+            continue
+        restored[module_id] = {
+            **module_result,
+            "moduleId": module_id,
+            "displayName": _clean_text(module_result.get("displayName") or metadata.get("displayName") or row.title),
+            "status": _clean_text(module_result.get("status") or row.status),
+            "runId": _clean_text(module_result.get("runId") or row.module_run_id),
+        }
+    return restored
+
+
+def _restore_handoff_bundle_from_artifact_rows(rows: list[AnalysisModuleArtifact]) -> dict[str, Any]:
+    enabled_modules = [row.module_id for row in rows if _clean_text(row.module_id)]
+    module_run_ids = {
+        row.module_id: row.module_run_id
+        for row in rows
+        if _clean_text(row.module_id) and _clean_text(row.module_run_id)
+    }
+    return _drop_empty(
+        {
+            "analysisSession": {
+                "sessionId": rows[0].analysis_session_id or "",
+                "revision": int(rows[0].analysis_session_revision or 0),
+            },
+            "enabledModules": enabled_modules,
+            "sharedInputSummary": _shared_summary_from_module_rows(rows),
+            "moduleRunIds": module_run_ids,
+        }
+    )
 
 
 def _artifact_report_from_module_text(
@@ -3008,7 +3407,7 @@ def _artifact_report_from_module_text(
             ),
             "sourceModuleArtifactIds": [row.artifact_id for row in rows],
             "qualityFlags": [
-                _quality_flag("artifact_text_report", "info", "报告基于模块原文生成，未要求模块提供额外 reportBrief。")
+                _quality_flag("degraded_module_text_fallback", "warning", "语义报告素材不可用，已降级为模块原文拼接快照。")
             ],
             "rendering": {
                 "style": render_style,

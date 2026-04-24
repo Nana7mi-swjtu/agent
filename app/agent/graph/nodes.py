@@ -31,7 +31,9 @@ from .analysis_slots import (
     SHARED_REPORT_GOAL,
     SHARED_STOCK_CODE,
     SHARED_TIME_RANGE,
+    contains_explicit_correction_for_other_slots,
     has_slot_value,
+    parse_explicit_correction_for_slots,
     parse_compound_answer_for_slots,
     parse_answer_for_group,
     slot_label,
@@ -891,18 +893,30 @@ def analysis_intake_node(state: AgentState):
         current_group = _current_question_group(session)
         current_slot_ids = [slot_id for slot_id in current_group.get("slotIds", []) if slot_id in slot_catalog]
         user_message = str(state.get("user_message", "")).strip()
-        if current_slot_ids:
+        correction_updates = parse_explicit_correction_for_slots(
+            slot_ids=relevant_slot_ids,
+            slot_catalog=slot_catalog,
+            user_message=user_message,
+        )
+        if current_slot_ids and not contains_explicit_correction_for_other_slots(
+            slot_ids=current_slot_ids,
+            user_message=user_message,
+        ):
             slot_updates = parse_answer_for_group(
                 slot_ids=current_slot_ids,
                 slot_catalog=slot_catalog,
                 user_message=user_message,
             )
+        compound_slot_ids = current_slot_ids or relevant_slot_ids
+        if correction_updates:
+            correction_slot_ids = set(correction_updates)
+            compound_slot_ids = [slot_id for slot_id in compound_slot_ids if slot_id not in correction_slot_ids]
         compound_updates = parse_compound_answer_for_slots(
-            slot_ids=relevant_slot_ids,
+            slot_ids=compound_slot_ids,
             slot_catalog=slot_catalog,
             user_message=user_message,
         )
-        slot_updates = {**slot_updates, **compound_updates}
+        slot_updates = {**slot_updates, **compound_updates, **correction_updates}
 
     changed_slots = _apply_slot_updates(session, slot_updates, contracts=contracts)
     if compatibility_changed_modules:

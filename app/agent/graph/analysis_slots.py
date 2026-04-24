@@ -52,9 +52,24 @@ _CONTEXT_MARKER_PATTERN = re.compile(
     r"(?:" + "|".join(re.escape(marker) for marker in sorted(_CONTEXT_MARKERS, key=len, reverse=True)) + r")\s*(?:是|为|:|：)?"
 )
 _TIME_RANGE_PATTERN = re.compile(
-    r"(?:近\s*\d+\s*(?:天|日|周|个月|月|年)|过去\s*\d+\s*(?:天|日|周|个月|月|年)|"
+    r"(?:近\s*\d+\s*(?:天|日|周|个月|月|年)|过去\s*\d+\s*(?:天|日|周|个月|月|年)|最近\s*\d+\s*(?:天|日|周|个月|月|年)|"
+    r"\d+\s*(?:天|日|周|个月|月|年)|半(?:年)|一(?:年)|两(?:年)|三(?:年)|四(?:年)|五(?:年)|"
     r"本(?:周|月|季度|季|年)|上(?:周|月|季度|季|年)|"
     r"\d{4}[-/年]\d{1,2}(?:[-/月]\d{1,2}日?)?(?:\s*(?:至|到|-|~)\s*\d{4}[-/年]\d{1,2}(?:[-/月]\d{1,2}日?)?)?)"
+)
+_EXPLICIT_CORRECTION_VERBS = ("改成", "改为", "调整为", "更新为", "换成")
+_EXPLICIT_CORRECTION_LABELS = {
+    SHARED_ENTERPRISE_NAME: ("企业名称", "企业", "公司名称", "公司", "标的"),
+    SHARED_STOCK_CODE: ("股票代码", "代码"),
+    SHARED_TIME_RANGE: ("时间范围", "时间"),
+    SHARED_REPORT_GOAL: ("报告目标", "分析目标", "目标"),
+    SHARED_ANALYSIS_FOCUS_TAGS: ("分析重点", "关注重点", "重点", "关注", "聚焦"),
+    SHARED_REGION_SCOPE: ("区域范围", "区域"),
+}
+_EXPLICIT_CORRECTION_PATTERN = re.compile(
+    r"(?:" + "|".join(re.escape(label) for labels in _EXPLICIT_CORRECTION_LABELS.values() for label in labels) + r")\s*(?:"
+    + "|".join(re.escape(verb) for verb in _EXPLICIT_CORRECTION_VERBS)
+    + r")"
 )
 
 
@@ -267,6 +282,43 @@ def parse_compound_answer_for_slots(
     return updates
 
 
+def parse_explicit_correction_for_slots(
+    *,
+    slot_ids: list[str],
+    slot_catalog: dict[str, AnalysisSlotDefinition],
+    user_message: str,
+) -> dict[str, Any]:
+    message = str(user_message or "").strip()
+    if not message:
+        return {}
+    updates: dict[str, Any] = {}
+    for slot_id in slot_ids:
+        definition = slot_catalog.get(slot_id)
+        if definition is None:
+            continue
+        corrected_value = _extract_explicit_correction_segment(message, slot_id=slot_id)
+        if not corrected_value:
+            continue
+        raw_value = _normalize_focus_text(corrected_value) if slot_id == SHARED_ANALYSIS_FOCUS_TAGS else corrected_value
+        normalized = normalize_slot_value(definition, raw_value)
+        if has_slot_value(normalized):
+            updates[slot_id] = normalized
+    return updates
+
+
+def contains_explicit_correction_for_other_slots(*, slot_ids: list[str], user_message: str) -> bool:
+    message = str(user_message or "").strip()
+    if not message:
+        return False
+    allowed_slot_ids = set(slot_ids)
+    for candidate_slot_id in _EXPLICIT_CORRECTION_LABELS:
+        if candidate_slot_id in allowed_slot_ids:
+            continue
+        if _extract_explicit_correction_segment(message, slot_id=candidate_slot_id):
+            return True
+    return False
+
+
 def _parse_enterprise_identity_answer(
     *,
     slot_ids: list[str],
@@ -316,7 +368,10 @@ def _normalize_stock_code(value: Any) -> str | None:
 
 def _normalize_time_range(value: Any) -> str | None:
     text = str(value or "").strip()
-    return text or None
+    if not text:
+        return None
+    normalized = _extract_time_range(text)
+    return normalized or None
 
 
 def _normalize_choice_tags(value: Any, *, definition: AnalysisSlotDefinition) -> list[str]:
@@ -421,6 +476,32 @@ def _extract_labeled_segment(message: str, labels: tuple[str, ...]) -> str:
 def _extract_time_range(message: str) -> str:
     match = _TIME_RANGE_PATTERN.search(str(message or ""))
     return match.group(0).replace(" ", "") if match else ""
+
+
+def _extract_explicit_correction_segment(message: str, *, slot_id: str) -> str:
+    text = str(message or "").strip()
+    labels = _EXPLICIT_CORRECTION_LABELS.get(slot_id, ())
+    if not text or not labels:
+        return ""
+    pattern = re.compile(
+        r"(?:把)?(?:"
+        + "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
+        + r")\s*(?:"
+        + "|".join(re.escape(verb) for verb in _EXPLICIT_CORRECTION_VERBS)
+        + r")\s*"
+    )
+    match = pattern.search(text)
+    if not match:
+        return ""
+    start = match.end()
+    end = len(text)
+    separator_match = re.search(r"[；;\n\r]", text[start:end])
+    if separator_match:
+        end = min(end, start + separator_match.start())
+    next_correction_match = _EXPLICIT_CORRECTION_PATTERN.search(text, start)
+    if next_correction_match:
+        end = min(end, next_correction_match.start())
+    return text[start:end].strip(" ,，、；;。")
 
 
 def _normalize_focus_text(value: str) -> str:
