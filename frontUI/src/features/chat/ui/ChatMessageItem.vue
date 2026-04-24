@@ -11,6 +11,18 @@ import {
   getMessageSources,
   getMessageTraceSteps,
 } from "@/entities/chat/lib/message";
+import {
+  getModuleEvidence as moduleEvidenceForMessage,
+  getModuleFallbackCharts as moduleFallbackChartsForMessage,
+  getModuleHeadline as moduleHeadlineForMessage,
+  getModuleRenderableAssets as moduleRenderableAssetsForMessage,
+  getModuleRenderedAssetSrc as moduleRenderedAssetSrc,
+  getModuleTableCellText as moduleTableCellText,
+  getModuleTableColumns as moduleTableColumns,
+  getModuleTableRows as moduleTableRows,
+  getModuleTables as moduleTablesForMessage,
+  hasModuleArtifactContext,
+} from "@/features/chat/lib/moduleArtifactPreview.js";
 import { buildApiUrl } from "@/shared/api/client";
 import { useUiStore } from "@/shared/model/ui-store";
 import MarkdownContent from "@/shared/ui/MarkdownContent.vue";
@@ -76,8 +88,6 @@ const sourcesForMessage = (message) => getMessageSources(message);
 const memoryInfoForMessage = (message) => getMessageMemoryInfo(message);
 const reportForMessage = (message) =>
   message?.analysisReport && typeof message.analysisReport === "object" ? message.analysisReport : null;
-const moduleArtifactForMessage = (message) =>
-  message?.analysisModuleArtifact && typeof message.analysisModuleArtifact === "object" ? message.analysisModuleArtifact : null;
 const reportRequestForMessage = (message) =>
   message?.reportGenerationRequest && typeof message.reportGenerationRequest === "object" ? message.reportGenerationRequest : null;
 const renderStylesForRequest = (request) =>
@@ -124,22 +134,6 @@ const showGroundingMeta = (message) =>
 
 const isPendingAgent = (message) => message?.from === "agent" && Boolean(message?.pending);
 const sourceMeta = (source) => formatSourceMeta(source);
-const moduleEvidenceForMessage = (message) => {
-  const artifact = moduleArtifactForMessage(message);
-  return Array.isArray(artifact?.evidenceReferences) ? artifact.evidenceReferences.slice(0, 5) : [];
-};
-const moduleVisualsForMessage = (message) => {
-  const artifact = moduleArtifactForMessage(message);
-  return Array.isArray(artifact?.visualSummaries) ? artifact.visualSummaries.slice(0, 3) : [];
-};
-const moduleHeadlineForMessage = (message) => {
-  const artifact = moduleArtifactForMessage(message);
-  if (!artifact) return "";
-  return String(artifact?.executiveSummary?.headline || artifact?.readerPacket?.executiveSummary?.headline || "").trim();
-};
-const hasModuleArtifactContext = (message) =>
-  Boolean(moduleArtifactForMessage(message))
-  && (Boolean(moduleHeadlineForMessage(message)) || moduleEvidenceForMessage(message).length > 0 || moduleVisualsForMessage(message).length > 0);
 const graphForMessage = (message) => {
   const graph = message?.graph;
   if (!graph || typeof graph !== "object") return null;
@@ -177,16 +171,70 @@ const graphMetaForMessage = (message) =>
         <MarkdownContent v-else :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
         <div v-if="message.from === 'agent' && !message.pending && hasModuleArtifactContext(message)" class="module-reader-panel">
           <div v-if="moduleHeadlineForMessage(message)" class="module-reader-headline">{{ moduleHeadlineForMessage(message) }}</div>
-          <div v-if="moduleVisualsForMessage(message).length" class="module-reader-group">
-            <div class="module-reader-title">图表摘要</div>
+          <div v-if="moduleTablesForMessage(message).length" class="module-reader-group">
+            <div class="module-reader-title">结构化表格</div>
+            <div class="module-table-stack">
+              <div
+                v-for="table in moduleTablesForMessage(message)"
+                :key="table.tableId || `${message.id}_table_${table.title}`"
+                class="module-table-card"
+              >
+                <strong class="module-table-title">{{ table.title || "表格" }}</strong>
+                <div class="module-table-wrap">
+                  <table class="module-reader-table">
+                    <thead>
+                      <tr>
+                        <th
+                          v-for="column in moduleTableColumns(table)"
+                          :key="column.key || column.label"
+                        >
+                          {{ column.label || column.key }}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="row in moduleTableRows(table)"
+                        :key="row.rowId || `${message.id}_row_${table.tableId}`"
+                      >
+                        <td
+                          v-for="column in moduleTableColumns(table)"
+                          :key="`${row.rowId || 'row'}_${column.key}`"
+                        >
+                          {{ moduleTableCellText(row, column.key) }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-if="moduleRenderableAssetsForMessage(message).length || moduleFallbackChartsForMessage(message).length" class="module-reader-group">
+            <div class="module-reader-title">图表预览</div>
             <div class="module-reader-list">
               <div
-                v-for="item in moduleVisualsForMessage(message)"
-                :key="item.id || `${message.id}_visual_${item.title}`"
-                class="module-reader-card"
+                v-for="item in moduleRenderableAssetsForMessage(message)"
+                :key="item.assetId || `${message.id}_rendered_${item.title}`"
+                class="module-reader-card is-visual"
               >
                 <strong>{{ item.title || "图表" }}</strong>
-                <span>{{ item.caption || "图表用于辅助理解当前主题强弱与证据分布。" }}</span>
+                <img
+                  :src="moduleRenderedAssetSrc(item)"
+                  :alt="item.altText || item.title || '图表'"
+                  class="module-reader-image"
+                >
+                <span>{{ item.caption || "图表用于辅助理解当前结构化表格中的可比信息。" }}</span>
+                <small v-if="item.interpretationBoundary" class="module-reader-boundary">解读边界：{{ item.interpretationBoundary }}</small>
+              </div>
+              <div
+                v-for="item in moduleFallbackChartsForMessage(message)"
+                :key="item.chartId || item.id || `${message.id}_chart_${item.title}`"
+                class="module-reader-card"
+              >
+                <strong>{{ item.title || "图表候选" }}</strong>
+                <span>{{ item.caption || "当前未生成图片资产，保留候选与表格回退。" }}</span>
+                <small v-if="item.interpretationBoundary" class="module-reader-boundary">解读边界：{{ item.interpretationBoundary }}</small>
               </div>
             </div>
           </div>
@@ -306,16 +354,70 @@ const graphMetaForMessage = (message) =>
         <MarkdownContent :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
         <div v-if="message.from === 'agent' && !message.pending && hasModuleArtifactContext(message)" class="module-reader-panel">
           <div v-if="moduleHeadlineForMessage(message)" class="module-reader-headline">{{ moduleHeadlineForMessage(message) }}</div>
-          <div v-if="moduleVisualsForMessage(message).length" class="module-reader-group">
-            <div class="module-reader-title">图表摘要</div>
+          <div v-if="moduleTablesForMessage(message).length" class="module-reader-group">
+            <div class="module-reader-title">结构化表格</div>
+            <div class="module-table-stack">
+              <div
+                v-for="table in moduleTablesForMessage(message)"
+                :key="table.tableId || `${message.id}_grouped_table_${table.title}`"
+                class="module-table-card"
+              >
+                <strong class="module-table-title">{{ table.title || "表格" }}</strong>
+                <div class="module-table-wrap">
+                  <table class="module-reader-table">
+                    <thead>
+                      <tr>
+                        <th
+                          v-for="column in moduleTableColumns(table)"
+                          :key="column.key || column.label"
+                        >
+                          {{ column.label || column.key }}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="row in moduleTableRows(table)"
+                        :key="row.rowId || `${message.id}_grouped_row_${table.tableId}`"
+                      >
+                        <td
+                          v-for="column in moduleTableColumns(table)"
+                          :key="`${row.rowId || 'row'}_${column.key}`"
+                        >
+                          {{ moduleTableCellText(row, column.key) }}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-if="moduleRenderableAssetsForMessage(message).length || moduleFallbackChartsForMessage(message).length" class="module-reader-group">
+            <div class="module-reader-title">图表预览</div>
             <div class="module-reader-list">
               <div
-                v-for="item in moduleVisualsForMessage(message)"
-                :key="item.id || `${message.id}_grouped_visual_${item.title}`"
-                class="module-reader-card"
+                v-for="item in moduleRenderableAssetsForMessage(message)"
+                :key="item.assetId || `${message.id}_grouped_rendered_${item.title}`"
+                class="module-reader-card is-visual"
               >
                 <strong>{{ item.title || "图表" }}</strong>
-                <span>{{ item.caption || "图表用于辅助理解当前主题强弱与证据分布。" }}</span>
+                <img
+                  :src="moduleRenderedAssetSrc(item)"
+                  :alt="item.altText || item.title || '图表'"
+                  class="module-reader-image"
+                >
+                <span>{{ item.caption || "图表用于辅助理解当前结构化表格中的可比信息。" }}</span>
+                <small v-if="item.interpretationBoundary" class="module-reader-boundary">解读边界：{{ item.interpretationBoundary }}</small>
+              </div>
+              <div
+                v-for="item in moduleFallbackChartsForMessage(message)"
+                :key="item.chartId || item.id || `${message.id}_grouped_chart_${item.title}`"
+                class="module-reader-card"
+              >
+                <strong>{{ item.title || "图表候选" }}</strong>
+                <span>{{ item.caption || "当前未生成图片资产，保留候选与表格回退。" }}</span>
+                <small v-if="item.interpretationBoundary" class="module-reader-boundary">解读边界：{{ item.interpretationBoundary }}</small>
               </div>
             </div>
           </div>
@@ -550,6 +652,51 @@ const graphMetaForMessage = (message) =>
   gap: 8px;
 }
 
+.module-table-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.module-table-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(15, 118, 110, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.module-table-title {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.module-table-wrap {
+  overflow-x: auto;
+}
+
+.module-reader-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 520px;
+}
+
+.module-reader-table th,
+.module-reader-table td {
+  padding: 7px 8px;
+  border: 1px solid rgba(15, 118, 110, 0.12);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+  vertical-align: top;
+}
+
+.module-reader-table th {
+  background: rgba(20, 184, 166, 0.08);
+  color: #115e59;
+  font-weight: 700;
+}
+
 .module-reader-card {
   display: grid;
   gap: 4px;
@@ -569,6 +716,23 @@ const graphMetaForMessage = (message) =>
   font-size: 12px;
   line-height: 1.55;
   color: var(--text-channel);
+}
+
+.module-reader-card.is-visual {
+  gap: 8px;
+}
+
+.module-reader-image {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 118, 110, 0.08);
+  background: #fff;
+}
+
+.module-reader-boundary {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
 }
 
 .analysis-report-title {
