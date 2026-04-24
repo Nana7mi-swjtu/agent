@@ -47,6 +47,21 @@ from app.robotics_risk import subagent as robotics_subagent
 from app.robotics_risk import service as robotics_service
 
 
+class _FakeReaderResponse:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeReaderWriter:
+    def __init__(self, content):
+        self.content = content
+        self.calls = []
+
+    def invoke(self, messages):
+        self.calls.append(messages)
+        return _FakeReaderResponse(self.content)
+
+
 def _policy_doc() -> SourceDocument:
     return SourceDocument(
         id="src_policy_001",
@@ -573,6 +588,9 @@ def test_fake_adapters_produce_sources_events_signals_and_payload_refs():
     assert payload["events"]
     assert payload["opportunities"]
     assert payload["briefMarkdown"].startswith("# 石头科技风险与机会洞察简报")
+    assert payload["readerPacket"]["executiveSummary"]["headline"]
+    assert payload["readerPacket"]["evidenceReferences"]
+    assert payload["readerPacket"]["visualSummaries"]
     source_ids = {item["id"] for item in payload["sources"]}
     for event in payload["events"]:
         assert event["source_document_id"] in source_ids
@@ -613,13 +631,17 @@ def test_document_handoff_payload_contains_sections_citations_and_evidence():
         "executive_summary",
         "opportunities",
         "risks",
+        "visuals",
         "evidence",
         "limitations",
     ]
     assert handoff["opportunitySections"]
     assert handoff["evidenceTable"]
-    first_signal = handoff["opportunitySections"][0]
-    assert handoff["citationMap"]["signals"][first_signal["id"]]["sourceIds"]
+    assert handoff["readerPacket"]["schemaVersion"] == "robotics_reader_packet.v1"
+    assert handoff["evidenceReferences"]
+    assert handoff["visualSummaries"]
+    first_theme = handoff["opportunitySections"][0]
+    assert handoff["citationMap"]["themes"][first_theme["id"]]["sourceIds"]
     assert handoff["compactMarkdown"].startswith("# 石头科技风险与机会洞察简报")
 
 
@@ -763,6 +785,52 @@ def test_robotics_subagent_partial_run_persists_degraded_status(db_session):
     row = db_session.query(RoboticsInsightRun).filter_by(run_id="run-partial-001").one()
     assert row.status == "partial"
     assert any("captcha required" in item for item in row.result_json["limitations"])
+
+
+def test_reader_writer_can_render_module_brief_from_reader_packet():
+    writer = _FakeReaderWriter(
+        """
+        {
+          "sections": [
+            {
+              "id": "executive_summary",
+              "title": "执行摘要",
+              "blocks": [
+                {
+                  "type": "paragraph",
+                  "text": "优先跟踪政策与设备更新主线，同时把监管与标准门槛作为主要约束。"
+                }
+              ]
+            },
+            {
+              "id": "evidence",
+              "title": "证据来源",
+              "blocks": [
+                {
+                  "type": "evidence",
+                  "items": [
+                    {
+                      "title": "关于推动智能制造和机器人应用场景建设的政策",
+                      "readerSummary": "该政策用于支撑行业需求扩张判断。"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """
+    )
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="优必选", stock_code="09880"),
+        adapters=[GovPolicyAdapter(documents=[_policy_doc()])],
+        reader_writer=writer,
+    )
+
+    assert writer.calls
+    assert "优先跟踪政策与设备更新主线" in result.brief_markdown
+    assert "关于推动智能制造和机器人应用场景建设的政策" in result.brief_markdown
 
 
 def test_robotics_subagent_failure_after_run_creation_is_persisted(db_session):

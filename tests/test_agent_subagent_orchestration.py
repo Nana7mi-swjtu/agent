@@ -756,7 +756,24 @@ def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
                     "risk": "竞争和招投标节奏存在波动。",
                 }
             },
-            "documentHandoff": {"title": "石头科技风险机会简报"},
+            "documentHandoff": {
+                "title": "石头科技风险机会简报",
+                "executiveSummary": {"headline": "政策与订单是当前主线。"},
+                "evidenceReferences": [
+                    {
+                        "id": "evidence_policy_001",
+                        "title": "机器人产业支持政策",
+                        "readerSummary": "该政策用于支撑机会侧判断。",
+                    }
+                ],
+                "visualSummaries": [
+                    {
+                        "id": "visual_theme_001",
+                        "title": "机会主题强度分布",
+                        "caption": "用于比较当前机会主线的相对强弱。",
+                    }
+                ],
+            },
             "limitations": ["公告样本有限"],
         },
     )
@@ -797,9 +814,63 @@ def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
     assert result["analysis_report"] == {}
     assert result["analysis_module_artifacts"][0]["moduleId"] == "robotics_risk"
     assert result["analysis_module_artifacts"][0]["moduleRunId"] == "run-robotics-001"
+    assert result["analysis_module_artifacts"][0]["executiveSummary"]["headline"] == "政策与订单是当前主线。"
+    assert result["analysis_module_artifacts"][0]["evidenceReferences"][0]["title"] == "机器人产业支持政策"
+    assert result["analysis_module_artifacts"][0]["visualSummaries"][0]["title"] == "机会主题强度分布"
     assert result["analysis_report_request"]["moduleArtifactIds"] == [
         result["analysis_module_artifacts"][0]["artifactId"]
     ]
+
+
+def test_analysis_modules_node_passes_main_llm_to_module_runtime_input(monkeypatch):
+    captured = {}
+    writer = _FakeReportWriter("{}")
+    contract = AnalysisModuleContract(
+        module_id="robotics_risk",
+        display_name="机器人风险机会洞察",
+        required_slots=(SHARED_ENTERPRISE_NAME, SHARED_TIME_RANGE, SHARED_REPORT_GOAL, "robotics_risk.focus_detail"),
+        slot_definitions=(
+            AnalysisSlotDefinition(
+                slot_id="robotics_risk.focus_detail",
+                label="关注重点",
+                scope=SCOPE_MODULE,
+                value_kind=VALUE_KIND_TEXT,
+                normalizer="passthrough_text",
+                group_id="robotics_risk.focus_detail",
+                priority=70,
+                depends_on=(SHARED_ENTERPRISE_NAME, SHARED_TIME_RANGE, SHARED_REPORT_GOAL),
+                module_id="robotics_risk",
+            ),
+        ),
+        slot_mapping=lambda slots, compatibility, context: {
+            "enterpriseName": slots[SHARED_ENTERPRISE_NAME],
+            "readerWriter": context.get("readerWriter"),
+        },
+        run=lambda payload: (
+            captured.update({"reader_writer": payload.get("readerWriter")}) or {"status": "done", "limitations": ["无实质材料"]}
+        ),
+    )
+    monkeypatch.setattr("app.agent.graph.nodes.get_analysis_module_registry", lambda: {"robotics_risk": contract})
+    analysis_session = create_transient_analysis_session(enabled_modules=["robotics_risk"])
+    analysis_session["status"] = "ready"
+    analysis_session["slotValues"] = {
+        SHARED_ENTERPRISE_NAME: "石头科技",
+        SHARED_TIME_RANGE: "近30天",
+        SHARED_REPORT_GOAL: "形成风险机会简报",
+        "robotics_risk.focus_detail": "订单与政策",
+    }
+
+    analysis_modules_node(
+        {
+            "user_message": "请开始分析",
+            "enabled_analysis_modules": ["robotics_risk"],
+            "analysis_session": analysis_session,
+            "main_llm": writer,
+            "debug": {},
+        }
+    )
+
+    assert captured["reader_writer"] is writer
 
 
 def test_report_contribution_traceability_validation_rejects_unknown_refs():
