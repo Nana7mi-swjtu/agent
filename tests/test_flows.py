@@ -516,7 +516,6 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
     def _fake_run_robotics(payload, **kwargs):
         assert payload["enterpriseName"] == "石头科技"
         assert payload["timeRange"] == "近30天"
-        assert payload["focus"] == "订单与政策"
         assert kwargs.get("db") is not None
         assert kwargs.get("evidence_cache") is not None
         return {
@@ -551,7 +550,7 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
                 "timeRange": "近30天",
                 "reportGoal": "形成机器人行业风险机会简报",
             },
-            analysis_module_inputs={"robotics_risk": {"focus": "订单与政策"}},
+            analysis_module_inputs={},
             agent_trace_enabled=True,
             agent_trace_debug_details_enabled=True,
         )
@@ -685,7 +684,7 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
                 "timeRange": "近30天",
                 "reportGoal": "形成风险机会简报",
             },
-            analysisModuleInputs={"robotics_risk": {"focus": "订单与政策"}},
+            analysisModuleInputs={},
         ),
         headers=headers,
     )
@@ -693,7 +692,7 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
     payload = response.get_json()["data"]
     assert captured_kwargs["enabled_analysis_modules"] == ["robotics_risk"]
     assert captured_kwargs["analysis_shared_inputs"]["enterpriseName"] == "石头科技"
-    assert captured_kwargs["analysis_module_inputs"]["robotics_risk"]["focus"] == "订单与政策"
+    assert captured_kwargs["analysis_module_inputs"] == {}
     assert payload["analysisHandoffBundle"]["enabledModules"] == ["robotics_risk"]
     assert payload["analysisResults"]["robotics_risk"]["runId"] == "rrisk_001"
     assert payload["analysisModuleArtifacts"][0]["artifactId"] == "mart_test_001"

@@ -270,8 +270,7 @@ def test_policy_search_plan_uses_profile_segments_domains_and_bounds():
     request = RoboticsInsightRequest(
         enterprise_name="石头科技",
         time_range="近90天",
-        focus="清洁机器人政府采购",
-        context="扫地机器人",
+        context="扫地机器人 清洁机器人政府采购",
     )
     profile = build_enterprise_profile(request)
 
@@ -302,8 +301,7 @@ def test_bidding_search_plan_uses_enterprise_segment_scenario_categories_and_bou
     request = RoboticsInsightRequest(
         enterprise_name="石头科技",
         time_range="近60天",
-        focus="广东清洁机器人招投标",
-        context="扫地机器人 公共清洁",
+        context="广东扫地机器人 公共清洁 招投标",
     )
     profile = build_enterprise_profile(request)
 
@@ -609,8 +607,6 @@ def test_fake_adapters_produce_sources_events_signals_and_payload_refs():
             enterprise_name="石头科技",
             stock_code="688169",
             time_range="近30天",
-            focus="综合",
-            dimensions=["政策", "公告", "招中标"],
         ),
         adapters=[
             GovPolicyAdapter(documents=[_policy_doc()]),
@@ -758,7 +754,7 @@ def test_subagent_input_normalizes_upstream_evidence_into_request_context():
         {
             "enterpriseName": " 石头科技 ",
             "stockCode": "688169",
-            "analysisScope": {"timeRange": "近90天", "focus": "扫地机器人"},
+            "analysisScope": {"timeRange": "近90天"},
             "upstreamEvidence": [{"title": "行业搜索", "summary": "人形机器人产业链扩张"}],
         }
     )
@@ -789,7 +785,7 @@ def test_robotics_subagent_valid_input_persists_run_and_handoff_without_rag_rows
         {
             "enterpriseName": "石头科技",
             "stockCode": "688169",
-            "analysisScope": {"timeRange": "近30天", "dimensions": ["政策", "公告"]},
+            "analysisScope": {"timeRange": "近30天"},
             "upstreamEvidence": [{"title": "搜索摘要", "summary": "服务机器人需求增长"}],
         },
         db=db_session,

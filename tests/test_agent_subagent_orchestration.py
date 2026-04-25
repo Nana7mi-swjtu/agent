@@ -478,11 +478,7 @@ def test_analysis_intake_marks_ready_when_required_slots_are_prefilled():
                 "timeRange": "近30天",
                 "reportGoal": "形成风险机会简报",
             },
-            "analysis_module_inputs": {
-                "robotics_risk": {
-                    "focus": "政策、订单",
-                }
-            },
+            "analysis_module_inputs": {},
             "analysis_session": create_transient_analysis_session(enabled_modules=["robotics_risk"]),
             "debug": {},
         }
@@ -492,7 +488,6 @@ def test_analysis_intake_marks_ready_when_required_slots_are_prefilled():
     assert result["missing_fields"] == []
     assert result["analysis_completed"] is False
     assert result["analysis_session"]["status"] == "ready"
-    assert result["analysis_session"]["slotValues"][SHARED_ANALYSIS_FOCUS_TAGS] == ["政策", "订单"]
 
 
 def test_analysis_intake_first_turn_compound_prompt_fills_required_slots():
@@ -515,7 +510,7 @@ def test_analysis_intake_first_turn_compound_prompt_fills_required_slots():
     assert slot_values[SHARED_STOCK_CODE] == "688169"
     assert slot_values[SHARED_TIME_RANGE] == "近30天"
     assert slot_values[SHARED_REPORT_GOAL] == "生成机器人风险机会报告"
-    assert slot_values[SHARED_ANALYSIS_FOCUS_TAGS] == ["政策", "订单"]
+    assert SHARED_ANALYSIS_FOCUS_TAGS not in slot_values
 
 
 def test_analysis_intake_follow_up_time_change_does_not_mutate_enterprise(monkeypatch):
