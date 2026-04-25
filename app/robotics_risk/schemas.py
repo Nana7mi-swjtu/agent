@@ -19,21 +19,14 @@ class RoboticsInsightRequest:
     enterprise_name: str
     stock_code: str = ""
     time_range: str = "近30天"
-    focus: str = "综合"
-    dimensions: list[str] = field(default_factory=lambda: ["政策", "公告", "招中标", "竞争"])
     context: str = ""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RoboticsInsightRequest":
-        dimensions = payload.get("dimensions", [])
-        if not isinstance(dimensions, list):
-            dimensions = []
         return cls(
             enterprise_name=str(payload.get("enterprise_name") or payload.get("enterpriseName") or "").strip(),
             stock_code=str(payload.get("stock_code") or payload.get("stockCode") or "").strip(),
             time_range=str(payload.get("time_range") or payload.get("timeRange") or "近30天").strip(),
-            focus=str(payload.get("focus") or "综合").strip(),
-            dimensions=[str(item).strip() for item in dimensions if str(item).strip()],
             context=str(payload.get("context") or "").strip(),
         )
 
@@ -41,8 +34,6 @@ class RoboticsInsightRequest:
 @dataclass
 class AnalysisScope:
     time_range: str
-    focus: str
-    dimensions: list[str]
 
     def to_dict(self) -> dict[str, Any]:
         return _drop_empty(self)

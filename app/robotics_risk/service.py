@@ -40,8 +40,6 @@ def analyze_robotics_enterprise_risk_opportunity(
 
     analysis_scope = AnalysisScope(
         time_range=normalized_request.time_range or "近30天",
-        focus=normalized_request.focus or "综合",
-        dimensions=normalized_request.dimensions or ["政策", "公告", "招中标", "竞争"],
     )
     profile = build_enterprise_profile(normalized_request)
     if resolution is not None:

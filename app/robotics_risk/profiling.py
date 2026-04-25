@@ -22,9 +22,7 @@ def build_enterprise_profile(request: RoboticsInsightRequest) -> EnterpriseProfi
         [
             enterprise_name,
             request.stock_code,
-            request.focus,
             request.context,
-            " ".join(request.dimensions),
         ]
     )
     matched_keywords: list[str] = []

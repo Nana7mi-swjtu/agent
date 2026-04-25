@@ -20,7 +20,6 @@ from .schemas import RoboticsInsightRequest, RoboticsInsightResult
 from .service import RoboticsInsightValidationError, analyze_robotics_enterprise_risk_opportunity
 
 SUBAGENT_NAME = "robotics_risk_opportunity_subagent"
-DEFAULT_DIMENSIONS = ["政策", "公告", "招中标", "竞争"]
 
 
 @dataclass(frozen=True)
@@ -33,8 +32,6 @@ class RoboticsSubagentEnterprise:
 @dataclass(frozen=True)
 class RoboticsSubagentAnalysisScope:
     time_range: str = "近30天"
-    focus: str = "综合"
-    dimensions: list[str] = field(default_factory=lambda: list(DEFAULT_DIMENSIONS))
 
 
 @dataclass(frozen=True)
@@ -83,9 +80,6 @@ class RoboticsRiskSubagentInput:
         source_controls = RoboticsSubagentSourceControls.from_dict(
             data.get("sourceControls") or data.get("source_controls") or {}
         )
-        dimensions = scope_data.get("dimensions") or data.get("dimensions") or list(DEFAULT_DIMENSIONS)
-        if not isinstance(dimensions, list):
-            dimensions = list(DEFAULT_DIMENSIONS)
         return cls(
             enterprise=RoboticsSubagentEnterprise(
                 name=_clean_text(enterprise_data.get("name") or data.get("enterpriseName") or data.get("enterprise_name")),
@@ -100,8 +94,6 @@ class RoboticsRiskSubagentInput:
             analysis_scope=RoboticsSubagentAnalysisScope(
                 time_range=_clean_text(scope_data.get("timeRange") or scope_data.get("time_range") or data.get("timeRange"))
                 or "近30天",
-                focus=_clean_text(scope_data.get("focus") or data.get("focus")) or "综合",
-                dimensions=_clean_list(dimensions) or list(DEFAULT_DIMENSIONS),
             ),
             source_controls=source_controls,
             conversation_context=_clean_text(
@@ -117,8 +109,6 @@ class RoboticsRiskSubagentInput:
             enterprise_name=self.enterprise.name,
             stock_code=self.enterprise.stock_code,
             time_range=self.analysis_scope.time_range,
-            focus=self.analysis_scope.focus,
-            dimensions=list(self.analysis_scope.dimensions),
             context="\n".join(part for part in context_parts if part).strip(),
         )
 
@@ -132,8 +122,6 @@ class RoboticsRiskSubagentInput:
                 },
                 "analysisScope": {
                     "timeRange": self.analysis_scope.time_range,
-                    "focus": self.analysis_scope.focus,
-                    "dimensions": list(self.analysis_scope.dimensions),
                 },
                 "sourceControls": self.source_controls.to_dict(),
                 "conversationContext": self.conversation_context,

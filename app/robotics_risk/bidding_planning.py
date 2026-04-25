@@ -140,7 +140,7 @@ def build_bidding_search_plan(
         if chain and chain not in {"待验证", "整机", "应用"}:
             terms.append(BiddingQueryTerm(keyword=f"{chain} 机器人 招标", source="chain_position", chain_position=chain, priority=86))
 
-    context = " ".join([request.focus, request.context, " ".join(profile.keywords), " ".join(profile.segments)])
+    context = " ".join([request.context, " ".join(profile.keywords), " ".join(profile.segments)])
     for scenario in SCENARIO_TERMS:
         if scenario in context:
             terms.append(BiddingQueryTerm(keyword=f"{scenario} 机器人 采购", source="scenario", matched_scenario=scenario, priority=92))
@@ -155,7 +155,7 @@ def build_bidding_search_plan(
     if len(ordered) > max_queries:
         limitations.append(f"招投标搜索计划生成 {len(ordered)} 个候选关键词，已截断为 {max_queries} 个。")
 
-    region_hints = tuple(_extract_regions(" ".join([request.focus, request.context])))
+    region_hints = tuple(_extract_regions(request.context))
     return BiddingSearchPlan(
         query_terms=tuple(ordered[: max(1, int(max_queries))]),
         notice_categories=categories,

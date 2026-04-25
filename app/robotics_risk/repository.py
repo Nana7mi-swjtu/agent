@@ -40,8 +40,7 @@ def build_cache_key(
         request.enterprise_name.strip(),
         request.stock_code.strip(),
         request.time_range.strip(),
-        request.focus.strip(),
-        "|".join(sorted(_clean_values([*request.dimensions, *profile.keywords]))),
+        "|".join(sorted(_clean_values(profile.keywords))),
     ]
     return _hash_text("\n".join(parts))
 

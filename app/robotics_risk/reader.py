@@ -116,7 +116,6 @@ def render_reader_brief(
         f"- 行业：{profile.industry}",
         f"- 产业链画像：{', '.join(profile.segments)}",
         f"- 时间范围：{analysis_scope.time_range}",
-        f"- 分析重点：{analysis_scope.focus}",
     ]
     lines.extend(_sections_to_markdown_lines(sections))
     lines.extend(_fact_tables_to_markdown_lines(fact_tables or []))

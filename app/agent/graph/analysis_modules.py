@@ -15,14 +15,11 @@ from ..reporting import (
 )
 from .analysis_slots import (
     AnalysisSlotDefinition,
-    AnalysisSlotOption,
-    SHARED_ANALYSIS_FOCUS_TAGS,
     SHARED_ENTERPRISE_NAME,
     SHARED_REPORT_GOAL,
     SHARED_STOCK_CODE,
     SHARED_TIME_RANGE,
     SCOPE_MODULE,
-    VALUE_KIND_MULTI_CHOICE,
     normalize_slot_value,
     shared_slot_catalog,
 )
@@ -96,35 +93,8 @@ def get_analysis_module_registry() -> dict[str, AnalysisModuleContract]:
                 SHARED_ENTERPRISE_NAME,
                 SHARED_TIME_RANGE,
                 SHARED_REPORT_GOAL,
-                SHARED_ANALYSIS_FOCUS_TAGS,
             ),
-            optional_slots=(
-                SHARED_STOCK_CODE,
-                "robotics_risk.dimensions",
-            ),
-            slot_definitions=(
-                AnalysisSlotDefinition(
-                    slot_id="robotics_risk.dimensions",
-                    label="分析维度",
-                    scope=SCOPE_MODULE,
-                    value_kind=VALUE_KIND_MULTI_CHOICE,
-                    normalizer="choice_tags",
-                    group_id="robotics_risk.dimensions",
-                    priority=60,
-                    module_id="robotics_risk",
-                    prompt_hint="如需限定维度，可填写政策、公告、招中标、竞争。",
-                    options=(
-                        AnalysisSlotOption(value="政策", label="政策"),
-                        AnalysisSlotOption(value="公告", label="公告"),
-                        AnalysisSlotOption(value="招中标", label="招中标"),
-                        AnalysisSlotOption(value="竞争", label="竞争"),
-                    ),
-                ),
-            ),
-            legacy_input_slot_map={
-                "focus": SHARED_ANALYSIS_FOCUS_TAGS,
-                "dimensions": "robotics_risk.dimensions",
-            },
+            optional_slots=(SHARED_STOCK_CODE,),
             legacy_passthrough_fields=("sourceControls",),
             slot_mapping=_map_robotics_risk_runtime_input,
             run=_run_robotics_risk_module,
@@ -406,16 +376,11 @@ def _map_robotics_risk_runtime_input(
     module_inputs = compatibility.get("legacyModuleInputs", {}) if isinstance(compatibility, dict) else {}
     robotics_inputs = module_inputs.get("robotics_risk", {}) if isinstance(module_inputs, dict) else {}
     source_controls = robotics_inputs.get("sourceControls") or robotics_inputs.get("source_controls")
-    focus_tags = slot_values.get(SHARED_ANALYSIS_FOCUS_TAGS, [])
-    focus = "、".join(_string_list(focus_tags))
-    dimensions = slot_values.get("robotics_risk.dimensions", [])
     return _drop_empty(
         {
             "enterpriseName": _clean_text(slot_values.get(SHARED_ENTERPRISE_NAME)),
             "stockCode": _clean_text(slot_values.get(SHARED_STOCK_CODE)),
             "timeRange": _clean_text(slot_values.get(SHARED_TIME_RANGE)) or "近30天",
-            "focus": focus,
-            "dimensions": _string_list(dimensions),
             "sourceControls": source_controls if isinstance(source_controls, dict) else {},
             "conversationContext": _clean_text(context.get("conversationContext")),
             "readerWriter": context.get("readerWriter"),
@@ -430,7 +395,6 @@ def _map_robotics_risk_runtime_input(
                                 "stockCode": _clean_text(slot_values.get(SHARED_STOCK_CODE)),
                                 "timeRange": _clean_text(slot_values.get(SHARED_TIME_RANGE)),
                                 "reportGoal": _clean_text(slot_values.get(SHARED_REPORT_GOAL)),
-                                "analysisFocusTags": _string_list(slot_values.get(SHARED_ANALYSIS_FOCUS_TAGS)),
                             }
                         ),
                     },
