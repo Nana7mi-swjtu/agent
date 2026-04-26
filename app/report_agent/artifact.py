@@ -27,32 +27,35 @@ def _old_block(block: dict[str, Any]) -> dict[str, Any]:
     return block
 
 
-def bundle_to_legacy_document(bundle: dict[str, Any]) -> dict[str, Any]:
+def bundle_to_report_document(bundle: dict[str, Any]) -> dict[str, Any]:
     pages = []
     for page in as_list(bundle.get("pages")):
         if not isinstance(page, dict):
             continue
         page_type = clean_text(page.get("pageType"))
         if page_type == "table_of_contents":
-            pages.append({"id": page.get("id"), "type": "table_of_contents", "title": page.get("title"), "items": as_list(page.get("items"))})
-            continue
-        if page_type == "cover":
-            pages.append({"id": page.get("id"), "type": "cover", "title": page.get("title"), "blocks": [_old_block(block) for block in as_list(page.get("blocks")) if isinstance(block, dict)]})
+            pages.append(
+                {
+                    "id": page.get("id"),
+                    "type": "table_of_contents",
+                    "title": page.get("title"),
+                    "pageNumber": page.get("pageNumber"),
+                    "layout": page.get("layout"),
+                    "items": as_list(page.get("items")),
+                }
+            )
             continue
         blocks = [_old_block(block) for block in as_list(page.get("blocks")) if isinstance(block, dict)]
         pages.append(
             {
                 "id": page.get("id"),
-                "type": "body",
+                "type": page_type or clean_text(page.get("type")) or "body",
                 "title": page.get("title"),
-                "sections": [
-                    {
-                        "id": page.get("id"),
-                        "title": page.get("title"),
-                        "intro": "",
-                        "blocks": blocks,
-                    }
-                ],
+                "pageNumber": page.get("pageNumber"),
+                "layout": page.get("layout"),
+                "styleTokens": as_dict(page.get("styleTokens")),
+                "blocks": blocks,
+                "evidenceRefs": as_list(page.get("evidenceRefs")),
             }
         )
     return {
@@ -60,9 +63,9 @@ def bundle_to_legacy_document(bundle: dict[str, Any]) -> dict[str, Any]:
         "renderStyle": clean_text(as_dict(bundle.get("renderProfile")).get("style")) or "professional",
         "structureLocked": True,
         "chapterOutline": [
-            {"id": page.get("id"), "title": page.get("title"), "origin": "paginated_bundle", "pageNumber": page.get("pageNumber")}
-            for page in as_list(bundle.get("pages"))
-            if isinstance(page, dict) and page.get("tocEntry")
+            {"id": item.get("id"), "title": item.get("title"), "origin": item.get("origin") or "paginated_bundle"}
+            for item in as_list(as_dict(bundle.get("semanticModel")).get("chapterOutline"))
+            if isinstance(item, dict) and clean_text(item.get("title"))
         ],
         "pages": pages,
     }
@@ -117,9 +120,10 @@ def bundle_to_analysis_report_artifact(
             "documents": [],
         },
         "semanticModel": semantic_model,
-        "document": bundle_to_legacy_document(bundle),
+        "document": bundle_to_report_document(bundle),
         "paginatedReportBundle": bundle,
         "sections": [],
+        "sectionPlan": as_list(bundle.get("chapterPlan")),
         "markdownBody": markdown_body,
         "htmlBody": html_body,
         "visualAssets": visual_assets,
@@ -127,4 +131,7 @@ def bundle_to_analysis_report_artifact(
         "limitations": [{"message": item} for item in limitations if item],
         "exportManifest": as_dict(bundle.get("exportManifest")),
         "renderProfile": as_dict(bundle.get("renderProfile")),
+        "promptVersions": as_dict(bundle.get("promptVersions")),
+        "stageTrace": as_list(bundle.get("stageTrace")),
+        "qualityReview": as_dict(bundle.get("qualityReview")),
     }

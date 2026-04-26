@@ -1,8 +1,23 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .contracts import APPROVED_COLOR_TOKENS, APPROVED_LAYOUTS, as_list, clean_text
+
+_TIME_FIELD_HINTS = ("date", "time", "month", "quarter", "year", "week", "day", "period", "日期", "时间", "月份", "季度", "年份")
+_TIME_VALUE_RE = re.compile(r"^(?:19|20)\d{2}(?:[-/.年](?:0?[1-9]|1[0-2]))?(?:[-/.月](?:0?[1-9]|[12]\d|3[01])日?)?$|^\d{4}Q[1-4]$", re.IGNORECASE)
+
+
+def looks_temporal_chart_axis(field_name: str, rows: list[dict[str, Any]]) -> bool:
+    lowered = clean_text(field_name).lower()
+    if any(token in lowered for token in _TIME_FIELD_HINTS):
+        return True
+    samples = [clean_text(row.get(field_name)) for row in rows[:6] if isinstance(row, dict) and clean_text(row.get(field_name))]
+    if len(samples) < 2:
+        return False
+    matched = sum(1 for item in samples if _TIME_VALUE_RE.match(item))
+    return matched >= max(2, len(samples) - 1)
 
 
 def build_chart_specs(semantic_model: dict[str, Any]) -> list[dict[str, Any]]:
@@ -27,10 +42,11 @@ def build_chart_specs(semantic_model: dict[str, Any]) -> list[dict[str, Any]]:
                 break
         if not y_field:
             continue
+        chart_type = "line_chart" if looks_temporal_chart_axis(x_field, rows) else clean_text(opportunity.get("type")) or "bar_chart"
         specs.append(
             {
                 "chartId": f"chart_{len(specs) + 1}",
-                "type": clean_text(opportunity.get("type")) or "bar_chart",
+                "type": chart_type,
                 "title": clean_text(opportunity.get("title"), limit=100) or clean_text(table.get("title"), limit=100) or "图表",
                 "dataRef": data_ref,
                 "xField": x_field,

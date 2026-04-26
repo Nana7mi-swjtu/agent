@@ -18,6 +18,11 @@ def _parse_json_text(text: str) -> Any:
 
 
 def _table_from_content(content: Any) -> dict[str, Any] | None:
+    if isinstance(content, str):
+        parsed = _parse_json_text(content)
+        if parsed is not None:
+            return _table_from_content(parsed)
+        return None
     rows = []
     columns = []
     if isinstance(content, list) and all(isinstance(item, dict) for item in content):

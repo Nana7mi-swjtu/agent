@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .contracts import as_list, clean_text, utc_now_iso
+from .contracts import as_list, clean_text
 from .visual_planning import build_chart_specs, enforce_visual_tokens
 
 MAX_ITEMS_PER_PAGE = 5
@@ -70,18 +70,7 @@ def plan_pages(*, title: str, semantic_model: dict[str, Any], render_profile: di
             "title": "封面",
             "tocEntry": False,
             "layout": "cover",
-            "blocks": [
-                _block("hero", title=title),
-                _block("subtitle", text="智能分页报告 Agent 根据提供材料生成的图文报告。"),
-                _block(
-                    "meta_grid",
-                    items=[
-                        {"label": "生成时间", "value": utc_now_iso()},
-                        {"label": "页面模型", "value": "PaginatedReportBundle"},
-                        {"label": "渲染风格", "value": clean_text(render_profile.get("style"))},
-                    ],
-                ),
-            ],
+            "blocks": [_block("hero", title=title)],
             "styleTokens": {"accentColor": "primary"},
         }
     ]
@@ -137,7 +126,7 @@ def plan_pages(*, title: str, semantic_model: dict[str, Any], render_profile: di
                 "layout": "title_chart_notes",
                 "blocks": [
                     _block("chart", chartId=chart.get("chartId"), title=chart.get("title"), chartSpec=chart),
-                    _block("paragraph", text="该图表基于输入材料中的结构化数据生成，具体解读需结合来源证据边界。"),
+                    _block("paragraph", text="该图表用于帮助读者快速理解输入材料中的趋势变化与结构对比。"),
                 ],
                 "evidenceRefs": [f"evidence_{clean_text(chart.get('sourceMaterialId'))}_1"],
                 "styleTokens": {"accentColor": "primary"},
@@ -163,33 +152,18 @@ def plan_pages(*, title: str, semantic_model: dict[str, Any], render_profile: di
                 "styleTokens": {"accentColor": "accent"},
             }
         )
-    if evidence_refs:
-        body_pages.append(
-            {
-                "id": "page_evidence",
-                "pageType": "evidence",
-                "type": "body",
-                "title": "证据与来源",
-                "tocEntry": True,
-                "layout": "evidence_list",
-                "blocks": [_block("evidence", items=evidence_refs[:MAX_ITEMS_PER_PAGE])],
-                "evidenceRefs": [clean_text(item.get("evidenceId")) for item in evidence_refs[:MAX_ITEMS_PER_PAGE]],
-                "styleTokens": {"accentColor": "muted"},
-            }
-        )
     body_pages.append(
         {
             "id": "page_recommendation",
             "pageType": "recommendation",
             "type": "body",
-            "title": "建议与边界",
+            "title": "建议与行动",
             "tocEntry": True,
             "layout": "title_text",
             "blocks": [
-                _block("items", title="使用建议", items=[{"title": "优先复核关键证据", "summary": "对报告中的重要结论，应结合原始材料和业务上下文复核。"}]),
-                _block("callout", title="生成边界", text="报告不会编造输入中不存在的数据、排名或图表序列。"),
+                _block("items", title="使用建议", items=[{"title": "优先复核关键结论", "summary": "对报告中的重要判断，应结合原始材料、业务上下文和后续数据变化持续复核。"}]),
             ],
-            "styleTokens": {"accentColor": "warning"},
+            "styleTokens": {"accentColor": "success"},
         }
     )
     for offset, page in enumerate(body_pages, start=3):

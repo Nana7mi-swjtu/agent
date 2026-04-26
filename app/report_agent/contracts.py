@@ -37,6 +37,7 @@ PAGE_TYPES = {
 BLOCK_TYPES = {
     "hero",
     "subtitle",
+    "section_intro",
     "meta_grid",
     "callout",
     "paragraph",
