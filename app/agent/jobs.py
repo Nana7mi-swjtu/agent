@@ -12,10 +12,15 @@ from sqlalchemy.orm import Session
 from ..db import session_scope
 from ..logging_utils import bind_log_context, log_audit_event
 from ..models import AgentChatJob, User
+from ..report_agent import (
+    analysis_module_artifact_to_payload,
+    delete_legacy_report_rows,
+    persist_report_artifact_result,
+    save_analysis_module_artifacts,
+)
 from ..workspace.roles import ROLE_PRESETS
 from .analysis_session import load_analysis_session_state, save_analysis_session_state
 from .memory import load_conversation_history, save_conversation_turn
-from .reporting import analysis_report_to_payload, save_analysis_report_artifact
 from .services import AgentServiceError, generate_reply_payload
 
 logger = logging.getLogger(__name__)
@@ -69,6 +74,36 @@ def serialize_job(job: AgentChatJob, *, include_result: bool = True) -> dict[str
     return payload
 
 
+def _job_request_payload(job: AgentChatJob) -> dict[str, Any]:
+    return dict(job.request_json) if isinstance(job.request_json, dict) else {}
+
+
+def _persist_analysis_module_artifacts_result(
+    db: Session,
+    *,
+    result: dict[str, Any],
+    user_id: int,
+    workspace_id: str,
+    role: str,
+    conversation_id: str,
+    analysis_session: dict[str, Any] | None = None,
+) -> None:
+    artifacts = result.get("analysisModuleArtifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        return
+    rows = save_analysis_module_artifacts(
+        db,
+        user_id=user_id,
+        workspace_id=workspace_id,
+        role=role,
+        conversation_id=conversation_id,
+        artifacts=[item for item in artifacts if isinstance(item, dict)],
+        analysis_session=analysis_session,
+    )
+    payloads = [analysis_module_artifact_to_payload(row) for row in rows]
+    result["analysisModuleArtifacts"] = payloads
+
+
 def find_active_job(
     db: Session,
     *,
@@ -105,6 +140,10 @@ def create_chat_job(
     message: str,
     entity: str = "",
     intent: str = "",
+    enabled_analysis_modules: list[str] | None = None,
+    analysis_shared_inputs: dict[str, Any] | None = None,
+    analysis_module_inputs: dict[str, dict[str, Any]] | None = None,
+    report_request: dict[str, Any] | None = None,
 ) -> AgentChatJob:
     active_job = find_active_job(
         db,
@@ -124,6 +163,12 @@ def create_chat_job(
         message=message,
         entity=entity or None,
         intent=intent or None,
+        request_json={
+            "enabledAnalysisModules": list(enabled_analysis_modules or []),
+            "analysisSharedInputs": dict(analysis_shared_inputs or {}),
+            "analysisModuleInputs": dict(analysis_module_inputs or {}),
+            "reportRequest": dict(report_request or {}),
+        },
         status=JOB_STATUS_PENDING,
         result_json=None,
         error_message=None,
@@ -259,6 +304,7 @@ def run_agent_chat_job(app: Flask, job_id: int) -> None:
                     and current_app.config.get("RAG_ENABLED", False)
                 )
                 preset = ROLE_PRESETS[job.role]
+                request_payload = _job_request_payload(job)
                 thread, conversation_history, conversation_context = load_conversation_history(
                     db,
                     user_id=job.user_id,
@@ -273,6 +319,11 @@ def run_agent_chat_job(app: Flask, job_id: int) -> None:
                     role=job.role,
                     conversation_id=job.conversation_id,
                 )
+                delete_legacy_report_rows(
+                    db,
+                    user_id=job.user_id,
+                    workspace_id=job.workspace_id,
+                )
                 result = generate_reply_payload(
                     role=job.role,
                     system_prompt=preset["systemPrompt"],
@@ -284,7 +335,19 @@ def run_agent_chat_job(app: Flask, job_id: int) -> None:
                     rag_debug_enabled=debug_enabled,
                     entity=str(job.entity or ""),
                     intent=str(job.intent or ""),
+                    enabled_analysis_modules=request_payload.get("enabledAnalysisModules", [])
+                    if isinstance(request_payload.get("enabledAnalysisModules"), list)
+                    else [],
+                    analysis_shared_inputs=request_payload.get("analysisSharedInputs", {})
+                    if isinstance(request_payload.get("analysisSharedInputs"), dict)
+                    else {},
+                    analysis_module_inputs=request_payload.get("analysisModuleInputs", {})
+                    if isinstance(request_payload.get("analysisModuleInputs"), dict)
+                    else {},
                     analysis_session_state=analysis_session_state,
+                    report_request=request_payload.get("reportRequest", {})
+                    if isinstance(request_payload.get("reportRequest"), dict)
+                    else {},
                     agent_trace_enabled=trace_enabled,
                     agent_trace_debug_details_enabled=trace_details_enabled,
                 )
@@ -306,25 +369,24 @@ def run_agent_chat_job(app: Flask, job_id: int) -> None:
                 )
                 if persisted_analysis_session:
                     result["analysisSession"] = persisted_analysis_session
-                artifact = result.get("analysisReportArtifact")
-                if isinstance(artifact, dict) and artifact:
-                    scope = dict(artifact.get("scope", {})) if isinstance(artifact.get("scope"), dict) else {}
-                    if persisted_analysis_session and persisted_analysis_session.get("sessionId") and not scope.get("analysisSessionId"):
-                        scope["analysisSessionId"] = str(persisted_analysis_session.get("sessionId"))
-                    if persisted_analysis_session and persisted_analysis_session.get("revision") is not None:
-                        scope["analysisSessionRevision"] = int(persisted_analysis_session.get("revision") or 0)
-                    artifact["scope"] = scope
-                    row = save_analysis_report_artifact(
-                        db,
-                        user_id=job.user_id,
-                        workspace_id=job.workspace_id,
-                        role=job.role,
-                        conversation_id=job.conversation_id,
-                        artifact=artifact,
-                    )
-                    if row is not None:
-                        result["analysisReport"] = analysis_report_to_payload(row)
-                        result.pop("analysisReportArtifact", None)
+                _persist_analysis_module_artifacts_result(
+                    db,
+                    result=result,
+                    user_id=job.user_id,
+                    workspace_id=job.workspace_id,
+                    role=job.role,
+                    conversation_id=job.conversation_id,
+                    analysis_session=persisted_analysis_session,
+                )
+                persist_report_artifact_result(
+                    db,
+                    result=result,
+                    user_id=job.user_id,
+                    workspace_id=job.workspace_id,
+                    role=job.role,
+                    conversation_id=job.conversation_id,
+                    analysis_session=persisted_analysis_session,
+                )
                 _mark_succeeded(db, job, result)
                 log_audit_event(
                     "workspace.chat.job.completed",

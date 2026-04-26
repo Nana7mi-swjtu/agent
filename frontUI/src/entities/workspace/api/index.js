@@ -26,13 +26,13 @@ export const postWorkspaceChatStream = (message, workspaceId, conversationId, op
 export const postWorkspaceChatJob = (message, workspaceId, conversationId, options = {}) =>
   apiRequest("/api/workspace/chat/jobs", {
     method: "POST",
-    body: {
-      message,
-      workspaceId: workspaceId || "default",
-      conversationId: conversationId || "",
-      entity: typeof options.entity === "string" ? options.entity : "",
-      intent: typeof options.intent === "string" ? options.intent : "",
-    },
+    body: buildWorkspaceChatRequestBody(message, workspaceId, conversationId, options),
+  });
+
+export const postWorkspaceReport = (payload = {}) =>
+  apiRequest("/api/workspace/reports", {
+    method: "POST",
+    body: payload,
   });
 
 export const getWorkspaceChatJob = (jobId, workspaceId) =>
@@ -60,36 +60,3 @@ export const buildAnalysisReportAssetDownloadUrl = (reportId, assetId, workspace
   buildApiUrl(
     `/api/workspace/reports/${encodeURIComponent(reportId)}/assets/${encodeURIComponent(assetId)}/download?workspaceId=${encodeURIComponent(workspaceId || "default")}`,
   );
-
-export const postAnalysisReportGeneration = ({
-  moduleArtifactIds,
-  renderStyle = "professional",
-  workspaceId = "default",
-  conversationId = "",
-} = {}) =>
-  apiRequest("/api/workspace/reports/generate", {
-    method: "POST",
-    body: {
-      moduleArtifactIds: Array.isArray(moduleArtifactIds) ? moduleArtifactIds : [],
-      renderStyle,
-      workspaceId: workspaceId || "default",
-      conversationId: conversationId || "",
-    },
-  });
-
-export const postAnalysisReportRegeneration = (
-  reportId,
-  {
-    renderStyle = "professional",
-    workspaceId = "default",
-    conversationId = "",
-  } = {},
-) =>
-  apiRequest(`/api/workspace/reports/${encodeURIComponent(reportId)}/regenerate`, {
-    method: "POST",
-    body: {
-      renderStyle,
-      workspaceId: workspaceId || "default",
-      conversationId: conversationId || "",
-    },
-  });

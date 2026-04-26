@@ -55,8 +55,12 @@ const normalizeAnalysisReport = (raw) => {
     },
     previewUrl: String(raw.previewUrl || ""),
     renderStyle: String(raw.renderStyle || "professional"),
+    bundleSchemaVersion: String(raw.bundleSchemaVersion || ""),
+    renderProfile: raw.renderProfile && typeof raw.renderProfile === "object" ? raw.renderProfile : null,
+    exportManifest: raw.exportManifest && typeof raw.exportManifest === "object" ? raw.exportManifest : null,
+    pageCount: Number.isInteger(raw.pageCount) ? raw.pageCount : 0,
     regeneration: normalizeReportRegeneration(raw.regeneration),
-    limitations: Array.isArray(raw.limitations) ? raw.limitations.filter((item) => item && typeof item === "object") : [],
+    limitations: Array.isArray(raw.limitations) ? raw.limitations.map((item) => String(item || "")).filter(Boolean) : [],
   };
 };
 const normalizeAnalysisModuleArtifact = (raw) => {
@@ -83,22 +87,6 @@ const normalizeAnalysisModuleArtifact = (raw) => {
     metadata: raw.metadata && typeof raw.metadata === "object" ? raw.metadata : null,
   };
 };
-const normalizeReportGenerationRequest = (raw) => {
-  if (!raw || typeof raw !== "object") return null;
-  const moduleArtifactIds = Array.isArray(raw.moduleArtifactIds)
-    ? raw.moduleArtifactIds.map((item) => String(item || "").trim()).filter(Boolean)
-    : [];
-  if (!moduleArtifactIds.length) return null;
-  return {
-    requestId: String(raw.requestId || ""),
-    analysisSessionId: String(raw.analysisSessionId || ""),
-    analysisSessionRevision: Number.isInteger(raw.analysisSessionRevision) ? raw.analysisSessionRevision : 0,
-    moduleArtifactIds,
-    renderStyles: normalizeRenderStyles(raw.renderStyles),
-    defaultRenderStyle: String(raw.defaultRenderStyle || "professional").trim() || "professional",
-  };
-};
-
 export const normalizeChatMessage = (raw) => ({
   id: String(raw?.id || buildMessageId()),
   from: raw?.from === "agent" ? "agent" : "user",
@@ -112,7 +100,6 @@ export const normalizeChatMessage = (raw) => ({
   graph: normalizeGraph(raw?.graph),
   graphMeta: normalizeGraphMeta(raw?.graphMeta),
   analysisModuleArtifact: normalizeAnalysisModuleArtifact(raw?.analysisModuleArtifact),
-  reportGenerationRequest: normalizeReportGenerationRequest(raw?.reportGenerationRequest),
   analysisReport: normalizeAnalysisReport(raw?.analysisReport),
   memoryInfo: raw?.memoryInfo && typeof raw.memoryInfo === "object" ? raw.memoryInfo : null,
   jobId: raw?.jobId ? String(raw.jobId) : "",
@@ -136,7 +123,6 @@ export const serializeChatMessage = (message) => ({
   graph: normalizeGraph(message?.graph),
   graphMeta: normalizeGraphMeta(message?.graphMeta),
   analysisModuleArtifact: normalizeAnalysisModuleArtifact(message?.analysisModuleArtifact),
-  reportGenerationRequest: normalizeReportGenerationRequest(message?.reportGenerationRequest),
   analysisReport: normalizeAnalysisReport(message?.analysisReport),
   memoryInfo: message?.memoryInfo && typeof message.memoryInfo === "object" ? message.memoryInfo : null,
   jobId: message?.jobId ? String(message.jobId) : "",

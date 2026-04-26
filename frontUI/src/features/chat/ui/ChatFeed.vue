@@ -53,14 +53,6 @@ const props = defineProps({
     type: Object,
     required: true,
   },
-  generateReport: {
-    type: Function,
-    default: () => {},
-  },
-  regenerateReport: {
-    type: Function,
-    default: () => {},
-  },
 });
 
 const isGroupedMessage = (index, messageList) =>
@@ -190,8 +182,6 @@ onMounted(async () => {
       :trace-title="traceTitle"
       :trace-status="traceStatus"
       :trace-details-entries="traceDetailsEntries"
-      :generate-report="generateReport"
-      :regenerate-report="regenerateReport"
     />
 
     <button

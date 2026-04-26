@@ -112,6 +112,8 @@ def _ensure_agent_chat_job_columns(engine) -> None:
         alter_sql.append("ADD COLUMN entity VARCHAR(255) NULL AFTER message")
     if "intent" not in columns:
         alter_sql.append("ADD COLUMN intent VARCHAR(255) NULL AFTER entity")
+    if "request_json" not in columns:
+        alter_sql.append("ADD COLUMN request_json JSON NULL AFTER intent")
     if "result_json" not in columns:
         alter_sql.append("ADD COLUMN result_json JSON NULL AFTER status")
     if "error_message" not in columns:

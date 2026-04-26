@@ -30,6 +30,7 @@ class AgentState(TypedDict):
     enabled_analysis_modules: list[str]
     analysis_shared_inputs: dict[str, Any]
     analysis_module_inputs: dict[str, dict[str, Any]]
+    report_request: dict[str, Any]
     analysis_session: dict[str, Any]
     analysis_missing_fields: list[dict[str, Any]]
     analysis_results: dict[str, dict[str, Any]]
@@ -37,10 +38,8 @@ class AgentState(TypedDict):
     analysis_completed: bool
     analysis_unsupported_modules: list[str]
     analysis_module_artifacts: list[dict[str, Any]]
-    analysis_report_request: dict[str, Any]
     analysis_report: dict[str, Any]
     analysis_report_artifact: dict[str, Any]
-    analysis_report_generated: bool
     search_completed: bool
     mcp_completed: bool
     kg_enabled: bool

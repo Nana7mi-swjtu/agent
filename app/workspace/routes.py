@@ -17,20 +17,20 @@ from ..agent.jobs import (
 )
 from ..agent.analysis_session import load_analysis_session_state, save_analysis_session_state
 from ..agent.memory import load_conversation_history, save_conversation_turn
-from ..agent.reporting import (
-    DEFAULT_REPORT_RENDER_STYLE,
+from ..report_agent import (
     REPORT_DOWNLOAD_FORMAT,
     PublishedReportValidationError,
+    ReportRequestError,
     SUPPORTED_REPORT_DOWNLOAD_FORMATS,
     analysis_module_artifact_to_payload,
     analysis_report_to_payload,
-    build_report_generation_request,
+    delete_legacy_report_rows,
+    execute_report_request,
     find_report_asset,
-    generate_analysis_report_from_module_artifacts,
     get_analysis_report,
-    get_analysis_module_artifacts_by_ids,
     inline_asset_response_payload,
-    normalize_report_render_style,
+    normalize_report_request,
+    persist_report_artifact_result,
     render_report_pdf,
     report_row_forbidden_values,
     safe_report_filename,
@@ -116,6 +116,19 @@ def _extract_analysis_request(data: dict | None) -> tuple[list[str], dict, dict]
     return parsed_enabled, parsed_shared, parsed_module_inputs
 
 
+def _extract_report_request(data: dict | None) -> dict:
+    if not isinstance(data, dict):
+        return {}
+    return normalize_report_request(data.get("reportRequest"))
+
+
+def _has_legacy_report_request_shape(data: dict | None) -> bool:
+    if not isinstance(data, dict):
+        return False
+    legacy_keys = ("reportAction", "analysisReportRequest", "moduleArtifactIds", "sourceModuleArtifactIds")
+    return any(key in data for key in legacy_keys)
+
+
 def _upsert_role_preferences(user: User, role: str) -> dict:
     current_preferences = user.preferences if isinstance(user.preferences, dict) else {}
     preferences = dict(current_preferences)
@@ -179,8 +192,6 @@ def _chat_response_data(
         data["analysisSession"] = result.get("analysisSession", {})
     if isinstance(result.get("analysisModuleArtifacts"), list):
         data["analysisModuleArtifacts"] = result.get("analysisModuleArtifacts", [])
-    if isinstance(result.get("analysisReportRequest"), dict):
-        data["analysisReportRequest"] = result.get("analysisReportRequest", {})
     if isinstance(result.get("analysisReport"), dict):
         data["analysisReport"] = result.get("analysisReport", {})
     if trace_enabled and isinstance(result.get("trace"), dict):
@@ -200,28 +211,15 @@ def _persist_analysis_report_result(
     conversation_id: str,
     analysis_session: dict | None = None,
 ) -> None:
-    artifact = result.get("analysisReportArtifact")
-    if not isinstance(artifact, dict) or not artifact:
-        return
-    if isinstance(analysis_session, dict):
-        scope = dict(artifact.get("scope", {})) if isinstance(artifact.get("scope"), dict) else {}
-        if analysis_session.get("sessionId") and not scope.get("analysisSessionId"):
-            scope["analysisSessionId"] = str(analysis_session.get("sessionId"))
-        if analysis_session.get("revision") is not None:
-            scope["analysisSessionRevision"] = int(analysis_session.get("revision") or 0)
-        artifact["scope"] = scope
-    row = save_analysis_report_artifact(
+    persist_report_artifact_result(
         db,
+        result=result,
         user_id=user_id,
         workspace_id=workspace_id,
         role=role,
         conversation_id=conversation_id,
-        artifact=artifact,
+        analysis_session=analysis_session,
     )
-    if row is None:
-        return
-    result["analysisReport"] = analysis_report_to_payload(row)
-    result.pop("analysisReportArtifact", None)
 
 
 def _persist_analysis_module_artifacts_result(
@@ -248,12 +246,6 @@ def _persist_analysis_module_artifacts_result(
     )
     payloads = [analysis_module_artifact_to_payload(row) for row in rows]
     result["analysisModuleArtifacts"] = payloads
-    report_request = build_report_generation_request(
-        analysis_session=analysis_session or {},
-        module_artifacts=payloads,
-    )
-    if report_request:
-        result["analysisReportRequest"] = report_request
 
 
 def _report_pdf_response(row, *, report_format: str, disposition: str) -> Response | tuple[dict, int]:
@@ -373,7 +365,10 @@ def create_workspace_chat_job():
     enabled_analysis_modules: list[str] = []
     analysis_shared_inputs: dict = {}
     analysis_module_inputs: dict = {}
+    report_request: dict = {}
     if isinstance(payload, dict):
+        if _has_legacy_report_request_shape(payload):
+            return _json_error("legacy report request fields are no longer supported; use reportRequest with sourceText/documents", 400)
         raw_workspace_id = payload.get("workspaceId")
         if isinstance(raw_workspace_id, str):
             request_workspace_id = raw_workspace_id.strip()
@@ -384,6 +379,9 @@ def create_workspace_chat_job():
         if isinstance(raw_intent, str):
             intent = raw_intent.strip()
         enabled_analysis_modules, analysis_shared_inputs, analysis_module_inputs = _extract_analysis_request(payload)
+        report_request = _extract_report_request(payload)
+        if payload.get("reportRequest") is not None and not report_request:
+            return _json_error("reportRequest is invalid; provide sourceText, documents, or reportId", 400)
 
     app_obj = current_app._get_current_object()
     with session_scope() as db:
@@ -407,6 +405,10 @@ def create_workspace_chat_job():
                 message=message,
                 entity=entity,
                 intent=intent,
+                enabled_analysis_modules=enabled_analysis_modules,
+                analysis_shared_inputs=analysis_shared_inputs,
+                analysis_module_inputs=analysis_module_inputs,
+                report_request=report_request,
             )
         except AgentChatJobConflict as exc:
             bind_log_context(job_id=exc.active_job.id)
@@ -472,6 +474,63 @@ def get_workspace_chat_job(job_id: int):
         except AgentChatJobNotFound:
             return _json_error("agent chat job not found", 404)
         return {"ok": True, "data": _job_response_data(job)}
+
+
+@workspace_bp.post("/reports")
+def create_workspace_report():
+    user_id = _current_user_id()
+    if user_id is None:
+        return _json_error("authentication required", 401)
+
+    payload = request.get_json(silent=True)
+    if _has_legacy_report_request_shape(payload):
+        return _json_error("legacy report request fields are no longer supported; use reportRequest or top-level sourceText/documents", 400)
+    request_payload = payload.get("reportRequest") if isinstance(payload, dict) and isinstance(payload.get("reportRequest"), dict) else payload
+    normalized_request = normalize_report_request(request_payload)
+    if not normalized_request:
+        return _json_error("report request is invalid; provide sourceText, documents, or reportId", 400)
+
+    request_workspace_id = ""
+    if isinstance(payload, dict):
+        raw_workspace_id = payload.get("workspaceId")
+        if isinstance(raw_workspace_id, str):
+            request_workspace_id = raw_workspace_id.strip()
+
+    with session_scope() as db:
+        user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+        if not user:
+            return _json_error("user not found", 404)
+
+        role = _selected_role(user.preferences)
+        if not role:
+            return _json_error("please select a role first", 400)
+
+        workspace_id = request_workspace_id or _workspace_id(user.preferences)
+        bind_log_context(user_id=user_id, workspace_id=workspace_id)
+        try:
+            artifact = execute_report_request(
+                db,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                request=normalized_request,
+            )
+        except ReportRequestError as exc:
+            message = str(exc) or "report request is invalid"
+            status_code = 404 if message == "report not found" else 400
+            return _json_error(message, status_code)
+
+        conversation_id = _conversation_id(payload) if isinstance(payload, dict) else ""
+        row = save_analysis_report_artifact(
+            db,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            role=role,
+            conversation_id=conversation_id or "standalone-report",
+            artifact=artifact,
+        )
+        if row is None:
+            return _json_error("report persistence failed", 500)
+        return {"ok": True, "data": analysis_report_to_payload(row)}
 
 
 @workspace_bp.get("/reports/<report_id>")
@@ -546,106 +605,6 @@ def download_workspace_report_asset(report_id: str, asset_id: str):
         return response
 
 
-@workspace_bp.post("/reports/generate")
-def generate_workspace_report():
-    user_id = _current_user_id()
-    if user_id is None:
-        return _json_error("authentication required", 401)
-
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, dict):
-        return _json_error("request body is required", 400)
-    raw_ids = payload.get("moduleArtifactIds")
-    artifact_ids = [
-        str(item).strip()
-        for item in raw_ids
-        if isinstance(item, str) and str(item).strip()
-    ] if isinstance(raw_ids, list) else []
-    if not artifact_ids:
-        return _json_error("moduleArtifactIds is required", 400)
-    workspace_id = str(payload.get("workspaceId", "") or "").strip() or "default"
-    conversation_id = str(payload.get("conversationId", "") or "").strip() or "report-generation"
-    render_style = normalize_report_render_style(payload.get("renderStyle") or DEFAULT_REPORT_RENDER_STYLE)
-
-    with session_scope() as db:
-        user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
-        if not user:
-            return _json_error("user not found", 404)
-        role = _selected_role(user.preferences)
-        if not role:
-            return _json_error("please select a role first", 400)
-        rows = get_analysis_module_artifacts_by_ids(
-            db,
-            user_id=user_id,
-            workspace_id=workspace_id,
-            artifact_ids=artifact_ids,
-        )
-        if len(rows) != len(artifact_ids):
-            return _json_error("module artifact not found", 404)
-        artifact = generate_analysis_report_from_module_artifacts(rows, render_style=render_style)
-        if not artifact:
-            return _json_error("report generation failed", 500)
-        row = save_analysis_report_artifact(
-            db,
-            user_id=user_id,
-            workspace_id=workspace_id,
-            role=role,
-            conversation_id=conversation_id,
-            artifact=artifact,
-        )
-        if row is None:
-            return _json_error("report generation failed", 500)
-        return {"ok": True, "data": {"analysisReport": analysis_report_to_payload(row)}}
-
-
-@workspace_bp.post("/reports/<report_id>/regenerate")
-def regenerate_workspace_report(report_id: str):
-    user_id = _current_user_id()
-    if user_id is None:
-        return _json_error("authentication required", 401)
-
-    payload = request.get_json(silent=True)
-    payload = payload if isinstance(payload, dict) else {}
-    workspace_id = str(payload.get("workspaceId", "") or "").strip() or None
-    conversation_id = str(payload.get("conversationId", "") or "").strip() or "report-regeneration"
-    render_style = normalize_report_render_style(payload.get("renderStyle") or DEFAULT_REPORT_RENDER_STYLE)
-
-    with session_scope() as db:
-        source_row = get_analysis_report(db, user_id=user_id, workspace_id=workspace_id, report_id=str(report_id))
-        if source_row is None:
-            return _json_error("report not found", 404)
-        artifact_json = source_row.artifact_json if isinstance(source_row.artifact_json, dict) else {}
-        source_ids = [
-            str(item).strip()
-            for item in artifact_json.get("sourceModuleArtifactIds", [])
-            if isinstance(item, str) and str(item).strip()
-        ]
-        if not source_ids:
-            return _json_error("source module artifacts are unavailable", 400)
-        rows = get_analysis_module_artifacts_by_ids(
-            db,
-            user_id=user_id,
-            workspace_id=source_row.workspace_id,
-            artifact_ids=source_ids,
-        )
-        if len(rows) != len(source_ids):
-            return _json_error("source module artifact not found", 404)
-        artifact = generate_analysis_report_from_module_artifacts(rows, render_style=render_style)
-        if not artifact:
-            return _json_error("report regeneration failed", 500)
-        row = save_analysis_report_artifact(
-            db,
-            user_id=user_id,
-            workspace_id=source_row.workspace_id,
-            role=source_row.role,
-            conversation_id=conversation_id or source_row.conversation_id,
-            artifact=artifact,
-        )
-        if row is None:
-            return _json_error("report regeneration failed", 500)
-        return {"ok": True, "data": {"analysisReport": analysis_report_to_payload(row)}}
-
-
 @workspace_bp.post("/chat")
 def workspace_chat():
     user_id = _current_user_id()
@@ -666,7 +625,10 @@ def workspace_chat():
     enabled_analysis_modules: list[str] = []
     analysis_shared_inputs: dict = {}
     analysis_module_inputs: dict = {}
+    report_request: dict = {}
     if isinstance(payload, dict):
+        if _has_legacy_report_request_shape(payload):
+            return _json_error("legacy report request fields are no longer supported; use reportRequest with sourceText/documents", 400)
         raw_workspace_id = payload.get("workspaceId")
         if isinstance(raw_workspace_id, str):
             request_workspace_id = raw_workspace_id.strip()
@@ -677,6 +639,9 @@ def workspace_chat():
         if isinstance(raw_intent, str):
             intent = raw_intent.strip()
         enabled_analysis_modules, analysis_shared_inputs, analysis_module_inputs = _extract_analysis_request(payload)
+        report_request = _extract_report_request(payload)
+        if payload.get("reportRequest") is not None and not report_request:
+            return _json_error("reportRequest is invalid; provide sourceText, documents, or reportId", 400)
 
     with session_scope() as db:
         user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
@@ -689,6 +654,7 @@ def workspace_chat():
 
         workspace_id = request_workspace_id or _workspace_id(user.preferences)
         bind_log_context(user_id=user_id, workspace_id=workspace_id)
+        delete_legacy_report_rows(db, user_id=user_id, workspace_id=workspace_id)
         log_audit_event(
             "workspace.chat.requested",
             operation_status="requested",
@@ -734,6 +700,7 @@ def workspace_chat():
                 analysis_shared_inputs=analysis_shared_inputs,
                 analysis_module_inputs=analysis_module_inputs,
                 analysis_session_state=analysis_session_state,
+                report_request=report_request,
                 agent_trace_enabled=trace_enabled,
                 agent_trace_debug_details_enabled=trace_details_enabled,
             )
@@ -824,7 +791,10 @@ def workspace_chat_stream():
     enabled_analysis_modules: list[str] = []
     analysis_shared_inputs: dict = {}
     analysis_module_inputs: dict = {}
+    report_request: dict = {}
     if isinstance(payload, dict):
+        if _has_legacy_report_request_shape(payload):
+            return _json_error("legacy report request fields are no longer supported; use reportRequest with sourceText/documents", 400)
         raw_workspace_id = payload.get("workspaceId")
         if isinstance(raw_workspace_id, str):
             request_workspace_id = raw_workspace_id.strip()
@@ -835,6 +805,9 @@ def workspace_chat_stream():
         if isinstance(raw_intent, str):
             intent = raw_intent.strip()
         enabled_analysis_modules, analysis_shared_inputs, analysis_module_inputs = _extract_analysis_request(payload)
+        report_request = _extract_report_request(payload)
+        if payload.get("reportRequest") is not None and not report_request:
+            return _json_error("reportRequest is invalid; provide sourceText, documents, or reportId", 400)
 
     with session_scope() as db:
         user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
@@ -868,6 +841,7 @@ def workspace_chat_stream():
         yield _stream_event({"type": "started", "role": role})
         try:
             with session_scope() as db:
+                delete_legacy_report_rows(db, user_id=user_id, workspace_id=workspace_id)
                 thread, conversation_history, conversation_context = load_conversation_history(
                     db,
                     user_id=user_id,
@@ -898,6 +872,7 @@ def workspace_chat_stream():
                     analysis_shared_inputs=analysis_shared_inputs,
                     analysis_module_inputs=analysis_module_inputs,
                     analysis_session_state=analysis_session_state,
+                    report_request=report_request,
                     agent_trace_enabled=trace_enabled,
                     agent_trace_debug_details_enabled=trace_details_enabled,
                 )

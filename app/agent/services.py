@@ -171,6 +171,8 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 def _planner_summary(output: dict[str, Any]) -> str:
     enabled_analysis_modules = output.get("enabled_analysis_modules", [])
+    if bool(output.get("report_request")):
+        return "Routed an explicit report-generation request to the report-generation agent."
     if isinstance(enabled_analysis_modules, list) and enabled_analysis_modules:
         if bool(output.get("needs_clarification", False)):
             return "Entered module-gated analysis intake and requested clarification."
@@ -191,6 +193,9 @@ def _planner_summary(output: dict[str, Any]) -> str:
 def _planner_details(output: dict[str, Any]) -> dict[str, Any]:
     return {
         "intent": str(output.get("intent", "")),
+        "reportRequest": dict(output.get("report_request", {}))
+        if isinstance(output.get("report_request"), dict)
+        else {},
         "needsSearch": bool(output.get("needs_search", False)),
         "needsMcp": bool(output.get("needs_mcp", False)),
         "needsClarification": bool(output.get("needs_clarification", False)),
@@ -483,7 +488,7 @@ def _analysis_modules_children(output: dict[str, Any], *, include_details: bool)
                 "limitationCount": len(payload.get("limitations", []))
                 if isinstance(payload.get("limitations"), list)
                 else 0,
-                "hasDocumentHandoff": isinstance(payload.get("documentHandoff"), dict) and bool(payload.get("documentHandoff")),
+                "hasDisplayHandoff": isinstance(payload.get("displayHandoff"), dict) and bool(payload.get("displayHandoff")),
             }
         children.append(
             _trace_step(
@@ -586,7 +591,7 @@ def _build_trace_payload(output: dict[str, Any], *, include_details: bool) -> di
         steps.append(_analysis_intake_step(output, include_details=include_details))
         if bool(output.get("analysis_completed", False)) or bool(output.get("analysis_results")):
             steps.append(_analysis_modules_step(output, include_details=include_details))
-        if bool(output.get("analysis_report")) or bool(output.get("analysis_report_generated", False)):
+        if bool(output.get("analysis_report")):
             steps.append(_analysis_report_step(output, include_details=include_details))
         if bool(output.get("needs_clarification", False)):
             steps.append(_clarify_step(output, include_details=include_details))
@@ -598,6 +603,8 @@ def _build_trace_payload(output: dict[str, Any], *, include_details: bool) -> di
         steps.append(_search_step(output, include_details=include_details))
     if bool(output.get("mcp_completed", False)):
         steps.append(_mcp_step(output, include_details=include_details))
+    if bool(output.get("analysis_report")):
+        steps.append(_analysis_report_step(output, include_details=include_details))
     if bool(output.get("needs_clarification", False)):
         steps.append(_clarify_step(output, include_details=include_details))
         return {"steps": steps}
@@ -845,6 +852,7 @@ def generate_reply_payload(
     analysis_shared_inputs: dict[str, Any] | None = None,
     analysis_module_inputs: dict[str, dict[str, Any]] | None = None,
     analysis_session_state: dict[str, Any] | None = None,
+    report_request: dict[str, Any] | None = None,
     agent_trace_enabled: bool = False,
     agent_trace_debug_details_enabled: bool = False,
 ) -> dict[str, Any]:
@@ -874,13 +882,14 @@ def generate_reply_payload(
         fallback_report_goal=fallback_report_goal,
     )
     normalized_analysis_module_inputs = normalize_analysis_module_inputs(analysis_module_inputs)
+    normalized_report_request = dict(report_request) if isinstance(report_request, dict) else {}
     if not normalized_analysis_session_state and normalized_enabled_analysis_modules:
         normalized_analysis_session_state = create_transient_analysis_session(
             enabled_modules=normalized_enabled_analysis_modules
         )
     normalized_history = _normalize_conversation_history(conversation_history)
     normalized_context = str(conversation_context or "").strip()
-    if not normalized_enabled_analysis_modules and _should_run_direct_kg_query(
+    if not normalized_report_request and not normalized_enabled_analysis_modules and _should_run_direct_kg_query(
         user_message=effective_user_message,
         entity=entity_text,
         graph_intent=graph_intent_text,
@@ -922,6 +931,7 @@ def generate_reply_payload(
             "enabled_analysis_modules": normalized_enabled_analysis_modules,
             "analysis_shared_inputs": normalized_analysis_shared_inputs,
             "analysis_module_inputs": normalized_analysis_module_inputs,
+            "report_request": normalized_report_request,
             "analysis_session": normalized_analysis_session_state,
             "analysis_missing_fields": [],
             "analysis_results": {},
@@ -929,10 +939,8 @@ def generate_reply_payload(
             "analysis_completed": False,
             "analysis_unsupported_modules": [],
             "analysis_module_artifacts": [],
-            "analysis_report_request": {},
             "analysis_report": {},
             "analysis_report_artifact": {},
-            "analysis_report_generated": False,
             "needs_search": False,
             "needs_mcp": False,
             "needs_clarification": False,
@@ -987,9 +995,6 @@ def generate_reply_payload(
         analysis_module_artifacts_payload = output.get("analysis_module_artifacts", [])
         if not isinstance(analysis_module_artifacts_payload, list):
             analysis_module_artifacts_payload = []
-        analysis_report_request_payload = output.get("analysis_report_request", {})
-        if not isinstance(analysis_report_request_payload, dict):
-            analysis_report_request_payload = {}
         analysis_report_payload = output.get("analysis_report", {})
         if not isinstance(analysis_report_payload, dict):
             analysis_report_payload = {}
@@ -1028,8 +1033,6 @@ def generate_reply_payload(
         payload["analysisSession"] = analysis_session_payload
     if analysis_module_artifacts_payload:
         payload["analysisModuleArtifacts"] = analysis_module_artifacts_payload
-    if analysis_report_request_payload:
-        payload["analysisReportRequest"] = analysis_report_request_payload
     if analysis_report_payload:
         payload["analysisReport"] = analysis_report_payload
     if analysis_report_artifact_payload:

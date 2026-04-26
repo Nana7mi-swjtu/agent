@@ -43,8 +43,6 @@ const {
   removeDocument,
   loadRagDebugSnapshot,
   send,
-  generateReport,
-  regenerateReport,
 } = useChatWorkspace();
 
 const analysisModuleOptions = computed(() => [
@@ -179,8 +177,6 @@ const traceDetailsEntries = (step) =>
         :trace-status="traceStatus"
         :trace-details-entries="traceDetailsEntries"
         :ui-store="uiStore"
-        :generate-report="generateReport"
-        :regenerate-report="regenerateReport"
       />
 
       <ChatComposer

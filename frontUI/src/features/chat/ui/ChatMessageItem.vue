@@ -1,6 +1,4 @@
 <script setup>
-import { ref } from "vue";
-
 import AgentTracePanel from "@/features/chat/ui/AgentTracePanel.vue";
 import KnowledgeGraphPanel from "@/features/chat/ui/KnowledgeGraphPanel.vue";
 import RagMessageDebug from "@/features/chat/ui/RagMessageDebug.vue";
@@ -59,19 +57,9 @@ const props = defineProps({
     type: Function,
     required: true,
   },
-  generateReport: {
-    type: Function,
-    default: () => {},
-  },
-  regenerateReport: {
-    type: Function,
-    default: () => {},
-  },
 });
 
 const uiStore = useUiStore();
-const selectedGenerateRenderStyle = ref("professional");
-const selectedRegenerateRenderStyle = ref("professional");
 
 const ragDebugForMessage = (message) => getMessageRagDebug(message);
 const traceStepsForMessage = (message) => getMessageTraceSteps(message);
@@ -79,16 +67,6 @@ const sourcesForMessage = (message) => getMessageSources(message);
 const memoryInfoForMessage = (message) => getMessageMemoryInfo(message);
 const reportForMessage = (message) =>
   message?.analysisReport && typeof message.analysisReport === "object" ? message.analysisReport : null;
-const reportRequestForMessage = (message) =>
-  message?.reportGenerationRequest && typeof message.reportGenerationRequest === "object" ? message.reportGenerationRequest : null;
-const renderStylesForRequest = (request) =>
-  Array.isArray(request?.renderStyles) && request.renderStyles.length
-    ? request.renderStyles
-    : [{ id: "professional", label: "专业白底" }];
-const renderStylesForReport = (report) =>
-  Array.isArray(report?.regeneration?.renderStyles) && report.regeneration.renderStyles.length
-    ? report.regeneration.renderStyles
-    : [{ id: "professional", label: "专业白底" }];
 const resolveReportDownloadUrl = (url) => {
   const cleanUrl = String(url || "").trim();
   if (!cleanUrl) return "";
@@ -102,16 +80,6 @@ const reportDownloadEntries = (message) => {
   return [
     { key: "pdf", label: "PDF", url: resolveReportDownloadUrl(urls.pdf) },
   ].filter((item) => item.url);
-};
-const runReportGeneration = (message) => {
-  const request = reportRequestForMessage(message);
-  if (!request) return;
-  props.generateReport(request, selectedGenerateRenderStyle.value || request.defaultRenderStyle || "professional");
-};
-const runReportRegeneration = (message) => {
-  const report = reportForMessage(message);
-  if (!report) return;
-  props.regenerateReport(report, selectedRegenerateRenderStyle.value || report.renderStyle || "professional");
 };
 const showGroundingMeta = (message) =>
   message?.from === "agent" &&
@@ -160,25 +128,9 @@ const graphMetaForMessage = (message) =>
           <p>{{ uiStore.t("assistantWorkingHint") }}</p>
         </div>
         <MarkdownContent v-else :source="moduleDisplayMarkdownForMessage(message)" :markdown="message.from === 'agent'" class="msg-content" />
-        <div v-if="message.from === 'agent' && !message.pending && reportRequestForMessage(message)" class="analysis-report-preview">
-          <div class="analysis-report-title">生成综合报告</div>
-          <p class="analysis-report-copy">模块分析结果已完成。它们将作为正式报告的证据与素材输入；下一步仅需选择渲染风格，系统会起草带独立封面、目录和正文结构的正式报告。</p>
-          <div class="analysis-report-actions">
-            <select v-model="selectedGenerateRenderStyle" class="analysis-report-select" aria-label="报告渲染风格">
-              <option
-                v-for="style in renderStylesForRequest(reportRequestForMessage(message))"
-                :key="style.id"
-                :value="style.id"
-              >
-                {{ style.label || style.id }}
-              </option>
-            </select>
-            <button type="button" class="analysis-report-button" @click="runReportGeneration(message)">生成报告</button>
-          </div>
-        </div>
         <div v-if="message.from === 'agent' && !message.pending && reportForMessage(message)" class="analysis-report-preview">
           <div class="analysis-report-title">{{ reportForMessage(message).title || "分析报告" }}</div>
-          <p class="analysis-report-copy">报告已生成。可先打开完整预览核对封面、目录与编排后的正文结构，再按需下载或仅更换渲染风格重新生成。</p>
+          <p class="analysis-report-copy">报告已生成。可先打开完整预览核对封面、目录与编排后的正文结构，再按需下载 PDF。</p>
           <div class="analysis-report-actions">
             <a
               v-if="reportPreviewUrl(message)"
@@ -199,16 +151,6 @@ const graphMetaForMessage = (message) =>
             >
               下载 {{ item.label }}
             </a>
-            <select v-model="selectedRegenerateRenderStyle" class="analysis-report-select" aria-label="重新生成风格">
-              <option
-                v-for="style in renderStylesForReport(reportForMessage(message))"
-                :key="style.id"
-                :value="style.id"
-              >
-                {{ style.label || style.id }}
-              </option>
-            </select>
-            <button type="button" class="analysis-report-button" @click="runReportRegeneration(message)">重新生成</button>
           </div>
         </div>
         <KnowledgeGraphPanel
@@ -258,25 +200,9 @@ const graphMetaForMessage = (message) =>
       <div class="msg-avatar is-empty"></div>
       <div class="msg-body">
         <MarkdownContent :source="moduleDisplayMarkdownForMessage(message)" :markdown="message.from === 'agent'" class="msg-content" />
-        <div v-if="message.from === 'agent' && !message.pending && reportRequestForMessage(message)" class="analysis-report-preview">
-          <div class="analysis-report-title">生成综合报告</div>
-          <p class="analysis-report-copy">模块分析结果已完成。它们将作为正式报告的证据与素材输入；下一步仅需选择渲染风格，系统会起草带独立封面、目录和正文结构的正式报告。</p>
-          <div class="analysis-report-actions">
-            <select v-model="selectedGenerateRenderStyle" class="analysis-report-select" aria-label="报告渲染风格">
-              <option
-                v-for="style in renderStylesForRequest(reportRequestForMessage(message))"
-                :key="style.id"
-                :value="style.id"
-              >
-                {{ style.label || style.id }}
-              </option>
-            </select>
-            <button type="button" class="analysis-report-button" @click="runReportGeneration(message)">生成报告</button>
-          </div>
-        </div>
         <div v-if="message.from === 'agent' && !message.pending && reportForMessage(message)" class="analysis-report-preview">
           <div class="analysis-report-title">{{ reportForMessage(message).title || "分析报告" }}</div>
-          <p class="analysis-report-copy">报告已生成。可先打开完整预览核对封面、目录与编排后的正文结构，再按需下载或仅更换渲染风格重新生成。</p>
+          <p class="analysis-report-copy">报告已生成。可先打开完整预览核对封面、目录与编排后的正文结构，再按需下载 PDF。</p>
           <div class="analysis-report-actions">
             <a
               v-if="reportPreviewUrl(message)"
@@ -297,16 +223,6 @@ const graphMetaForMessage = (message) =>
             >
               下载 {{ item.label }}
             </a>
-            <select v-model="selectedRegenerateRenderStyle" class="analysis-report-select" aria-label="重新生成风格">
-              <option
-                v-for="style in renderStylesForReport(reportForMessage(message))"
-                :key="style.id"
-                :value="style.id"
-              >
-                {{ style.label || style.id }}
-              </option>
-            </select>
-            <button type="button" class="analysis-report-button" @click="runReportRegeneration(message)">重新生成</button>
           </div>
         </div>
         <KnowledgeGraphPanel
