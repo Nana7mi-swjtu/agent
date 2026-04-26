@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from sqlalchemy import select
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..models import AnalysisReport
 from .agent import generate_report_artifact_from_source_documents
+from .bundle import ReportGenerationError
 from .contracts import DEFAULT_RENDER_STYLE, as_dict, clean_text, drop_empty
 from .legacy_reporting import (
     REPORT_DOWNLOAD_FORMAT,
@@ -38,6 +40,11 @@ class ReportActionError(ReportRequestError):
 def _clean_source_text(value: Any) -> str:
     if value is None:
         return ""
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value).replace("\x00", "").strip()
     return str(value).replace("\x00", "").strip()
 
 
@@ -177,16 +184,19 @@ def execute_report_request(
     request: dict[str, Any],
     report_writer: Any | None = None,
 ) -> dict[str, Any]:
-    del report_writer
     normalized = normalize_report_request(request)
     if not normalized:
         raise ReportRequestError("report request is invalid")
     delete_legacy_report_rows(db, user_id=user_id, workspace_id=workspace_id)
     if normalized["mode"] == REPORT_REQUEST_GENERATE:
-        artifact = generate_report_artifact_from_source_documents(
-            list(normalized.get("documents", [])),
-            source_context={"mode": REPORT_REQUEST_GENERATE, "documentCount": len(normalized.get("documents", []))},
-        )
+        try:
+            artifact = generate_report_artifact_from_source_documents(
+                list(normalized.get("documents", [])),
+                source_context={"mode": REPORT_REQUEST_GENERATE, "documentCount": len(normalized.get("documents", []))},
+                report_writer=report_writer,
+            )
+        except ReportGenerationError as exc:
+            raise ReportRequestError(str(exc) or "report generation failed") from exc
         if artifact is None:
             raise ReportRequestError("report generation failed")
         return artifact
@@ -203,10 +213,14 @@ def execute_report_request(
     source_documents = _source_documents_from_artifact(source_artifact)
     if not source_documents:
         raise ReportRequestError("source snapshot is unavailable")
-    artifact = generate_report_artifact_from_source_documents(
-        source_documents,
-        source_context={"mode": REPORT_REQUEST_REGENERATE, "sourceReportId": clean_text(source_row.report_id)},
-    )
+    try:
+        artifact = generate_report_artifact_from_source_documents(
+            source_documents,
+            source_context={"mode": REPORT_REQUEST_REGENERATE, "sourceReportId": clean_text(source_row.report_id)},
+            report_writer=report_writer,
+        )
+    except ReportGenerationError as exc:
+        raise ReportRequestError(str(exc) or "report regeneration failed") from exc
     if artifact is None:
         raise ReportRequestError("report regeneration failed")
     if isinstance(source_artifact.get("scope"), dict):

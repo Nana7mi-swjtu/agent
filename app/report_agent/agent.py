@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .artifact import bundle_to_analysis_report_artifact
@@ -10,6 +11,11 @@ from .contracts import REPORT_SOURCE_SNAPSHOT_SCHEMA_VERSION, clean_text
 def _clean_source_text(value: Any) -> str:
     if value is None:
         return ""
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value).replace("\x00", "").strip()
     return str(value).replace("\x00", "").strip()
 
 
@@ -93,6 +99,7 @@ def generate_report_artifact_from_source_documents(
     source_documents: list[dict[str, Any]],
     *,
     source_context: dict[str, Any] | None = None,
+    report_writer: Any | None = None,
 ) -> dict[str, Any] | None:
     documents = [dict(item) for item in source_documents if isinstance(item, dict)]
     materials = _documents_to_materials(documents)
@@ -104,6 +111,7 @@ def generate_report_artifact_from_source_documents(
         title=report_title,
         render_style="professional",
         source_context=source_context or {"adapter": "RawTextReportRequest", "documentCount": len(materials)},
+        report_writer=report_writer,
     )
     artifact = bundle_to_analysis_report_artifact(bundle, source_snapshot=_source_snapshot(documents))
     artifact["scope"] = {

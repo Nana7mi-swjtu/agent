@@ -2,6 +2,7 @@ from .agent import (
     generate_paginated_report,
     generate_report_artifact_from_source_documents,
 )
+from .bundle import ReportGenerationError
 from .contracts import PAGINATED_REPORT_BUNDLE_SCHEMA_VERSION
 from .module_artifacts import (
     analysis_module_artifact_to_payload,
@@ -10,6 +11,7 @@ from .module_artifacts import (
     save_analysis_module_artifacts,
 )
 from .renderers import render_bundle_html, render_bundle_markdown, render_bundle_pdf
+from .runtime import reset_report_runtime_for_tests
 from .service import (
     DEFAULT_REPORT_RENDER_STYLE,
     REPORT_REQUEST_GENERATE,
@@ -39,6 +41,7 @@ from .service import (
 __all__ = [
     "PAGINATED_REPORT_BUNDLE_SCHEMA_VERSION",
     "DEFAULT_REPORT_RENDER_STYLE",
+    "ReportGenerationError",
     "REPORT_REQUEST_GENERATE",
     "REPORT_REQUEST_REGENERATE",
     "ReportRequestError",
@@ -65,6 +68,7 @@ __all__ = [
     "render_bundle_markdown",
     "render_bundle_pdf",
     "render_report_pdf",
+    "reset_report_runtime_for_tests",
     "report_preview_metadata",
     "report_row_forbidden_values",
     "safe_report_filename",

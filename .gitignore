@@ -50,3 +50,4 @@ assets/bankruptcy/reference
 logs
 frontend
 .playwright-cli
+.tmp
