@@ -76,6 +76,7 @@ assert.match(messageItemSource, /KnowledgeGraphPanel/);
 assert.match(messageItemSource, /assistantWorkingHint/);
 assert.match(messageItemSource, /msg-pending-card/);
 assert.match(messageItemSource, /agent-sources-panel/);
+assert.match(messageItemSource, /独立封面、目录和正文页面/);
 
 const knowledgeGraphSource = fs.readFileSync(path.resolve(__dirname, "../src/features/chat/ui/KnowledgeGraphPanel.vue"), "utf8");
 assert.match(knowledgeGraphSource, /kg-viewport/);
@@ -85,6 +86,8 @@ assert.match(knowledgeGraphSource, /graphMeta/);
 const feedSource = fs.readFileSync(path.resolve(__dirname, "../src/features/chat/ui/ChatFeed.vue"), "utf8");
 assert.match(feedSource, /jumpToLatest/);
 assert.match(feedSource, /handleScroll/);
+assert.match(feedSource, /analysisEmptyStateMultiTitle/);
+assert.match(feedSource, /feed-module-chip/);
 
 const tracePanelSource = fs.readFileSync(path.resolve(__dirname, "../src/features/chat/ui/AgentTracePanel.vue"), "utf8");
 assert.match(tracePanelSource, /agentTraceFitView/);
@@ -98,5 +101,13 @@ assert.match(messagingSource, /postWorkspaceChatStream/);
 assert.match(messagingSource, /chatStore\.patchMessage/);
 assert.match(messagingSource, /chatStore\.replaceMessage/);
 assert.match(messagingSource, /input\.value = text/);
+
+const workspaceSource = fs.readFileSync(path.resolve(__dirname, "../src/widgets/chat-workspace/ui/ChatWorkspace.vue"), "utf8");
+assert.match(workspaceSource, /analysisComposerGuidance/);
+assert.match(workspaceSource, /analysisGuidanceMultiPlaceholder/);
+
+const composerSource = fs.readFileSync(path.resolve(__dirname, "../src/features/chat/ui/ChatComposer.vue"), "utf8");
+assert.match(composerSource, /dc-composer-guidance/);
+assert.match(composerSource, /analysisGuidance/);
 
 console.log("chat workbench UX frontend verification passed");

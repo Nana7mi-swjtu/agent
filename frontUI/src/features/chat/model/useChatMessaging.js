@@ -84,6 +84,23 @@ export const useChatMessaging = () => {
 
   const displayTime = (value) => formatMessageTime(value, uiStore.language);
 
+  const appendAgentMessage = (message, sessionId = "") => {
+    if (sessionId) {
+      return chatStore.appendMessageToSession(sessionId, message);
+    }
+    return chatStore.appendMessage(message);
+  };
+
+  const applyAssistantMessage = (pendingMessageId, message, sessionId = "") => {
+    const replaced = sessionId
+      ? chatStore.replaceMessageInSession(sessionId, pendingMessageId, message)
+      : chatStore.replaceMessage(pendingMessageId, message);
+    if (!replaced) {
+      appendAgentMessage(message, sessionId);
+    }
+    return replaced;
+  };
+
   const restoreFailedRequest = (pendingMessageId, text, message, sessionId = "") => {
     if (pendingMessageId) {
       if (sessionId) {
@@ -112,7 +129,7 @@ export const useChatMessaging = () => {
         };
       }
     }
-    const message = {
+    const baseMessage = {
       from: "agent",
       text: payload.reply || "",
       time: new Date().toISOString(),
@@ -123,16 +140,31 @@ export const useChatMessaging = () => {
       trace: trace,
       graph: payload.graph || null,
       graphMeta: payload.graphMeta || null,
+      analysisReport: payload.analysisReport || null,
       memoryInfo: memoryInfo,
       jobId: jobId ? String(jobId) : "",
       jobStatus: "succeeded",
       pending: false,
     };
-    const replaced = sessionId
-      ? chatStore.replaceMessageInSession(sessionId, pendingMessageId, message)
-      : chatStore.replaceMessage(pendingMessageId, message);
-    if (!replaced && sessionId) {
-      chatStore.appendMessageToSession(sessionId, message);
+    const moduleArtifacts = Array.isArray(payload.analysisModuleArtifacts)
+      ? payload.analysisModuleArtifacts.filter((item) => item && typeof item === "object")
+      : [];
+      if (moduleArtifacts.length) {
+      moduleArtifacts.forEach((artifact, index) => {
+        const artifactMessage = {
+          ...baseMessage,
+          text: String(artifact.markdownBody || ""),
+          analysisModuleArtifact: artifact,
+          analysisReport: null,
+        };
+        if (index === 0) {
+          applyAssistantMessage(pendingMessageId, artifactMessage, sessionId);
+        } else {
+          appendAgentMessage(artifactMessage, sessionId);
+        }
+      });
+    } else {
+      applyAssistantMessage(pendingMessageId, baseMessage, sessionId);
     }
     workspaceStore.systemPrompt = payload.systemPrompt || workspaceStore.systemPrompt;
   };
@@ -276,6 +308,8 @@ export const useChatMessaging = () => {
       trace: null,
       graph: null,
       graphMeta: null,
+      analysisModuleArtifacts: [],
+      analysisReport: null,
       systemPrompt: "",
     };
     let streamError = "";
@@ -305,6 +339,8 @@ export const useChatMessaging = () => {
         finalPayload.trace = event.trace && typeof event.trace === "object" ? event.trace : null;
         finalPayload.graph = event.graph && typeof event.graph === "object" ? event.graph : null;
         finalPayload.graphMeta = event.graphMeta && typeof event.graphMeta === "object" ? event.graphMeta : null;
+        finalPayload.analysisModuleArtifacts = Array.isArray(event.analysisModuleArtifacts) ? event.analysisModuleArtifacts : [];
+        finalPayload.analysisReport = event.analysisReport && typeof event.analysisReport === "object" ? event.analysisReport : null;
         finalPayload.systemPrompt = String(event.systemPrompt || "");
         return;
       }

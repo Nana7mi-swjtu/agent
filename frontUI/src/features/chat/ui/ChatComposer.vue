@@ -34,6 +34,10 @@ const props = defineProps({
     type: String,
     default: "Analysis module",
   },
+  analysisGuidance: {
+    type: Object,
+    default: null,
+  },
 });
 
 const emit = defineEmits(["update:modelValue", "update:analysisModuleValues", "submit"]);
@@ -149,6 +153,10 @@ onBeforeUnmount(() => {
 <template>
   <div class="dc-composer">
     <div class="dc-composer-inner">
+      <div v-if="analysisGuidance?.title && analysisGuidance?.text" class="dc-composer-guidance">
+        <strong>{{ analysisGuidance.title }}</strong>
+        <p>{{ analysisGuidance.text }}</p>
+      </div>
       <textarea
         ref="inputElement"
         v-model="value"
@@ -229,6 +237,27 @@ onBeforeUnmount(() => {
   background: var(--surface-panel);
   min-height: 72px;
   box-shadow: inset 0 1px 0 var(--surface-highlight);
+}
+
+.dc-composer-guidance {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(47, 107, 255, 0.12);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(47, 107, 255, 0.08), rgba(31, 157, 116, 0.08));
+}
+
+.dc-composer-guidance strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.dc-composer-guidance p {
+  margin: 0;
+  color: var(--text-channel);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .dc-composer-inner textarea {

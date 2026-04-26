@@ -9,6 +9,10 @@ import {
   getMessageSources,
   getMessageTraceSteps,
 } from "@/entities/chat/lib/message";
+import {
+  resolveModuleDisplayMarkdown as moduleDisplayMarkdownForMessage,
+} from "@/features/chat/lib/moduleArtifactPreview.js";
+import { buildApiUrl } from "@/shared/api/client";
 import { useUiStore } from "@/shared/model/ui-store";
 import MarkdownContent from "@/shared/ui/MarkdownContent.vue";
 
@@ -61,6 +65,22 @@ const ragDebugForMessage = (message) => getMessageRagDebug(message);
 const traceStepsForMessage = (message) => getMessageTraceSteps(message);
 const sourcesForMessage = (message) => getMessageSources(message);
 const memoryInfoForMessage = (message) => getMessageMemoryInfo(message);
+const reportForMessage = (message) =>
+  message?.analysisReport && typeof message.analysisReport === "object" ? message.analysisReport : null;
+const resolveReportDownloadUrl = (url) => {
+  const cleanUrl = String(url || "").trim();
+  if (!cleanUrl) return "";
+  if (/^https?:\/\//i.test(cleanUrl)) return cleanUrl;
+  return cleanUrl.startsWith("/api/") ? buildApiUrl(cleanUrl) : cleanUrl;
+};
+const reportPreviewUrl = (message) => resolveReportDownloadUrl(reportForMessage(message)?.previewUrl);
+const reportDownloadEntries = (message) => {
+  const report = reportForMessage(message);
+  const urls = report?.downloadUrls && typeof report.downloadUrls === "object" ? report.downloadUrls : {};
+  return [
+    { key: "pdf", label: "PDF", url: resolveReportDownloadUrl(urls.pdf) },
+  ].filter((item) => item.url);
+};
 const showGroundingMeta = (message) =>
   message?.from === "agent" &&
   (
@@ -107,7 +127,32 @@ const graphMetaForMessage = (message) =>
           </div>
           <p>{{ uiStore.t("assistantWorkingHint") }}</p>
         </div>
-        <MarkdownContent v-else :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
+        <MarkdownContent v-else :source="moduleDisplayMarkdownForMessage(message)" :markdown="message.from === 'agent'" class="msg-content" />
+        <div v-if="message.from === 'agent' && !message.pending && reportForMessage(message)" class="analysis-report-preview">
+          <div class="analysis-report-title">{{ reportForMessage(message).title || "分析报告" }}</div>
+          <p class="analysis-report-copy">报告已生成。可先打开完整预览核对封面、目录与编排后的正文结构，再按需下载 PDF。</p>
+          <div class="analysis-report-actions">
+            <a
+              v-if="reportPreviewUrl(message)"
+              class="analysis-report-button is-link"
+              :href="reportPreviewUrl(message)"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              完整预览
+            </a>
+            <a
+              v-for="item in reportDownloadEntries(message)"
+              :key="`${message.id}_report_${item.key}`"
+              class="analysis-report-button is-link"
+              :href="item.url"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              下载 {{ item.label }}
+            </a>
+          </div>
+        </div>
         <KnowledgeGraphPanel
           v-if="message.from === 'agent' && !message.pending && graphForMessage(message)"
           :graph="graphForMessage(message)"
@@ -154,7 +199,32 @@ const graphMetaForMessage = (message) =>
     <template v-else>
       <div class="msg-avatar is-empty"></div>
       <div class="msg-body">
-        <MarkdownContent :source="message.text" :markdown="message.from === 'agent'" class="msg-content" />
+        <MarkdownContent :source="moduleDisplayMarkdownForMessage(message)" :markdown="message.from === 'agent'" class="msg-content" />
+        <div v-if="message.from === 'agent' && !message.pending && reportForMessage(message)" class="analysis-report-preview">
+          <div class="analysis-report-title">{{ reportForMessage(message).title || "分析报告" }}</div>
+          <p class="analysis-report-copy">报告已生成。可先打开完整预览核对封面、目录与编排后的正文结构，再按需下载 PDF。</p>
+          <div class="analysis-report-actions">
+            <a
+              v-if="reportPreviewUrl(message)"
+              class="analysis-report-button is-link"
+              :href="reportPreviewUrl(message)"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              完整预览
+            </a>
+            <a
+              v-for="item in reportDownloadEntries(message)"
+              :key="`${message.id}_grouped_report_${item.key}`"
+              class="analysis-report-button is-link"
+              :href="item.url"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              下载 {{ item.label }}
+            </a>
+          </div>
+        </div>
         <KnowledgeGraphPanel
           v-if="message.from === 'agent' && !message.pending && graphForMessage(message)"
           :graph="graphForMessage(message)"
@@ -274,6 +344,68 @@ const graphMetaForMessage = (message) =>
 
 .msg-content {
   margin-top: 0;
+}
+
+.analysis-report-preview {
+  margin-top: 14px;
+  padding-left: 14px;
+  border-left: 3px solid rgba(31, 157, 116, 0.45);
+}
+
+.analysis-report-title {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.analysis-report-copy {
+  margin: 0;
+  color: var(--text-channel);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.analysis-report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.analysis-report-select {
+  min-height: 34px;
+  max-width: 180px;
+  border: 1px solid rgba(47, 107, 255, 0.18);
+  border-radius: 6px;
+  background: var(--surface-panel);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.analysis-report-button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(31, 157, 116, 0.24);
+  border-radius: 6px;
+  background: rgba(31, 157, 116, 0.08);
+  font-size: 13px;
+  font-weight: 650;
+  color: #13795b;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.analysis-report-button:hover {
+  border-color: rgba(31, 157, 116, 0.42);
+  background: rgba(31, 157, 116, 0.14);
+}
+
+.analysis-report-button.is-link {
+  display: inline-flex;
+  align-items: center;
 }
 
 .msg-pending-card {

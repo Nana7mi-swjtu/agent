@@ -171,6 +171,8 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 def _planner_summary(output: dict[str, Any]) -> str:
     enabled_analysis_modules = output.get("enabled_analysis_modules", [])
+    if bool(output.get("report_request")):
+        return "Routed an explicit report-generation request to the report-generation agent."
     if isinstance(enabled_analysis_modules, list) and enabled_analysis_modules:
         if bool(output.get("needs_clarification", False)):
             return "Entered module-gated analysis intake and requested clarification."
@@ -191,6 +193,9 @@ def _planner_summary(output: dict[str, Any]) -> str:
 def _planner_details(output: dict[str, Any]) -> dict[str, Any]:
     return {
         "intent": str(output.get("intent", "")),
+        "reportRequest": dict(output.get("report_request", {}))
+        if isinstance(output.get("report_request"), dict)
+        else {},
         "needsSearch": bool(output.get("needs_search", False)),
         "needsMcp": bool(output.get("needs_mcp", False)),
         "needsClarification": bool(output.get("needs_clarification", False)),
@@ -483,7 +488,7 @@ def _analysis_modules_children(output: dict[str, Any], *, include_details: bool)
                 "limitationCount": len(payload.get("limitations", []))
                 if isinstance(payload.get("limitations"), list)
                 else 0,
-                "hasDocumentHandoff": isinstance(payload.get("documentHandoff"), dict) and bool(payload.get("documentHandoff")),
+                "hasDisplayHandoff": isinstance(payload.get("displayHandoff"), dict) and bool(payload.get("displayHandoff")),
             }
         children.append(
             _trace_step(
@@ -546,6 +551,31 @@ def _analysis_modules_step(output: dict[str, Any], *, include_details: bool) -> 
     )
 
 
+def _analysis_report_step(output: dict[str, Any], *, include_details: bool) -> dict[str, Any]:
+    report = output.get("analysis_report", {})
+    if not isinstance(report, dict):
+        report = {}
+    details = None
+    if include_details:
+        details = {
+            "reportId": str(report.get("reportId", "")),
+            "title": str(report.get("title", "")),
+            "availableFormats": list(report.get("availableFormats", []))
+            if isinstance(report.get("availableFormats"), list)
+            else [],
+        }
+    status = str(report.get("status", "skipped") or "skipped")
+    summary = "Generated a structured analysis report artifact." if report else "Report generation was skipped."
+    return _trace_step(
+        step_id="analysis_report_generation",
+        step_type="report",
+        title="Analysis Report",
+        summary=summary,
+        status=status,
+        details=details,
+    )
+
+
 def _build_trace_payload(output: dict[str, Any], *, include_details: bool) -> dict[str, Any]:
     steps = [
         _trace_step(
@@ -561,6 +591,8 @@ def _build_trace_payload(output: dict[str, Any], *, include_details: bool) -> di
         steps.append(_analysis_intake_step(output, include_details=include_details))
         if bool(output.get("analysis_completed", False)) or bool(output.get("analysis_results")):
             steps.append(_analysis_modules_step(output, include_details=include_details))
+        if bool(output.get("analysis_report")):
+            steps.append(_analysis_report_step(output, include_details=include_details))
         if bool(output.get("needs_clarification", False)):
             steps.append(_clarify_step(output, include_details=include_details))
             return {"steps": steps}
@@ -571,6 +603,8 @@ def _build_trace_payload(output: dict[str, Any], *, include_details: bool) -> di
         steps.append(_search_step(output, include_details=include_details))
     if bool(output.get("mcp_completed", False)):
         steps.append(_mcp_step(output, include_details=include_details))
+    if bool(output.get("analysis_report")):
+        steps.append(_analysis_report_step(output, include_details=include_details))
     if bool(output.get("needs_clarification", False)):
         steps.append(_clarify_step(output, include_details=include_details))
         return {"steps": steps}
@@ -818,6 +852,7 @@ def generate_reply_payload(
     analysis_shared_inputs: dict[str, Any] | None = None,
     analysis_module_inputs: dict[str, dict[str, Any]] | None = None,
     analysis_session_state: dict[str, Any] | None = None,
+    report_request: dict[str, Any] | None = None,
     agent_trace_enabled: bool = False,
     agent_trace_debug_details_enabled: bool = False,
 ) -> dict[str, Any]:
@@ -847,13 +882,14 @@ def generate_reply_payload(
         fallback_report_goal=fallback_report_goal,
     )
     normalized_analysis_module_inputs = normalize_analysis_module_inputs(analysis_module_inputs)
+    normalized_report_request = dict(report_request) if isinstance(report_request, dict) else {}
     if not normalized_analysis_session_state and normalized_enabled_analysis_modules:
         normalized_analysis_session_state = create_transient_analysis_session(
             enabled_modules=normalized_enabled_analysis_modules
         )
     normalized_history = _normalize_conversation_history(conversation_history)
     normalized_context = str(conversation_context or "").strip()
-    if not normalized_enabled_analysis_modules and _should_run_direct_kg_query(
+    if not normalized_report_request and not normalized_enabled_analysis_modules and _should_run_direct_kg_query(
         user_message=effective_user_message,
         entity=entity_text,
         graph_intent=graph_intent_text,
@@ -895,12 +931,16 @@ def generate_reply_payload(
             "enabled_analysis_modules": normalized_enabled_analysis_modules,
             "analysis_shared_inputs": normalized_analysis_shared_inputs,
             "analysis_module_inputs": normalized_analysis_module_inputs,
+            "report_request": normalized_report_request,
             "analysis_session": normalized_analysis_session_state,
             "analysis_missing_fields": [],
             "analysis_results": {},
             "analysis_handoff_bundle": {},
             "analysis_completed": False,
             "analysis_unsupported_modules": [],
+            "analysis_module_artifacts": [],
+            "analysis_report": {},
+            "analysis_report_artifact": {},
             "needs_search": False,
             "needs_mcp": False,
             "needs_clarification": False,
@@ -952,6 +992,15 @@ def generate_reply_payload(
         analysis_session_payload = output.get("analysis_session", {})
         if not isinstance(analysis_session_payload, dict):
             analysis_session_payload = {}
+        analysis_module_artifacts_payload = output.get("analysis_module_artifacts", [])
+        if not isinstance(analysis_module_artifacts_payload, list):
+            analysis_module_artifacts_payload = []
+        analysis_report_payload = output.get("analysis_report", {})
+        if not isinstance(analysis_report_payload, dict):
+            analysis_report_payload = {}
+        analysis_report_artifact_payload = output.get("analysis_report_artifact", {})
+        if not isinstance(analysis_report_artifact_payload, dict):
+            analysis_report_artifact_payload = {}
         trace_payload = (
             _build_trace_payload(output, include_details=bool(agent_trace_debug_details_enabled))
             if agent_trace_enabled
@@ -982,6 +1031,12 @@ def generate_reply_payload(
         payload["analysisHandoffBundle"] = analysis_handoff_bundle_payload
     if analysis_session_payload:
         payload["analysisSession"] = analysis_session_payload
+    if analysis_module_artifacts_payload:
+        payload["analysisModuleArtifacts"] = analysis_module_artifacts_payload
+    if analysis_report_payload:
+        payload["analysisReport"] = analysis_report_payload
+    if analysis_report_artifact_payload:
+        payload["analysisReportArtifact"] = analysis_report_artifact_payload
     if trace_payload:
         payload["trace"] = trace_payload
     return payload

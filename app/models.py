@@ -97,6 +97,7 @@ class AgentChatJob(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     entity: Mapped[str | None] = mapped_column(String(255), nullable=True)
     intent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    request_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
     result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
@@ -270,6 +271,77 @@ class AnalysisSession(Base):
     module_results_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     compatibility_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     bundle_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class AnalysisReport(Base):
+    __tablename__ = "analysis_reports"
+    __table_args__ = (
+        UniqueConstraint("report_id", name="uq_analysis_reports_report_id"),
+        Index("ix_analysis_reports_scope_created", "user_id", "workspace_id", "role", "conversation_id", "created_at"),
+        Index("ix_analysis_reports_session", "analysis_session_id", "analysis_session_revision"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    analysis_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    analysis_session_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed", index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    enabled_modules_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    module_run_ids_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    artifact_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    markdown_body: Mapped[str | None] = mapped_column(LongText, nullable=True)
+    html_body: Mapped[str | None] = mapped_column(LongText, nullable=True)
+    visual_assets_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    attachments_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    limitations_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    download_metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+
+class AnalysisModuleArtifact(Base):
+    __tablename__ = "analysis_module_artifacts"
+    __table_args__ = (
+        UniqueConstraint("artifact_id", name="uq_analysis_module_artifacts_artifact_id"),
+        Index("ix_analysis_module_artifacts_scope_created", "user_id", "workspace_id", "role", "conversation_id", "created_at"),
+        Index("ix_analysis_module_artifacts_session", "analysis_session_id", "analysis_session_revision"),
+        Index("ix_analysis_module_artifacts_module_run", "module_id", "module_run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    analysis_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    analysis_session_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    module_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    module_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed", index=True)
+    content_type: Mapped[str] = mapped_column(String(64), nullable=False, default="text/markdown")
+    markdown_body: Mapped[str | None] = mapped_column(LongText, nullable=True)
+    text_body: Mapped[str | None] = mapped_column(LongText, nullable=True)
+    artifact_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,

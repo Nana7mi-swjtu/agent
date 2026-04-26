@@ -12,6 +12,12 @@ export const normalizeEnabledAnalysisModules = (value) => {
 
 export const buildWorkspaceChatRequestBody = (message, workspaceId, conversationId, options = {}) => {
   const enabledAnalysisModules = normalizeEnabledAnalysisModules(options.enabledAnalysisModules);
+  const analysisSharedInputs =
+    options.analysisSharedInputs && typeof options.analysisSharedInputs === "object" ? options.analysisSharedInputs : null;
+  const analysisModuleInputs =
+    options.analysisModuleInputs && typeof options.analysisModuleInputs === "object" ? options.analysisModuleInputs : null;
+  const reportRequest =
+    options.reportRequest && typeof options.reportRequest === "object" ? options.reportRequest : null;
   const body = {
     message,
     workspaceId: workspaceId || "default",
@@ -21,6 +27,15 @@ export const buildWorkspaceChatRequestBody = (message, workspaceId, conversation
   };
   if (enabledAnalysisModules.length) {
     body.enabledAnalysisModules = enabledAnalysisModules;
+  }
+  if (analysisSharedInputs) {
+    body.analysisSharedInputs = analysisSharedInputs;
+  }
+  if (analysisModuleInputs) {
+    body.analysisModuleInputs = analysisModuleInputs;
+  }
+  if (reportRequest) {
+    body.reportRequest = reportRequest;
   }
   return body;
 };

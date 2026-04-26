@@ -115,7 +115,7 @@ def build_policy_search_plan(
         terms.append(PolicyQueryTerm(keyword=keyword, source="policy_domain", policy_domain=domain, priority=78))
 
     for scenario in SCENARIO_TERMS:
-        if scenario in keywords or scenario in request.focus or scenario in request.context:
+        if scenario in keywords or scenario in request.context:
             terms.append(PolicyQueryTerm(keyword=f"机器人 {scenario}", source="scenario", policy_domain="场景开放", priority=82))
 
     ordered = sorted(_dedupe_query_terms(terms), key=lambda item: (-item.priority, item.keyword))

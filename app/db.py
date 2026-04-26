@@ -34,6 +34,8 @@ def init_db(app) -> None:
         _ensure_agent_chat_job_columns(engine)
         _ensure_rag_columns(engine)
         _ensure_bankruptcy_columns(engine)
+        _ensure_analysis_report_columns(engine)
+        _ensure_analysis_module_artifact_columns(engine)
         _ensure_robotics_evidence_columns(engine)
 
 
@@ -110,6 +112,8 @@ def _ensure_agent_chat_job_columns(engine) -> None:
         alter_sql.append("ADD COLUMN entity VARCHAR(255) NULL AFTER message")
     if "intent" not in columns:
         alter_sql.append("ADD COLUMN intent VARCHAR(255) NULL AFTER entity")
+    if "request_json" not in columns:
+        alter_sql.append("ADD COLUMN request_json JSON NULL AFTER intent")
     if "result_json" not in columns:
         alter_sql.append("ADD COLUMN result_json JSON NULL AFTER status")
     if "error_message" not in columns:
@@ -271,6 +275,66 @@ def _ensure_bankruptcy_columns(engine) -> None:
 
     with engine.begin() as conn:
         conn.execute(text(f"ALTER TABLE bankruptcy_analysis_records {', '.join(alter_sql)}"))
+
+
+def _ensure_analysis_report_columns(engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "analysis_reports" not in table_names:
+        return
+
+    indexes = {item["name"] for item in inspector.get_indexes("analysis_reports")}
+    with engine.begin() as conn:
+        if "ix_analysis_reports_scope_created" not in indexes:
+            conn.execute(
+                text(
+                    "ALTER TABLE analysis_reports "
+                    "ADD INDEX ix_analysis_reports_scope_created "
+                    "(user_id, workspace_id, role, conversation_id, created_at)"
+                )
+            )
+        if "ix_analysis_reports_session" not in indexes:
+            conn.execute(
+                text(
+                    "ALTER TABLE analysis_reports "
+                    "ADD INDEX ix_analysis_reports_session "
+                    "(analysis_session_id, analysis_session_revision)"
+                )
+            )
+
+
+def _ensure_analysis_module_artifact_columns(engine) -> None:
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "analysis_module_artifacts" not in table_names:
+        return
+
+    indexes = {item["name"] for item in inspector.get_indexes("analysis_module_artifacts")}
+    with engine.begin() as conn:
+        if "ix_analysis_module_artifacts_scope_created" not in indexes:
+            conn.execute(
+                text(
+                    "ALTER TABLE analysis_module_artifacts "
+                    "ADD INDEX ix_analysis_module_artifacts_scope_created "
+                    "(user_id, workspace_id, role, conversation_id, created_at)"
+                )
+            )
+        if "ix_analysis_module_artifacts_session" not in indexes:
+            conn.execute(
+                text(
+                    "ALTER TABLE analysis_module_artifacts "
+                    "ADD INDEX ix_analysis_module_artifacts_session "
+                    "(analysis_session_id, analysis_session_revision)"
+                )
+            )
+        if "ix_analysis_module_artifacts_module_run" not in indexes:
+            conn.execute(
+                text(
+                    "ALTER TABLE analysis_module_artifacts "
+                    "ADD INDEX ix_analysis_module_artifacts_module_run "
+                    "(module_id, module_run_id)"
+                )
+            )
 
 
 def _ensure_robotics_evidence_columns(engine) -> None:

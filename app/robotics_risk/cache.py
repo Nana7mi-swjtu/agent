@@ -215,7 +215,6 @@ class RoboticsEvidenceCache:
             plan = build_policy_search_plan(request=request, profile=profile)
             return self.repository.query_policy_documents(
                 cache_key=cache_key,
-                keywords=_dedupe([*profile.keywords, *plan.keywords]),
                 source_scopes=list(plan.source_scopes),
                 matched_segments=profile.segments,
                 policy_domains=[

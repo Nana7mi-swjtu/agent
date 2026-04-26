@@ -7,8 +7,17 @@ from sqlalchemy import select
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.agent import services as agent_services
+from app.report_agent import get_analysis_report, render_report_pdf
 from app.agent.services import AgentServiceError
-from app.models import AgentChatJob, AgentConversationMessage, AgentConversationThread, AnalysisSession, User
+from app.models import (
+    AgentChatJob,
+    AgentConversationMessage,
+    AgentConversationThread,
+    AnalysisModuleArtifact,
+    AnalysisReport,
+    AnalysisSession,
+    User,
+)
 
 
 def _auth_headers(client, user_id: int) -> dict[str, str]:
@@ -507,7 +516,6 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
     def _fake_run_robotics(payload, **kwargs):
         assert payload["enterpriseName"] == "石头科技"
         assert payload["timeRange"] == "近30天"
-        assert payload["focus"] == "订单与政策"
         assert kwargs.get("db") is not None
         assert kwargs.get("evidence_cache") is not None
         return {
@@ -519,8 +527,8 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
                     "risk": "竞争节奏和采购兑现存在波动。",
                 }
             },
-            "documentHandoff": {
-                "schemaVersion": "robotics_document_handoff.v1",
+            "displayHandoff": {
+                "schemaVersion": "robotics_display_handoff.v1",
                 "title": "石头科技风险机会简报",
             },
             "limitations": ["政策样本窗口有限"],
@@ -542,15 +550,18 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
                 "timeRange": "近30天",
                 "reportGoal": "形成机器人行业风险机会简报",
             },
-            analysis_module_inputs={"robotics_risk": {"focus": "订单与政策"}},
+            analysis_module_inputs={},
             agent_trace_enabled=True,
             agent_trace_debug_details_enabled=True,
         )
 
     assert payload["reply"] == "主 agent 汇总了分析模块结果"
     assert payload["analysisResults"]["robotics_risk"]["runId"] == "rrisk_parent_001"
+    assert "analysisReport" not in payload
+    assert payload["analysisModuleArtifacts"][0]["artifactId"].startswith("mart_")
+    assert payload["analysisModuleArtifacts"][0]["markdownBody"] == "# 石头科技风险机会简报"
     assert payload["analysisHandoffBundle"]["enabledModules"] == ["robotics_risk"]
-    assert payload["analysisHandoffBundle"]["documentHandoffs"]["robotics_risk"]["title"] == "石头科技风险机会简报"
+    assert payload["analysisHandoffBundle"]["displayHandoffs"]["robotics_risk"]["title"] == "石头科技风险机会简报"
     assert "分析模块编排结果" in captured["system_content"]
     assert [step["id"] for step in payload["trace"]["steps"]] == [
         "planner",
@@ -614,11 +625,56 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
 
     def _fake_generate_reply_payload(**kwargs):
         captured_kwargs.update(kwargs)
+        report_request = kwargs.get("report_request", {})
+        if isinstance(report_request, dict) and report_request.get("mode") == "generate":
+            return {
+                "reply": "综合报告已生成。",
+                "citations": [],
+                "sources": [],
+                "noEvidence": False,
+                "analysisReport": {
+                    "reportId": "arpt_generated_001",
+                    "title": "综合报告",
+                    "status": "degraded",
+                    "preview": "结构化输入不足，已按降级路径生成。",
+                    "availableFormats": ["pdf"],
+                    "downloadUrls": {"pdf": "/api/workspace/reports/arpt_generated_001/download?format=pdf"},
+                    "previewUrl": "/api/workspace/reports/arpt_generated_001/preview?format=pdf",
+                    "renderStyle": "professional",
+                },
+                "graph": {},
+                "graphMeta": {},
+            }
+        if isinstance(report_request, dict) and report_request.get("mode") == "regenerate":
+            return {
+                "reply": "综合报告已重新生成。",
+                "citations": [],
+                "sources": [],
+                "noEvidence": False,
+                "analysisReport": {
+                    "reportId": "arpt_regenerated_001",
+                    "title": "综合报告",
+                    "status": "degraded",
+                    "preview": "结构化输入不足，已按降级路径重新生成。",
+                    "availableFormats": ["pdf"],
+                    "downloadUrls": {"pdf": "/api/workspace/reports/arpt_regenerated_001/download?format=pdf"},
+                    "previewUrl": "/api/workspace/reports/arpt_regenerated_001/preview?format=pdf",
+                    "renderStyle": "professional",
+                },
+                "graph": {},
+                "graphMeta": {},
+            }
         return {
             "reply": "analysis answer",
             "citations": [],
             "sources": [],
             "noEvidence": False,
+            "analysisSession": {
+                "sessionId": "asess_modules_001",
+                "status": "completed",
+                "revision": 1,
+                "enabledModules": ["robotics_risk"],
+            },
             "analysisResults": {
                 "robotics_risk": {
                     "moduleId": "robotics_risk",
@@ -631,6 +687,18 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
                 "enabledModules": ["robotics_risk"],
                 "sharedInputSummary": {"enterpriseName": "石头科技"},
             },
+            "analysisModuleArtifacts": [
+                {
+                    "schemaVersion": "analysis_module_artifact.v1",
+                    "artifactId": "mart_test_001",
+                    "moduleId": "robotics_risk",
+                    "moduleRunId": "rrisk_001",
+                    "title": "机器人政策与订单分析",
+                    "status": "completed",
+                    "contentType": "text/markdown",
+                    "markdownBody": "# 机器人政策与订单分析\n\n模块原文分析结果。",
+                }
+            ],
             "graph": {},
             "graphMeta": {},
         }
@@ -647,7 +715,7 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
                 "timeRange": "近30天",
                 "reportGoal": "形成风险机会简报",
             },
-            analysisModuleInputs={"robotics_risk": {"focus": "订单与政策"}},
+            analysisModuleInputs={},
         ),
         headers=headers,
     )
@@ -655,9 +723,262 @@ def test_workspace_chat_passes_analysis_module_payloads(client, db_session, monk
     payload = response.get_json()["data"]
     assert captured_kwargs["enabled_analysis_modules"] == ["robotics_risk"]
     assert captured_kwargs["analysis_shared_inputs"]["enterpriseName"] == "石头科技"
-    assert captured_kwargs["analysis_module_inputs"]["robotics_risk"]["focus"] == "订单与政策"
+    assert captured_kwargs["analysis_module_inputs"] == {}
     assert payload["analysisHandoffBundle"]["enabledModules"] == ["robotics_risk"]
     assert payload["analysisResults"]["robotics_risk"]["runId"] == "rrisk_001"
+    assert payload["analysisModuleArtifacts"][0]["artifactId"] == "mart_test_001"
+    assert payload["analysisModuleArtifacts"][0]["markdownBody"] == "# 机器人政策与订单分析\n\n模块原文分析结果。"
+    db_session.expire_all()
+    artifact_row = db_session.execute(
+        select(AnalysisModuleArtifact).where(AnalysisModuleArtifact.artifact_id == "mart_test_001")
+    ).scalar_one()
+    assert artifact_row.workspace_id == f"user-{user.id}"
+    assert artifact_row.markdown_body == "# 机器人政策与订单分析\n\n模块原文分析结果。"
+
+    generated = client.post(
+        "/api/workspace/chat",
+        json=_chat_payload(
+            "请生成综合报告",
+            "conv-test",
+            workspaceId=artifact_row.workspace_id,
+            reportRequest={
+                "documents": [
+                    {
+                        "title": artifact_row.title,
+                        "content": artifact_row.markdown_body,
+                    }
+                ],
+            },
+        ),
+        headers=headers,
+    )
+    assert generated.status_code == 200
+    generated_report = generated.get_json()["data"]["analysisReport"]
+    assert generated_report["reportId"] == "arpt_generated_001"
+    assert generated_report["status"] == "degraded"
+    assert generated_report["renderStyle"] == "professional"
+    assert generated_report["previewUrl"].endswith("/preview?format=pdf")
+
+    regenerated = client.post(
+        "/api/workspace/chat",
+        json=_chat_payload(
+            "请重新生成综合报告",
+            "conv-test",
+            workspaceId=artifact_row.workspace_id,
+            reportRequest={
+                "reportId": generated_report["reportId"],
+            },
+        ),
+        headers=headers,
+    )
+    assert regenerated.status_code == 200
+    assert regenerated.get_json()["data"]["analysisReport"]["reportId"] == "arpt_regenerated_001"
+    assert regenerated.get_json()["data"]["analysisReport"]["renderStyle"] == "professional"
+    assert regenerated.get_json()["data"]["analysisReport"]["status"] == "degraded"
+
+
+def test_workspace_chat_persists_report_and_supports_downloads(client, db_session, monkeypatch):
+    user = User(email="chat-report@example.com", nickname="ChatReport", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    headers = _auth_headers(client, user.id)
+
+    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
+    assert response.status_code == 200
+
+    def _fake_generate_reply_payload(**kwargs):
+        return {
+            "reply": "报告已生成。",
+            "citations": [],
+            "sources": [],
+            "noEvidence": False,
+            "analysisSession": {
+                "sessionId": "asess_report_001",
+                "status": "completed",
+                "revision": 3,
+                "enabledModules": ["robotics_risk"],
+            },
+                "analysisReportArtifact": {
+                    "schemaVersion": "analysis_report_artifact.v1",
+                    "reportId": "arpt_test_001",
+                    "title": "石头科技定制化分析报告",
+                    "status": "completed",
+                "scope": {
+                    "enabledModules": ["robotics_risk"],
+                    "analysisSessionRevision": 3,
+                    "moduleRunIds": {"robotics_risk": "rrisk_001"},
+                },
+                "preview": "# 石头科技定制化分析报告\n\n报告正文预览。",
+                "markdownBody": "# 石头科技定制化分析报告\n\n报告正文。",
+                    "htmlBody": "<!doctype html><html><body><h1>石头科技定制化分析报告</h1></body></html>",
+                    "paginatedReportBundle": {
+                        "schemaVersion": "paginated_report_bundle.v1",
+                        "reportId": "arpt_test_001",
+                        "title": "石头科技定制化分析报告",
+                        "renderProfile": {"style": "professional"},
+                        "exportManifest": {
+                            "availableFormats": ["pdf"],
+                            "primaryFormat": "pdf",
+                            "rendererInput": "PaginatedReportBundle",
+                        },
+                        "pages": [
+                            {"id": "cover_001", "pageType": "cover", "pageNumber": 1, "title": "石头科技定制化分析报告"},
+                            {"id": "toc_001", "pageType": "table_of_contents", "pageNumber": 2, "title": "目录"},
+                            {"id": "body_001", "pageType": "insight", "pageNumber": 3, "title": "关键发现"},
+                        ],
+                    },
+                    "semanticModel": {
+                        "schemaVersion": "report_semantic_model.v1",
+                        "keyFindings": [{"id": "sem_finding_001", "title": "风险矩阵", "readerSummary": "报告正文。"}],
+                    "internalTraceIndex": {
+                        "items": {
+                            "sem_finding_001": {
+                                "moduleId": "robotics_risk",
+                                "runId": "rrisk_001",
+                            }
+                        }
+                    },
+                },
+                "internalTraceIndex": {
+                    "items": {
+                        "sem_finding_001": {
+                            "moduleId": "robotics_risk",
+                            "runId": "rrisk_001",
+                        }
+                    }
+                },
+                "visualAssets": [
+                    {
+                        "assetId": "chart_001",
+                        "moduleId": "robotics_risk",
+                        "type": "chart",
+                        "title": "风险矩阵",
+                        "contentType": "text/plain",
+                        "inlineContent": "chart payload",
+                    }
+                ],
+                "limitations": [],
+            },
+            "graph": {},
+            "graphMeta": {},
+        }
+
+    monkeypatch.setattr("app.workspace.routes.generate_reply_payload", _fake_generate_reply_payload)
+
+    response = client.post(
+        "/api/workspace/chat",
+        json=_chat_payload("生成报告", "report-conv", workspaceId="ws-report"),
+        headers=headers,
+    )
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["analysisReport"]["reportId"] == "arpt_test_001"
+    assert payload["analysisReport"]["availableFormats"] == ["pdf"]
+    assert payload["analysisReport"]["downloadUrls"]["pdf"].endswith("/download?format=pdf")
+    assert "robotics_risk" not in payload["analysisReport"]["preview"]
+
+    db_session.expire_all()
+    row = db_session.execute(select(AnalysisReport).where(AnalysisReport.report_id == "arpt_test_001")).scalar_one()
+    assert row.workspace_id == "ws-report"
+    assert row.analysis_session_id == payload["analysisSession"]["sessionId"]
+    assert row.artifact_json["semanticModel"]["schemaVersion"] == "report_semantic_model.v1"
+    assert row.artifact_json["internalTraceIndex"]["items"]["sem_finding_001"]["moduleId"] == "robotics_risk"
+
+    pdf_download = client.get("/api/workspace/reports/arpt_test_001/download?format=pdf&workspaceId=ws-report", headers=headers)
+    assert pdf_download.status_code == 200
+    assert "application/pdf" in pdf_download.headers["Content-Type"]
+    assert pdf_download.data.startswith(b"%PDF")
+    import fitz
+
+    with fitz.open(stream=pdf_download.data, filetype="pdf") as document:
+        assert document.page_count >= 1
+
+    unsupported_markdown = client.get("/api/workspace/reports/arpt_test_001/download?format=markdown&workspaceId=ws-report", headers=headers)
+    assert unsupported_markdown.status_code == 400
+
+    unsupported_html = client.get("/api/workspace/reports/arpt_test_001/download?format=html&workspaceId=ws-report", headers=headers)
+    assert unsupported_html.status_code == 400
+
+    asset = client.get("/api/workspace/reports/arpt_test_001/assets/chart_001/download?workspaceId=ws-report", headers=headers)
+    assert asset.status_code == 200
+    assert asset.get_data(as_text=True) == "chart payload"
+
+    blocked = client.get("/api/workspace/reports/arpt_test_001/download?format=pdf&workspaceId=other", headers=headers)
+    assert blocked.status_code == 404
+
+
+def test_get_analysis_report_deletes_legacy_non_bundle_rows(db_session):
+    user = User(email="legacy-report@example.com", nickname="LegacyReport", password_hash=generate_password_hash("password123"))
+    db_session.add(user)
+    db_session.commit()
+    row = AnalysisReport(
+        report_id="arpt_legacy_001",
+        user_id=user.id,
+        workspace_id="ws-legacy",
+        role="investor",
+        conversation_id="conv-legacy",
+        status="completed",
+        title="历史报告",
+        artifact_json={"preview": "# 历史报告\n\n正文预览。"},
+        markdown_body="# 历史报告\n\n正文。",
+        html_body="<!doctype html><html><body><h1>历史报告</h1></body></html>",
+        download_metadata_json={
+            "availableFormats": ["markdown", "html"],
+            "downloadUrls": {
+                "markdown": "/api/workspace/reports/arpt_legacy_001/download?format=markdown",
+                "html": "/api/workspace/reports/arpt_legacy_001/download?format=html",
+            },
+        },
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    loaded = get_analysis_report(
+        db_session,
+        user_id=user.id,
+        workspace_id="ws-legacy",
+        report_id="arpt_legacy_001",
+    )
+
+    assert loaded is None
+    db_session.expire_all()
+    deleted = db_session.execute(select(AnalysisReport).where(AnalysisReport.report_id == "arpt_legacy_001")).scalar_one_or_none()
+    assert deleted is None
+
+
+def test_render_report_pdf_embeds_images_and_keeps_reader_facing_text():
+    image_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yS3cAAAAASUVORK5CYII="
+    artifact = {
+        "title": "PDF 图表测试报告",
+        "markdownBody": (
+            "# PDF 图表测试报告\n\n"
+            "## 图表与模型输出\n\n"
+            "![风险矩阵](/api/workspace/reports/arpt_pdf/assets/chart_png/download)\n\n"
+            "- **趋势图**：用于说明订单变化。\n"
+        ),
+        "visualAssets": [
+            {
+                "assetId": "chart_png",
+                "downloadUrl": "/api/workspace/reports/arpt_pdf/assets/chart_png/download",
+                "type": "image",
+                "title": "风险矩阵",
+                "caption": "图像图表说明。",
+                "contentType": "image/png",
+                "inlineContent": f"data:image/png;base64,{image_data}",
+            }
+        ],
+    }
+
+    pdf_bytes = render_report_pdf(artifact)
+
+    import fitz
+
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
+        pdf_text = "\n".join(page.get_text("text") for page in document)
+    assert "PDF 图表测试报告" in pdf_text
+    assert "风险矩阵" in pdf_text
+    assert "趋势图" in pdf_text
+    assert "robotics_risk" not in pdf_text
 
 
 def test_workspace_chat_restores_persisted_analysis_session_between_turns(client, db_session, monkeypatch):

@@ -29,6 +29,48 @@ SHARED_REGION_SCOPE = "region_scope"
 
 _SPLIT_PATTERN = re.compile(r"[,\n\r\t;|/，、；]+")
 _STOCK_CODE_PATTERN = re.compile(r"(?<!\d)(\d{6})(?!\d)")
+_REQUEST_PREFIX_PATTERN = re.compile(
+    r"^(?:请|麻烦|帮我|帮忙|可以)?(?:生成|出具|写|做|分析|查看|评估|开始|继续|改成|改为|调整为|更新为|换成)?",
+)
+_CONTEXT_MARKERS = (
+    "时间范围",
+    "报告目标",
+    "分析目标",
+    "分析重点",
+    "关注重点",
+    "区域范围",
+    "时间",
+    "目标",
+    "重点",
+    "关注",
+    "聚焦",
+    "区域",
+    "模块",
+    "功能",
+)
+_CONTEXT_MARKER_PATTERN = re.compile(
+    r"(?:" + "|".join(re.escape(marker) for marker in sorted(_CONTEXT_MARKERS, key=len, reverse=True)) + r")\s*(?:是|为|:|：)?"
+)
+_TIME_RANGE_PATTERN = re.compile(
+    r"(?:近\s*\d+\s*(?:天|日|周|个月|月|年)|过去\s*\d+\s*(?:天|日|周|个月|月|年)|最近\s*\d+\s*(?:天|日|周|个月|月|年)|"
+    r"\d+\s*(?:天|日|周|个月|月|年)|半(?:年)|一(?:年)|两(?:年)|三(?:年)|四(?:年)|五(?:年)|"
+    r"本(?:周|月|季度|季|年)|上(?:周|月|季度|季|年)|"
+    r"\d{4}[-/年]\d{1,2}(?:[-/月]\d{1,2}日?)?(?:\s*(?:至|到|-|~)\s*\d{4}[-/年]\d{1,2}(?:[-/月]\d{1,2}日?)?)?)"
+)
+_EXPLICIT_CORRECTION_VERBS = ("改成", "改为", "调整为", "更新为", "换成")
+_EXPLICIT_CORRECTION_LABELS = {
+    SHARED_ENTERPRISE_NAME: ("企业名称", "企业", "公司名称", "公司", "标的"),
+    SHARED_STOCK_CODE: ("股票代码", "代码"),
+    SHARED_TIME_RANGE: ("时间范围", "时间"),
+    SHARED_REPORT_GOAL: ("报告目标", "分析目标", "目标"),
+    SHARED_ANALYSIS_FOCUS_TAGS: ("分析重点", "关注重点", "重点", "关注", "聚焦"),
+    SHARED_REGION_SCOPE: ("区域范围", "区域"),
+}
+_EXPLICIT_CORRECTION_PATTERN = re.compile(
+    r"(?:" + "|".join(re.escape(label) for labels in _EXPLICIT_CORRECTION_LABELS.values() for label in labels) + r")\s*(?:"
+    + "|".join(re.escape(verb) for verb in _EXPLICIT_CORRECTION_VERBS)
+    + r")"
+)
 
 
 @dataclass(frozen=True)
@@ -179,6 +221,104 @@ def parse_answer_for_group(
     return updates
 
 
+def parse_compound_answer_for_slots(
+    *,
+    slot_ids: list[str],
+    slot_catalog: dict[str, AnalysisSlotDefinition],
+    user_message: str,
+) -> dict[str, Any]:
+    """Extract multiple shared slots from one natural-language answer.
+
+    This stays intentionally conservative: only labelled/contextual fragments are
+    consumed beyond enterprise identity, so follow-up answers like "改成近90天"
+    do not overwrite an already clean enterprise slot.
+    """
+    message = str(user_message or "").strip()
+    if not message:
+        return {}
+    available = set(slot_ids)
+    updates: dict[str, Any] = {}
+
+    if {SHARED_ENTERPRISE_NAME, SHARED_STOCK_CODE}.intersection(available):
+        identity_updates = _parse_enterprise_identity_answer(
+            slot_ids=[slot_id for slot_id in (SHARED_ENTERPRISE_NAME, SHARED_STOCK_CODE) if slot_id in available],
+            slot_catalog=slot_catalog,
+            message=message,
+        )
+        updates.update(identity_updates)
+
+    if SHARED_TIME_RANGE in available:
+        time_definition = slot_catalog.get(SHARED_TIME_RANGE)
+        time_value = _extract_labeled_segment(message, ("时间范围", "时间")) or _extract_time_range(message)
+        if time_definition is not None:
+            normalized = normalize_slot_value(time_definition, time_value)
+            if has_slot_value(normalized):
+                updates[SHARED_TIME_RANGE] = normalized
+
+    if SHARED_REPORT_GOAL in available:
+        goal_definition = slot_catalog.get(SHARED_REPORT_GOAL)
+        goal_value = _extract_labeled_segment(message, ("报告目标", "分析目标", "目标"))
+        if goal_definition is not None:
+            normalized = normalize_slot_value(goal_definition, goal_value)
+            if has_slot_value(normalized):
+                updates[SHARED_REPORT_GOAL] = normalized
+
+    if SHARED_ANALYSIS_FOCUS_TAGS in available:
+        focus_definition = slot_catalog.get(SHARED_ANALYSIS_FOCUS_TAGS)
+        focus_value = _extract_labeled_segment(message, ("分析重点", "关注重点", "重点", "关注", "聚焦"))
+        if focus_definition is not None:
+            normalized = normalize_slot_value(focus_definition, _normalize_focus_text(focus_value))
+            if has_slot_value(normalized):
+                updates[SHARED_ANALYSIS_FOCUS_TAGS] = normalized
+
+    if SHARED_REGION_SCOPE in available:
+        region_definition = slot_catalog.get(SHARED_REGION_SCOPE)
+        region_value = _extract_labeled_segment(message, ("区域范围", "区域"))
+        if region_definition is not None:
+            normalized = normalize_slot_value(region_definition, region_value)
+            if has_slot_value(normalized):
+                updates[SHARED_REGION_SCOPE] = normalized
+
+    return updates
+
+
+def parse_explicit_correction_for_slots(
+    *,
+    slot_ids: list[str],
+    slot_catalog: dict[str, AnalysisSlotDefinition],
+    user_message: str,
+) -> dict[str, Any]:
+    message = str(user_message or "").strip()
+    if not message:
+        return {}
+    updates: dict[str, Any] = {}
+    for slot_id in slot_ids:
+        definition = slot_catalog.get(slot_id)
+        if definition is None:
+            continue
+        corrected_value = _extract_explicit_correction_segment(message, slot_id=slot_id)
+        if not corrected_value:
+            continue
+        raw_value = _normalize_focus_text(corrected_value) if slot_id == SHARED_ANALYSIS_FOCUS_TAGS else corrected_value
+        normalized = normalize_slot_value(definition, raw_value)
+        if has_slot_value(normalized):
+            updates[slot_id] = normalized
+    return updates
+
+
+def contains_explicit_correction_for_other_slots(*, slot_ids: list[str], user_message: str) -> bool:
+    message = str(user_message or "").strip()
+    if not message:
+        return False
+    allowed_slot_ids = set(slot_ids)
+    for candidate_slot_id in _EXPLICIT_CORRECTION_LABELS:
+        if candidate_slot_id in allowed_slot_ids:
+            continue
+        if _extract_explicit_correction_segment(message, slot_id=candidate_slot_id):
+            return True
+    return False
+
+
 def _parse_enterprise_identity_answer(
     *,
     slot_ids: list[str],
@@ -212,6 +352,7 @@ def _normalize_enterprise_name(value: Any) -> str | None:
     match = _STOCK_CODE_PATTERN.search(text)
     if match:
         text = (text[: match.start()] + " " + text[match.end() :]).strip(" ,，、")
+    text = _strip_enterprise_context(text)
     return text or None
 
 
@@ -227,7 +368,10 @@ def _normalize_stock_code(value: Any) -> str | None:
 
 def _normalize_time_range(value: Any) -> str | None:
     text = str(value or "").strip()
-    return text or None
+    if not text:
+        return None
+    normalized = _extract_time_range(text)
+    return normalized or None
 
 
 def _normalize_choice_tags(value: Any, *, definition: AnalysisSlotDefinition) -> list[str]:
@@ -286,3 +430,82 @@ def _string_items(value: Any) -> list[str]:
         if clean and clean not in result:
             result.append(clean)
     return result
+
+
+def _strip_enterprise_context(value: str) -> str:
+    text = str(value or "").strip(" ,，、；;。")
+    if not text:
+        return ""
+    text = _REQUEST_PREFIX_PATTERN.sub("", text, count=1).strip(" ,，、；;。")
+    cut_points: list[int] = []
+    marker_match = _CONTEXT_MARKER_PATTERN.search(text)
+    if marker_match:
+        cut_points.append(marker_match.start())
+    time_match = _TIME_RANGE_PATTERN.search(text)
+    if time_match:
+        cut_points.append(time_match.start())
+    if cut_points:
+        text = text[: min(cut_points)]
+    text = re.sub(r"(?:的)?(?:定制化)?(?:分析)?(?:报告|简报|研报|洞察)$", "", text).strip(" ,，、；;。")
+    if text in {"改成", "改为", "调整为", "更新为", "换成", "生成", "分析", "请生成", "请分析"}:
+        return ""
+    return text
+
+
+def _extract_labeled_segment(message: str, labels: tuple[str, ...]) -> str:
+    text = str(message or "").strip()
+    if not text:
+        return ""
+    label_pattern = re.compile(
+        r"(?:" + "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True)) + r")\s*(?:是|为|:|：)?"
+    )
+    match = label_pattern.search(text)
+    if not match:
+        return ""
+    start = match.end()
+    end = len(text)
+    marker_match = _CONTEXT_MARKER_PATTERN.search(text, start)
+    if marker_match:
+        end = min(end, marker_match.start())
+    separator_match = re.search(r"[；;\n\r]", text[start:end])
+    if separator_match:
+        end = min(end, start + separator_match.start())
+    return text[start:end].strip(" ,，、；;。")
+
+
+def _extract_time_range(message: str) -> str:
+    match = _TIME_RANGE_PATTERN.search(str(message or ""))
+    return match.group(0).replace(" ", "") if match else ""
+
+
+def _extract_explicit_correction_segment(message: str, *, slot_id: str) -> str:
+    text = str(message or "").strip()
+    labels = _EXPLICIT_CORRECTION_LABELS.get(slot_id, ())
+    if not text or not labels:
+        return ""
+    pattern = re.compile(
+        r"(?:把)?(?:"
+        + "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
+        + r")\s*(?:"
+        + "|".join(re.escape(verb) for verb in _EXPLICIT_CORRECTION_VERBS)
+        + r")\s*"
+    )
+    match = pattern.search(text)
+    if not match:
+        return ""
+    start = match.end()
+    end = len(text)
+    separator_match = re.search(r"[；;\n\r]", text[start:end])
+    if separator_match:
+        end = min(end, start + separator_match.start())
+    next_correction_match = _EXPLICIT_CORRECTION_PATTERN.search(text, start)
+    if next_correction_match:
+        end = min(end, next_correction_match.start())
+    return text[start:end].strip(" ,，、；;。")
+
+
+def _normalize_focus_text(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return re.sub(r"(?<=[\u4e00-\u9fff])(?:和|与|及)(?=[\u4e00-\u9fff])", "、", text)

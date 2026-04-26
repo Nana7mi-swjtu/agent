@@ -13,14 +13,13 @@ from .adapters import (
     GovPolicyAdapter,
     SourceCollectionResult,
 )
-from .document_handoff import build_document_handoff
+from .display_handoff import build_display_handoff
 from .repository import SOURCE_BIDDING, SOURCE_CNINFO, SOURCE_POLICY
 from .run_repository import RoboticsInsightRunRepository
 from .schemas import RoboticsInsightRequest, RoboticsInsightResult
 from .service import RoboticsInsightValidationError, analyze_robotics_enterprise_risk_opportunity
 
 SUBAGENT_NAME = "robotics_risk_opportunity_subagent"
-DEFAULT_DIMENSIONS = ["政策", "公告", "招中标", "竞争"]
 
 
 @dataclass(frozen=True)
@@ -33,8 +32,6 @@ class RoboticsSubagentEnterprise:
 @dataclass(frozen=True)
 class RoboticsSubagentAnalysisScope:
     time_range: str = "近30天"
-    focus: str = "综合"
-    dimensions: list[str] = field(default_factory=lambda: list(DEFAULT_DIMENSIONS))
 
 
 @dataclass(frozen=True)
@@ -83,9 +80,6 @@ class RoboticsRiskSubagentInput:
         source_controls = RoboticsSubagentSourceControls.from_dict(
             data.get("sourceControls") or data.get("source_controls") or {}
         )
-        dimensions = scope_data.get("dimensions") or data.get("dimensions") or list(DEFAULT_DIMENSIONS)
-        if not isinstance(dimensions, list):
-            dimensions = list(DEFAULT_DIMENSIONS)
         return cls(
             enterprise=RoboticsSubagentEnterprise(
                 name=_clean_text(enterprise_data.get("name") or data.get("enterpriseName") or data.get("enterprise_name")),
@@ -100,8 +94,6 @@ class RoboticsRiskSubagentInput:
             analysis_scope=RoboticsSubagentAnalysisScope(
                 time_range=_clean_text(scope_data.get("timeRange") or scope_data.get("time_range") or data.get("timeRange"))
                 or "近30天",
-                focus=_clean_text(scope_data.get("focus") or data.get("focus")) or "综合",
-                dimensions=_clean_list(dimensions) or list(DEFAULT_DIMENSIONS),
             ),
             source_controls=source_controls,
             conversation_context=_clean_text(
@@ -117,8 +109,6 @@ class RoboticsRiskSubagentInput:
             enterprise_name=self.enterprise.name,
             stock_code=self.enterprise.stock_code,
             time_range=self.analysis_scope.time_range,
-            focus=self.analysis_scope.focus,
-            dimensions=list(self.analysis_scope.dimensions),
             context="\n".join(part for part in context_parts if part).strip(),
         )
 
@@ -132,8 +122,6 @@ class RoboticsRiskSubagentInput:
                 },
                 "analysisScope": {
                     "timeRange": self.analysis_scope.time_range,
-                    "focus": self.analysis_scope.focus,
-                    "dimensions": list(self.analysis_scope.dimensions),
                 },
                 "sourceControls": self.source_controls.to_dict(),
                 "conversationContext": self.conversation_context,
@@ -149,7 +137,7 @@ class RoboticsRiskSubagentOutput:
     run_id: str = ""
     target_company: dict[str, Any] = field(default_factory=dict)
     result: dict[str, Any] = field(default_factory=dict)
-    document_handoff: dict[str, Any] = field(default_factory=dict)
+    display_handoff: dict[str, Any] = field(default_factory=dict)
     limitations: list[str] = field(default_factory=list)
     source_references: list[dict[str, Any]] = field(default_factory=list)
     source_diagnostics: list[dict[str, Any]] = field(default_factory=list)
@@ -164,7 +152,7 @@ class RoboticsRiskSubagentOutput:
                 "runId": self.run_id,
                 "targetCompany": self.target_company,
                 "result": self.result,
-                "documentHandoff": self.document_handoff,
+                "displayHandoff": self.display_handoff,
                 "limitations": list(self.limitations),
                 "sourceReferences": list(self.source_references),
                 "sourceDiagnostics": list(self.source_diagnostics),
@@ -182,6 +170,7 @@ def run_robotics_risk_subagent(
     adapters: Iterable[EvidenceSourceAdapter] | None = None,
     evidence_cache: Any | None = None,
     company_resolver: Any | None = None,
+    reader_writer: Any | None = None,
     now_factory: Callable[[], datetime] | None = None,
     id_factory: Callable[[], str] | None = None,
 ) -> RoboticsRiskSubagentOutput:
@@ -226,17 +215,18 @@ def run_robotics_risk_subagent(
             adapters=_select_adapters(adapters=adapters, controls=normalized.source_controls),
             evidence_cache=evidence_cache if normalized.source_controls.prefer_cache else None,
             company_resolver=company_resolver,
+            reader_writer=reader_writer,
         )
         status = _result_status(result)
         result_payload = result.to_dict()
         result_payload["status"] = status
-        handoff_payload = build_document_handoff(result)
-        handoff_payload["runId"] = run_id
+        display_payload = build_display_handoff(result)
+        display_payload["runId"] = run_id
         if repository is not None:
             repository.complete_run(
                 run_id=run_id,
                 result_payload=result_payload,
-                handoff_payload=handoff_payload,
+                display_payload=display_payload,
                 status=status,
                 completed_at=_now(now_factory),
             )
@@ -245,7 +235,7 @@ def run_robotics_risk_subagent(
             run_id=run_id,
             target_company=dict(result.target_company),
             result=result_payload,
-            document_handoff=handoff_payload,
+            display_handoff=display_payload,
             limitations=list(result.limitations),
             source_references=_source_references(result),
             source_diagnostics=[item.to_dict() for item in result.source_diagnostics],
@@ -352,7 +342,7 @@ def _failed_output(
                 run_id=run_id,
                 error_message=error_message,
                 result_payload={"status": "failed", "limitations": limitations},
-                handoff_payload={"limitations": limitations},
+                display_payload={"limitations": limitations},
                 completed_at=_now(now_factory),
             )
         except Exception as persist_exc:

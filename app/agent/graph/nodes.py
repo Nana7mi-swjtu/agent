@@ -8,6 +8,14 @@ from pydantic import BaseModel, Field
 from ...rag.errors import RAGContractError
 from ...rag.schemas import RetrievalHit
 from ...rag.service import build_cited_response
+from ...db import session_scope
+from ...report_agent import (
+    ReportRequestError,
+    build_analysis_module_artifacts,
+    execute_report_request,
+    has_report_request,
+    report_preview_metadata,
+)
 from .analysis_modules import (
     AnalysisModuleContract,
     build_analysis_handoff_bundle,
@@ -25,7 +33,10 @@ from .analysis_slots import (
     SHARED_REPORT_GOAL,
     SHARED_STOCK_CODE,
     SHARED_TIME_RANGE,
+    contains_explicit_correction_for_other_slots,
     has_slot_value,
+    parse_explicit_correction_for_slots,
+    parse_compound_answer_for_slots,
     parse_answer_for_group,
     slot_label,
 )
@@ -187,6 +198,11 @@ def _analysis_session_state(state: AgentState) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _report_request(state: AgentState) -> dict[str, Any]:
+    value = state.get("report_request", {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _analysis_contracts(enabled_modules: list[str]) -> tuple[list[AnalysisModuleContract], list[str]]:
     registry = get_analysis_module_registry()
     contracts: list[AnalysisModuleContract] = []
@@ -228,6 +244,29 @@ def _analysis_module_question(missing_fields: list[dict[str, Any]]) -> str:
         names[module_id] = module_name
     parts = [f"{names[module_id]}：{'、'.join(labels)}" for module_id, labels in grouped.items() if labels]
     return "共享信息已收到，请继续补充模块信息：" + "；".join(parts) + "。"
+
+
+def _analysis_clarification_question(*, missing_fields: list[dict[str, Any]], enabled_modules: list[str]) -> str:
+    shared_missing = [item for item in missing_fields if str(item.get("scope", "")).strip() == "shared"]
+    module_missing = [item for item in missing_fields if str(item.get("scope", "")).strip() == "module"]
+    if shared_missing:
+        labels: list[str] = []
+        for item in shared_missing:
+            label = str(item.get("label", "")).strip()
+            if label and label not in labels:
+                labels.append(label)
+        suffix = "补齐后，系统只会在仍有缺口时继续追问模块特有信息。"
+        return "为启动已选分析模块，请先补充共享信息：" + "、".join(labels) + "。" + suffix
+    if module_missing:
+        if len(enabled_modules) > 1:
+            return _analysis_module_question(module_missing) + "补齐后将直接进入模块执行。"
+        labels: list[str] = []
+        for item in module_missing:
+            label = str(item.get("label", "")).strip()
+            if label and label not in labels:
+                labels.append(label)
+        return "共享信息已齐备，请补充当前模块仍缺少的信息：" + "、".join(labels) + "。补齐后将直接进入模块执行。"
+    return ""
 
 
 def _analysis_need_input_question(module_result: dict[str, Any], contract: AnalysisModuleContract) -> str:
@@ -605,6 +644,22 @@ def _analysis_bundle_system_section(state: AgentState) -> str:
             lines.append(header)
             if summary:
                 lines.append(summary)
+            handoff = item.get("displayHandoff", {})
+            if isinstance(handoff, dict):
+                executive_summary = handoff.get("executiveSummary", {})
+                if isinstance(executive_summary, dict):
+                    headline = str(executive_summary.get("headline", "")).strip()
+                    if headline:
+                        lines.append(f"headline={headline}")
+                evidence_refs = handoff.get("evidenceReferences", [])
+                if isinstance(evidence_refs, list) and evidence_refs:
+                    evidence_titles = [
+                        str(ref.get("title", "")).strip()
+                        for ref in evidence_refs[:3]
+                        if isinstance(ref, dict) and str(ref.get("title", "")).strip()
+                    ]
+                    if evidence_titles:
+                        lines.append("evidenceRefs=" + "；".join(evidence_titles))
             if source_count <= 0:
                 lines.append(
                     "证据边界：该模块未返回可引用来源。主回答不得基于行业常识、公开基本面、模型记忆或未列明来源生成风险/机会判断；只能说明当前没有证据、列出失败/空结果状态，并建议补采或重试。"
@@ -615,11 +670,29 @@ def _analysis_bundle_system_section(state: AgentState) -> str:
     return "\n".join(lines)
 
 
+def _analysis_report_system_section(state: AgentState) -> str:
+    report = state.get("analysis_report", {})
+    if not isinstance(report, dict) or not report:
+        return ""
+    lines = ["报告生成结果："]
+    title = str(report.get("title", "")).strip()
+    status = str(report.get("status", "")).strip()
+    report_id = str(report.get("reportId", "")).strip()
+    if title or status:
+        lines.append(f"title={title} status={status} reportId={report_id}")
+    preview = str(report.get("preview", "")).strip()
+    if preview:
+        lines.append("报告正文预览：")
+        lines.append(preview[:1200])
+    lines.append("最终回复应提示报告已生成，可结合预览概述结果；下载动作由界面提供，不要在回复中输出原始下载链接；不要在回复中补写模块没有提供的领域结论。")
+    return "\n".join(lines)
+
+
 def _analysis_module_source_count(module_result: dict[str, Any]) -> int:
     source_references = module_result.get("sourceReferences", [])
     if isinstance(source_references, list) and source_references:
         return len(source_references)
-    handoff = module_result.get("documentHandoff", {})
+    handoff = module_result.get("displayHandoff", {})
     if not isinstance(handoff, dict):
         return 0
     executive_summary = handoff.get("executiveSummary", {})
@@ -638,12 +711,48 @@ def plan_route_node(state: AgentState):
     user_message = str(state.get("user_message", "")).strip()
     entity = str(state.get("entity", "")).strip()
     graph_intent = str(state.get("graph_intent", "")).strip()
+    report_request = _report_request(state)
     enabled_analysis_modules = _enabled_analysis_modules(state)
     kg_enabled = bool(state.get("kg_enabled", False))
     rag_enabled = bool(state.get("rag_enabled", False))
     web_enabled = bool(state.get("web_enabled", False))
     mcp_enabled = bool(state.get("mcp_enabled", False))
     conversation_context = _conversation_context(state)
+
+    if has_report_request(report_request):
+        return {
+            "intent": "report_generation",
+            "needs_search": False,
+            "needs_mcp": False,
+            "needs_clarification": False,
+            "clarification_question": "",
+            "missing_fields": [],
+            "search_request": {},
+            "mcp_request": {},
+            "search_result": {},
+            "mcp_result": {},
+            "analysis_results": {},
+            "analysis_handoff_bundle": {},
+            "analysis_missing_fields": [],
+            "analysis_completed": False,
+            "analysis_unsupported_modules": [],
+            "analysis_module_artifacts": [],
+            "analysis_report": {},
+            "analysis_report_artifact": {},
+            "search_completed": False,
+            "mcp_completed": False,
+            "rag_chunks": [],
+            "rag_citations": [],
+            "rag_no_evidence": False,
+            "rag_debug": {},
+            "debug": {
+                **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
+                "reportPlanner": {
+                    "request": report_request,
+                    "conversationContextPresent": bool(conversation_context),
+                },
+            },
+        }
 
     if enabled_analysis_modules:
         return {
@@ -662,6 +771,9 @@ def plan_route_node(state: AgentState):
             "analysis_missing_fields": [],
             "analysis_completed": False,
             "analysis_unsupported_modules": [],
+            "analysis_module_artifacts": [],
+            "analysis_report": {},
+            "analysis_report_artifact": {},
             "search_completed": False,
             "mcp_completed": False,
             "rag_chunks": [],
@@ -773,6 +885,8 @@ def plan_route_node(state: AgentState):
 def route_after_plan(state: AgentState) -> str:
     if state.get("needs_clarification", False):
         return "clarify"
+    if has_report_request(_report_request(state)):
+        return "report_generation"
     if _enabled_analysis_modules(state):
         return "analysis_intake"
     if state.get("needs_search", False) and not state.get("search_completed", False):
@@ -810,6 +924,10 @@ def route_after_analysis_modules(state: AgentState) -> str:
     return "compose_answer"
 
 
+def route_after_report_generation(state: AgentState) -> str:
+    return "compose_answer"
+
+
 def analysis_intake_node(state: AgentState):
     explicit_enabled_modules = _enabled_analysis_modules(state)
     shared_inputs = _analysis_shared_inputs(state)
@@ -833,12 +951,31 @@ def analysis_intake_node(state: AgentState):
     if not slot_updates and not shared_inputs and not module_inputs:
         current_group = _current_question_group(session)
         current_slot_ids = [slot_id for slot_id in current_group.get("slotIds", []) if slot_id in slot_catalog]
-        if current_slot_ids:
+        user_message = str(state.get("user_message", "")).strip()
+        correction_updates = parse_explicit_correction_for_slots(
+            slot_ids=relevant_slot_ids,
+            slot_catalog=slot_catalog,
+            user_message=user_message,
+        )
+        if current_slot_ids and not contains_explicit_correction_for_other_slots(
+            slot_ids=current_slot_ids,
+            user_message=user_message,
+        ):
             slot_updates = parse_answer_for_group(
                 slot_ids=current_slot_ids,
                 slot_catalog=slot_catalog,
-                user_message=str(state.get("user_message", "")).strip(),
+                user_message=user_message,
             )
+        compound_slot_ids = current_slot_ids or relevant_slot_ids
+        if correction_updates:
+            correction_slot_ids = set(correction_updates)
+            compound_slot_ids = [slot_id for slot_id in compound_slot_ids if slot_id not in correction_slot_ids]
+        compound_updates = parse_compound_answer_for_slots(
+            slot_ids=compound_slot_ids,
+            slot_catalog=slot_catalog,
+            user_message=user_message,
+        )
+        slot_updates = {**slot_updates, **compound_updates, **correction_updates}
 
     changed_slots = _apply_slot_updates(session, slot_updates, contracts=contracts)
     if compatibility_changed_modules:
@@ -865,8 +1002,11 @@ def analysis_intake_node(state: AgentState):
 
     clarification_question = ""
     needs_clarification = bool(missing_entries)
-    if question_plan:
-        clarification_question = str(question_plan[0].get("question", "")).strip()
+    if needs_clarification:
+        clarification_question = _analysis_clarification_question(
+            missing_fields=missing_entries,
+            enabled_modules=enabled_modules,
+        ) or (str(question_plan[0].get("question", "")).strip() if question_plan else "")
 
     analysis_completed = False
     if missing_entries:
@@ -917,6 +1057,7 @@ def analysis_modules_node(state: AgentState):
     context = {
         "conversationContext": _conversation_context(state),
         "userMessage": str(state.get("user_message", "")).strip(),
+        "readerWriter": state.get("main_llm"),
     }
     results: dict[str, dict[str, Any]] = _dict_payload(session.get("moduleResults"))
     needs_clarification = False
@@ -1000,6 +1141,15 @@ def analysis_modules_node(state: AgentState):
         "unsupportedModules": unsupported_modules,
         "bundleLimitations": list(bundle.get("limitations", [])) if isinstance(bundle.get("limitations", []), list) else [],
     }
+    module_artifacts: list[dict[str, Any]] = []
+    if session["status"] == "completed" and not needs_clarification:
+        module_artifacts = build_analysis_module_artifacts(
+            analysis_session=session,
+            module_results=results,
+            module_ids=enabled_modules,
+            composer_writer=state.get("main_llm"),
+        )
+        debug_payload["moduleArtifactCount"] = len(module_artifacts)
     return {
         "enabled_analysis_modules": enabled_modules,
         "analysis_session": session,
@@ -1008,12 +1158,80 @@ def analysis_modules_node(state: AgentState):
         "analysis_handoff_bundle": bundle,
         "analysis_completed": not needs_clarification,
         "analysis_unsupported_modules": unsupported_modules,
+        "analysis_module_artifacts": module_artifacts,
+        "analysis_report": {},
+        "analysis_report_artifact": {},
         "needs_clarification": needs_clarification,
         "clarification_question": clarification_question,
         "missing_fields": ["analysis.modules"] if needs_clarification else [],
         "debug": {
             **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
             "analysisModules": debug_payload,
+        },
+    }
+
+
+def report_generation_node(state: AgentState):
+    report_request = _report_request(state)
+    try:
+        if not has_report_request(report_request):
+            artifact = None
+        else:
+            with session_scope() as db:
+                artifact = execute_report_request(
+                    db,
+                    user_id=int(state.get("user_id", 0) or 0),
+                    workspace_id=str(state.get("workspace_id", "") or "").strip() or "default",
+                    request=report_request,
+                    report_writer=state.get("main_llm"),
+                )
+    except ReportRequestError as exc:
+        return {
+            "analysis_report": {},
+            "analysis_report_artifact": {},
+            "debug": {
+                **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
+                "analysisReport": {
+                    "status": "failed",
+                    "error": str(exc),
+                    "request": report_request,
+                },
+            },
+        }
+    except Exception as exc:
+        return {
+            "analysis_report": {},
+            "analysis_report_artifact": {},
+            "debug": {
+                **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
+                "analysisReport": {
+                    "status": "failed",
+                    "error": str(exc),
+                    "request": report_request,
+                },
+            },
+        }
+    if not artifact:
+        return {
+            "analysis_report": {},
+            "analysis_report_artifact": {},
+            "debug": {
+                **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
+                "analysisReport": {"status": "skipped"},
+            },
+        }
+    metadata = report_preview_metadata(artifact)
+    return {
+        "analysis_report": metadata,
+        "analysis_report_artifact": artifact,
+        "debug": {
+            **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
+            "analysisReport": {
+                "status": metadata.get("status", ""),
+                "reportId": metadata.get("reportId", ""),
+                "title": metadata.get("title", ""),
+                "request": report_request,
+            },
         },
     }
 
@@ -1198,6 +1416,9 @@ def _build_system_content(state: AgentState) -> str:
     analysis_section = _analysis_bundle_system_section(state)
     if analysis_section:
         system_content = f"{system_content}\n\n{analysis_section}"
+    report_section = _analysis_report_system_section(state)
+    if report_section:
+        system_content = f"{system_content}\n\n{report_section}"
     return system_content
 
 

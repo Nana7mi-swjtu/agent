@@ -5,22 +5,20 @@ from typing import Any, Callable
 
 from flask import has_app_context
 
+from ...analysis_artifacts import normalize_chart_candidate, normalize_fact_table, normalize_rendered_asset
 from ...robotics_risk import run_robotics_risk_subagent
 from .analysis_slots import (
     AnalysisSlotDefinition,
-    AnalysisSlotOption,
-    SHARED_ANALYSIS_FOCUS_TAGS,
     SHARED_ENTERPRISE_NAME,
     SHARED_REPORT_GOAL,
     SHARED_STOCK_CODE,
     SHARED_TIME_RANGE,
     SCOPE_MODULE,
-    VALUE_KIND_MULTI_CHOICE,
     normalize_slot_value,
     shared_slot_catalog,
 )
 
-ANALYSIS_HANDOFF_BUNDLE_SCHEMA_VERSION = "analysis_handoff_bundle.v2"
+ANALYSIS_HANDOFF_BUNDLE_SCHEMA_VERSION = "analysis_handoff_bundle.v3"
 
 
 @dataclass(frozen=True)
@@ -89,35 +87,8 @@ def get_analysis_module_registry() -> dict[str, AnalysisModuleContract]:
                 SHARED_ENTERPRISE_NAME,
                 SHARED_TIME_RANGE,
                 SHARED_REPORT_GOAL,
-                SHARED_ANALYSIS_FOCUS_TAGS,
             ),
-            optional_slots=(
-                SHARED_STOCK_CODE,
-                "robotics_risk.dimensions",
-            ),
-            slot_definitions=(
-                AnalysisSlotDefinition(
-                    slot_id="robotics_risk.dimensions",
-                    label="分析维度",
-                    scope=SCOPE_MODULE,
-                    value_kind=VALUE_KIND_MULTI_CHOICE,
-                    normalizer="choice_tags",
-                    group_id="robotics_risk.dimensions",
-                    priority=60,
-                    module_id="robotics_risk",
-                    prompt_hint="如需限定维度，可填写政策、公告、招中标、竞争。",
-                    options=(
-                        AnalysisSlotOption(value="政策", label="政策"),
-                        AnalysisSlotOption(value="公告", label="公告"),
-                        AnalysisSlotOption(value="招中标", label="招中标"),
-                        AnalysisSlotOption(value="竞争", label="竞争"),
-                    ),
-                ),
-            ),
-            legacy_input_slot_map={
-                "focus": SHARED_ANALYSIS_FOCUS_TAGS,
-                "dimensions": "robotics_risk.dimensions",
-            },
+            optional_slots=(SHARED_STOCK_CODE,),
             legacy_passthrough_fields=("sourceControls",),
             slot_mapping=_map_robotics_risk_runtime_input,
             run=_run_robotics_risk_module,
@@ -204,9 +175,33 @@ def normalize_analysis_module_output(
     result_payload = payload.get("result", {})
     if not isinstance(result_payload, dict):
         result_payload = {}
-    handoff_payload = payload.get("documentHandoff", {})
-    if not isinstance(handoff_payload, dict):
-        handoff_payload = {}
+    display_handoff_payload = payload.get("displayHandoff", {})
+    if not isinstance(display_handoff_payload, dict):
+        display_handoff_payload = {}
+    reader_packet = _module_reader_packet_payload(
+        display_handoff_payload=display_handoff_payload,
+        result_payload=result_payload,
+    )
+    evidence_references = _module_evidence_reference_payloads(
+        display_handoff_payload=display_handoff_payload,
+        reader_packet=reader_packet,
+    )
+    fact_tables = _module_fact_table_payloads(
+        display_handoff_payload=display_handoff_payload,
+        result_payload=result_payload,
+    )
+    chart_candidates = _module_chart_candidate_payloads(
+        display_handoff_payload=display_handoff_payload,
+        result_payload=result_payload,
+    )
+    rendered_assets = _module_rendered_asset_payloads(
+        display_handoff_payload=display_handoff_payload,
+        result_payload=result_payload,
+    )
+    visual_summaries = _module_visual_summary_payloads(
+        display_handoff_payload=display_handoff_payload,
+        reader_packet=reader_packet,
+    )
     limitations = _normalize_string_list(payload.get("limitations"))
     run_id = _clean_text(payload.get("runId") or payload.get("run_id"))
     source_references = (
@@ -219,7 +214,7 @@ def normalize_analysis_module_output(
     status = _clean_text(payload.get("status")) or "failed"
     summary = _build_module_summary(
         result_payload=result_payload,
-        handoff_payload=handoff_payload,
+        display_handoff_payload=display_handoff_payload,
         limitations=limitations,
         status=status,
         source_reference_count=len(source_references),
@@ -232,8 +227,14 @@ def normalize_analysis_module_output(
             "summary": summary,
             "limitations": limitations,
             "runId": run_id,
-            "documentHandoff": handoff_payload,
+            "displayHandoff": display_handoff_payload,
             "result": result_payload,
+            "readerPacket": reader_packet,
+            "evidenceReferences": evidence_references,
+            "factTables": fact_tables,
+            "chartCandidates": chart_candidates,
+            "renderedAssets": rendered_assets,
+            "visualSummaries": visual_summaries,
             "targetCompany": payload.get("targetCompany")
             if isinstance(payload.get("targetCompany"), dict)
             else payload.get("target_company", {}),
@@ -273,10 +274,32 @@ def build_analysis_handoff_bundle(
         for module_id, result in module_results.items()
         if isinstance(result, dict) and str(result.get("runId", "")).strip()
     }
-    document_handoffs = {
-        module_id: result.get("documentHandoff", {})
+    display_handoffs = {
+        module_id: result.get("displayHandoff", {})
         for module_id, result in module_results.items()
-        if isinstance(result, dict) and isinstance(result.get("documentHandoff"), dict) and result.get("documentHandoff")
+        if isinstance(result, dict) and isinstance(result.get("displayHandoff"), dict) and result.get("displayHandoff")
+    }
+    module_reader_packets = {
+        module_id: _dict_items(result.get("readerPacket"))
+        for module_id, result in module_results.items()
+        if isinstance(result, dict) and _dict_items(result.get("readerPacket"))
+    }
+    module_tabular_artifacts = {
+        module_id: _drop_empty(
+            {
+                "evidenceReferences": _list_of_dicts(result.get("evidenceReferences")),
+                "factTables": _list_of_dicts(result.get("factTables")),
+                "chartCandidates": _list_of_dicts(result.get("chartCandidates")),
+                "renderedAssets": _list_of_dicts(result.get("renderedAssets")),
+                "visualSummaries": _list_of_dicts(result.get("visualSummaries")),
+            }
+        )
+        for module_id, result in module_results.items()
+        if isinstance(result, dict)
+        and any(
+            _list_of_dicts(result.get(key))
+            for key in ("evidenceReferences", "factTables", "chartCandidates", "renderedAssets", "visualSummaries")
+        )
     }
     module_summaries = {
         module_id: str(result.get("summary", "")).strip()
@@ -306,7 +329,9 @@ def build_analysis_handoff_bundle(
             "moduleResults": module_result_list,
             "moduleRunIds": module_run_ids,
             "moduleSummaries": module_summaries,
-            "documentHandoffs": document_handoffs,
+            "displayHandoffs": display_handoffs,
+            "moduleReaderPackets": module_reader_packets,
+            "moduleTabularArtifacts": module_tabular_artifacts,
             "unsupportedModules": unsupported,
             "staleModules": stale_modules,
             "limitations": limitations,
@@ -315,15 +340,21 @@ def build_analysis_handoff_bundle(
 
 
 def _run_robotics_risk_module(payload: dict[str, Any]) -> Any:
+    reader_writer = payload.get("readerWriter")
     if not has_app_context():
-        return run_robotics_risk_subagent(payload)
+        return run_robotics_risk_subagent(payload, reader_writer=reader_writer)
 
     from ...db import session_scope
     from ...robotics_risk.cache import RoboticsEvidenceCache
 
     with session_scope() as db:
         evidence_cache = RoboticsEvidenceCache(db)
-        return run_robotics_risk_subagent(payload, db=db, evidence_cache=evidence_cache)
+        return run_robotics_risk_subagent(
+            payload,
+            db=db,
+            evidence_cache=evidence_cache,
+            reader_writer=reader_writer,
+        )
 
 
 def _map_robotics_risk_runtime_input(
@@ -334,18 +365,14 @@ def _map_robotics_risk_runtime_input(
     module_inputs = compatibility.get("legacyModuleInputs", {}) if isinstance(compatibility, dict) else {}
     robotics_inputs = module_inputs.get("robotics_risk", {}) if isinstance(module_inputs, dict) else {}
     source_controls = robotics_inputs.get("sourceControls") or robotics_inputs.get("source_controls")
-    focus_tags = slot_values.get(SHARED_ANALYSIS_FOCUS_TAGS, [])
-    focus = "、".join(_string_list(focus_tags))
-    dimensions = slot_values.get("robotics_risk.dimensions", [])
     return _drop_empty(
         {
             "enterpriseName": _clean_text(slot_values.get(SHARED_ENTERPRISE_NAME)),
             "stockCode": _clean_text(slot_values.get(SHARED_STOCK_CODE)),
             "timeRange": _clean_text(slot_values.get(SHARED_TIME_RANGE)) or "近30天",
-            "focus": focus,
-            "dimensions": _string_list(dimensions),
             "sourceControls": source_controls if isinstance(source_controls, dict) else {},
             "conversationContext": _clean_text(context.get("conversationContext")),
+            "readerWriter": context.get("readerWriter"),
             "metadata": _drop_empty(
                 {
                     "reportGoal": _clean_text(slot_values.get(SHARED_REPORT_GOAL)),
@@ -357,7 +384,6 @@ def _map_robotics_risk_runtime_input(
                                 "stockCode": _clean_text(slot_values.get(SHARED_STOCK_CODE)),
                                 "timeRange": _clean_text(slot_values.get(SHARED_TIME_RANGE)),
                                 "reportGoal": _clean_text(slot_values.get(SHARED_REPORT_GOAL)),
-                                "analysisFocusTags": _string_list(slot_values.get(SHARED_ANALYSIS_FOCUS_TAGS)),
                             }
                         ),
                     },
@@ -370,7 +396,7 @@ def _map_robotics_risk_runtime_input(
 def _build_module_summary(
     *,
     result_payload: dict[str, Any],
-    handoff_payload: dict[str, Any],
+    display_handoff_payload: dict[str, Any],
     limitations: list[str],
     status: str = "",
     source_reference_count: int = 0,
@@ -388,18 +414,16 @@ def _build_module_summary(
         merged = " ".join(line for line in summary_lines if line)
         if merged:
             return _truncate(merged, limit=300)
-    executive_summary = handoff_payload.get("executiveSummary", {})
+    executive_summary = display_handoff_payload.get("executiveSummary", {})
     if isinstance(executive_summary, dict):
         summary_lines = [
+            _clean_text(executive_summary.get("headline")),
             _clean_text(executive_summary.get("opportunity")),
             _clean_text(executive_summary.get("risk")),
         ]
         merged = " ".join(line for line in summary_lines if line)
         if merged:
             return _truncate(merged, limit=300)
-    brief_markdown = _clean_text(result_payload.get("briefMarkdown") or handoff_payload.get("compactMarkdown"))
-    if brief_markdown:
-        return _truncate(brief_markdown, limit=300)
     if limitations:
         return _truncate(limitations[0], limit=300)
     return ""
@@ -457,6 +481,74 @@ def _normalize_string_list(value: Any) -> list[str]:
     return _string_list(value)
 
 
+def _module_reader_packet_payload(
+    *,
+    display_handoff_payload: dict[str, Any],
+    result_payload: dict[str, Any],
+) -> dict[str, Any]:
+    if isinstance(display_handoff_payload.get("readerPacket"), dict) and display_handoff_payload.get("readerPacket"):
+        return _dict_items(display_handoff_payload.get("readerPacket"))
+    return _dict_items(result_payload.get("readerPacket"))
+
+
+def _module_evidence_reference_payloads(
+    *,
+    display_handoff_payload: dict[str, Any],
+    reader_packet: dict[str, Any],
+) -> list[dict[str, Any]]:
+    references = _list_of_dicts(display_handoff_payload.get("evidenceReferences"))
+    if references:
+        return references
+    references = _list_of_dicts(reader_packet.get("evidenceReferences"))
+    if references:
+        return references
+    return _list_of_dicts(display_handoff_payload.get("evidenceTable"))
+
+
+def _module_fact_table_payloads(
+    *,
+    display_handoff_payload: dict[str, Any],
+    result_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    tables = _list_of_dicts(display_handoff_payload.get("factTables"))
+    if tables:
+        return [normalize_fact_table(item) for item in tables]
+    return [normalize_fact_table(item) for item in _list_of_dicts(result_payload.get("factTables"))]
+
+
+def _module_chart_candidate_payloads(
+    *,
+    display_handoff_payload: dict[str, Any],
+    result_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    candidates = _list_of_dicts(display_handoff_payload.get("chartCandidates"))
+    if candidates:
+        return [normalize_chart_candidate(item) for item in candidates]
+    return [normalize_chart_candidate(item) for item in _list_of_dicts(result_payload.get("chartCandidates"))]
+
+
+def _module_rendered_asset_payloads(
+    *,
+    display_handoff_payload: dict[str, Any],
+    result_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    assets = _list_of_dicts(display_handoff_payload.get("renderedAssets"))
+    if assets:
+        return [normalize_rendered_asset(item) for item in assets]
+    return [normalize_rendered_asset(item) for item in _list_of_dicts(result_payload.get("renderedAssets"))]
+
+
+def _module_visual_summary_payloads(
+    *,
+    display_handoff_payload: dict[str, Any],
+    reader_packet: dict[str, Any],
+) -> list[dict[str, Any]]:
+    visuals = _list_of_dicts(display_handoff_payload.get("visualSummaries"))
+    if visuals:
+        return visuals
+    return _list_of_dicts(reader_packet.get("visualSummaries"))
+
+
 def _truncate(value: str, *, limit: int) -> str:
     clean = " ".join(str(value or "").split())
     if len(clean) <= limit:
@@ -481,6 +573,12 @@ def _string_list(value: Any) -> list[str]:
         if clean and clean not in result:
             result.append(clean)
     return result
+
+
+def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _drop_empty(value: Any) -> Any:

@@ -21,7 +21,7 @@ from app.robotics_risk import (
     RoboticsInsightRequest,
     RoboticsInsightValidationError,
     analyze_robotics_enterprise_risk_opportunity,
-    build_document_handoff,
+    build_display_handoff,
     run_robotics_risk_subagent,
 )
 from app.robotics_risk.adapters import SourceCollectionResult, SourceUnavailableError
@@ -45,6 +45,21 @@ from app.robotics_risk.run_repository import RoboticsInsightRunRepository
 from app.robotics_risk.schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument
 from app.robotics_risk import subagent as robotics_subagent
 from app.robotics_risk import service as robotics_service
+
+
+class _FakeReaderResponse:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeReaderWriter:
+    def __init__(self, content):
+        self.content = content
+        self.calls = []
+
+    def invoke(self, messages):
+        self.calls.append(messages)
+        return _FakeReaderResponse(self.content)
 
 
 def _policy_doc() -> SourceDocument:
@@ -255,8 +270,7 @@ def test_policy_search_plan_uses_profile_segments_domains_and_bounds():
     request = RoboticsInsightRequest(
         enterprise_name="石头科技",
         time_range="近90天",
-        focus="清洁机器人政府采购",
-        context="扫地机器人",
+        context="扫地机器人 清洁机器人政府采购",
     )
     profile = build_enterprise_profile(request)
 
@@ -287,8 +301,7 @@ def test_bidding_search_plan_uses_enterprise_segment_scenario_categories_and_bou
     request = RoboticsInsightRequest(
         enterprise_name="石头科技",
         time_range="近60天",
-        focus="广东清洁机器人招投标",
-        context="扫地机器人 公共清洁",
+        context="广东扫地机器人 公共清洁 招投标",
     )
     profile = build_enterprise_profile(request)
 
@@ -425,6 +438,42 @@ def test_gov_policy_adapter_handles_redirect_shell_and_json_list_fallback():
     assert result.diagnostics[0].raw_count == 1
 
 
+def test_gov_policy_adapter_rejects_irrelevant_json_fallback_candidates():
+    relevant_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/2026-04/03/content_robot.htm"
+    irrelevant_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/2026-04/03/content_ftz.htm"
+    redirect_html = '<script>window.location.href="https://sousuo.www.gov.cn/zcwjk/policyDocumentLibrary?q=&t=zhengcelibrary"</script>'
+    list_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/TONGYONGGAILAN.json"
+    list_html = '<script>$.ajax({ url: "./TONGYONGGAILAN.json", success: function(resultP){ FY_DATA = resultP; } })</script>'
+    json_payload = (
+        "["
+        f'{{"TITLE":"国务院办公厅关于推动机器人应用场景建设的意见","URL":"{relevant_url}","DOCRELPUBTIME":"2026-04-03","DOCID":"content_robot"}},'
+        f'{{"TITLE":"国务院关于印发（中国（内蒙古）自由贸易试验区总体方案）的通知","URL":"{irrelevant_url}","DOCRELPUBTIME":"2026-04-03","DOCID":"content_ftz"}}'
+        "]"
+    )
+    detail_html = '<h1>国务院办公厅关于推动机器人应用场景建设的意见</h1><div class="pages_content">政策鼓励服务机器人和清洁机器人应用，推动设备更新。</div>'
+    client = FakeGovPolicyClient(
+        search_html=redirect_html,
+        list_html=list_html,
+        json_pages={
+            list_url: json_payload,
+            "https://www.gov.cn/zhengce/zhengceku/state_council/TONGYONGGAILAN.json": json_payload,
+            "https://www.gov.cn/zhengce/zhengceku/department/TONGYONGGAILAN.json": "[]",
+        },
+        detail_pages={relevant_url: detail_html, irrelevant_url: "<h1>无关政策</h1>"},
+    )
+    adapter = GovPolicyAdapter(client=client, max_queries=1, detail_fetch_limit=2)
+
+    result = adapter.collect(
+        request=RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天", context="扫地机器人"),
+        profile=EnterpriseProfile(name="石头科技", segments=["扫地机器人"], keywords=["扫地机器人", "服务机器人"]),
+    )
+
+    assert len(result.documents) == 1
+    assert result.documents[0].url == relevant_url
+    assert relevant_url in client.details
+    assert irrelevant_url not in client.details
+
+
 def test_ceb_bidding_candidate_and_detail_parsing_records_metadata_and_attachments():
     list_html = """
     <html><body>
@@ -558,8 +607,6 @@ def test_fake_adapters_produce_sources_events_signals_and_payload_refs():
             enterprise_name="石头科技",
             stock_code="688169",
             time_range="近30天",
-            focus="综合",
-            dimensions=["政策", "公告", "招中标"],
         ),
         adapters=[
             GovPolicyAdapter(documents=[_policy_doc()]),
@@ -572,7 +619,19 @@ def test_fake_adapters_produce_sources_events_signals_and_payload_refs():
     assert len(payload["sources"]) == 3
     assert payload["events"]
     assert payload["opportunities"]
-    assert payload["briefMarkdown"].startswith("# 石头科技风险与机会洞察简报")
+    assert "briefMarkdown" not in payload
+    assert payload["readerPacket"]["executiveSummary"]["headline"]
+    assert payload["readerPacket"]["evidenceReferences"]
+    assert payload["readerPacket"]["visualSummaries"]
+    assert payload["readerPacket"]["factTableRefs"]
+    assert payload["readerPacket"]["chartCandidateRefs"]
+    assert payload["readerPacket"]["renderedAssetRefs"]
+    assert payload["factTables"]
+    assert payload["chartCandidates"]
+    assert payload["renderedAssets"]
+    opportunity_table = next(item for item in payload["factTables"] if item["tableId"] == "opportunity_themes")
+    assert opportunity_table["rows"][0]["traceRefs"]["sourceIds"]
+    assert opportunity_table["rows"][0]["traceRefs"]["signalIds"]
     source_ids = {item["id"] for item in payload["sources"]}
     for event in payload["events"]:
         assert event["source_document_id"] in source_ids
@@ -596,7 +655,7 @@ def test_source_failures_degrade_independently_and_record_limitations():
     assert payload["opportunities"]
 
 
-def test_document_handoff_payload_contains_sections_citations_and_evidence():
+def test_display_handoff_payload_contains_sections_citations_and_evidence():
     result = analyze_robotics_enterprise_risk_opportunity(
         RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169"),
         adapters=[
@@ -605,7 +664,7 @@ def test_document_handoff_payload_contains_sections_citations_and_evidence():
         ],
     )
 
-    handoff = build_document_handoff(result)
+    handoff = build_display_handoff(result)
 
     assert handoff["documentType"] == "robotics_risk_opportunity_brief"
     assert handoff["title"] == "石头科技风险与机会洞察简报"
@@ -613,26 +672,42 @@ def test_document_handoff_payload_contains_sections_citations_and_evidence():
         "executive_summary",
         "opportunities",
         "risks",
+        "visuals",
         "evidence",
         "limitations",
     ]
     assert handoff["opportunitySections"]
     assert handoff["evidenceTable"]
-    first_signal = handoff["opportunitySections"][0]
-    assert handoff["citationMap"]["signals"][first_signal["id"]]["sourceIds"]
-    assert handoff["compactMarkdown"].startswith("# 石头科技风险与机会洞察简报")
+    assert handoff["readerPacket"]["schemaVersion"] == "robotics_reader_packet.v1"
+    assert handoff["evidenceReferences"]
+    assert handoff["visualSummaries"]
+    assert handoff["factTables"]
+    assert handoff["chartCandidates"]
+    assert handoff["renderedAssets"]
+    assert handoff["sectionResources"]["opportunities"]["tableIds"] == ["opportunity_themes"]
+    assert handoff["sectionResources"]["opportunities"]["assetIds"]
+    assert handoff["recommendedSections"][1]["resourceRefs"]["tableIds"] == ["opportunity_themes"]
+    first_theme = handoff["opportunitySections"][0]
+    assert handoff["citationMap"]["themes"][first_theme["id"]]["sourceIds"]
+    assert handoff["citationMap"]["factTables"]["opportunity_themes"]["sourceIds"]
+    assert handoff["citationMap"]["chartCandidates"]["chart_opportunity_theme_strength"]["sourceTableId"] == "opportunity_themes"
+    assert "compactMarkdown" not in handoff
 
 
-def test_document_handoff_handles_empty_sections_and_metadata_limitations():
+def test_display_handoff_handles_empty_sections_and_metadata_limitations():
     empty_result = analyze_robotics_enterprise_risk_opportunity(
         RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169"),
         adapters=[],
     )
-    empty_handoff = build_document_handoff(empty_result)
+    empty_handoff = build_display_handoff(empty_result)
 
     assert empty_result.status == "no_evidence"
     assert not empty_result.opportunities
     assert not empty_result.risks
+    assert empty_result.fact_tables
+    empty_tables = {item["tableId"]: item for item in empty_result.fact_tables}
+    assert empty_tables["opportunity_themes"]["rows"][0]["emptyState"] is True
+    assert empty_tables["risk_themes"]["rows"][0]["emptyState"] is True
     empty_section_by_id = {section["id"]: section for section in empty_handoff["recommendedSections"]}
     assert empty_section_by_id["opportunities"].get("emptyState") == "未发现高置信度机会信号。"
     assert empty_section_by_id["risks"].get("emptyState") == "未发现高置信度风险信号。"
@@ -651,10 +726,27 @@ def test_document_handoff_handles_empty_sections_and_metadata_limitations():
         adapters=[BiddingProcurementAdapter(documents=[metadata_only])],
     )
 
-    handoff = build_document_handoff(result)
+    handoff = build_display_handoff(result)
 
     assert handoff["evidenceTable"][0]["metadataOnlyNote"] == "公告正文提取受限"
     assert handoff["evidenceTable"][0]["sourceId"] == "src_meta_001"
+
+
+def test_rendered_assets_include_png_data_urls_and_traceable_chart_links():
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169"),
+        adapters=[
+            GovPolicyAdapter(documents=[_policy_doc()]),
+            CninfoAnnouncementAdapter(documents=[_announcement_doc()]),
+        ],
+    )
+
+    asset = result.rendered_assets[0]
+
+    assert asset["contentType"] == "image/png"
+    assert asset["chartId"]
+    assert asset["sourceTableId"]
+    assert asset["renderPayload"]["dataUrl"].startswith("data:image/png;base64,")
 
 
 def test_subagent_input_normalizes_upstream_evidence_into_request_context():
@@ -662,7 +754,7 @@ def test_subagent_input_normalizes_upstream_evidence_into_request_context():
         {
             "enterpriseName": " 石头科技 ",
             "stockCode": "688169",
-            "analysisScope": {"timeRange": "近90天", "focus": "扫地机器人"},
+            "analysisScope": {"timeRange": "近90天"},
             "upstreamEvidence": [{"title": "行业搜索", "summary": "人形机器人产业链扩张"}],
         }
     )
@@ -693,7 +785,7 @@ def test_robotics_subagent_valid_input_persists_run_and_handoff_without_rag_rows
         {
             "enterpriseName": "石头科技",
             "stockCode": "688169",
-            "analysisScope": {"timeRange": "近30天", "dimensions": ["政策", "公告"]},
+            "analysisScope": {"timeRange": "近30天"},
             "upstreamEvidence": [{"title": "搜索摘要", "summary": "服务机器人需求增长"}],
         },
         db=db_session,
@@ -708,9 +800,9 @@ def test_robotics_subagent_valid_input_persists_run_and_handoff_without_rag_rows
 
     assert payload["status"] == "done"
     assert payload["runId"] == "run-subagent-001"
-    assert payload["documentHandoff"]["runId"] == "run-subagent-001"
+    assert payload["displayHandoff"]["runId"] == "run-subagent-001"
     assert payload["sourceDiagnostics"]
-    assert payload["documentHandoff"]["sourceDiagnostics"]
+    assert payload["displayHandoff"]["sourceDiagnostics"]
     assert payload["normalizedInput"]["upstreamEvidence"][0]["title"] == "搜索摘要"
     row = db_session.query(RoboticsInsightRun).filter_by(run_id="run-subagent-001").one()
     assert row.status == "done"
@@ -719,7 +811,7 @@ def test_robotics_subagent_valid_input_persists_run_and_handoff_without_rag_rows
     assert row.result_json["sourceDiagnostics"]
     assert row.handoff_json["documentType"] == "robotics_risk_opportunity_brief"
     stored = RoboticsInsightRunRepository(db_session).get_run_payload("run-subagent-001")
-    assert stored["documentHandoff"]["title"] == "石头科技风险与机会洞察简报"
+    assert stored["displayHandoff"]["title"] == "石头科技风险与机会洞察简报"
     assert stored["sourceDiagnostics"]
     assert RoboticsInsightRunRepository(db_session).get_run_payload("missing-run") is None
     assert db_session.query(RagDocument).count() == 0
@@ -763,6 +855,134 @@ def test_robotics_subagent_partial_run_persists_degraded_status(db_session):
     row = db_session.query(RoboticsInsightRun).filter_by(run_id="run-partial-001").one()
     assert row.status == "partial"
     assert any("captcha required" in item for item in row.result_json["limitations"])
+
+
+def test_reader_writer_can_render_module_brief_from_reader_packet():
+    writer = _FakeReaderWriter(
+        """
+        {
+          "sections": [
+            {
+              "id": "executive_summary",
+              "title": "执行摘要",
+              "blocks": [
+                {
+                  "type": "paragraph",
+                  "text": "优先跟踪政策与设备更新主线，同时把监管与标准门槛作为主要约束。"
+                }
+              ]
+            },
+            {
+              "id": "opportunities",
+              "title": "机会信号",
+              "blocks": [
+                {
+                  "type": "tables",
+                  "items": [
+                    {
+                      "tableId": "opportunity_themes",
+                      "title": "机会主题",
+                      "readerSummary": "优先查看结构化表格中的机会主线排序。"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "evidence",
+              "title": "证据来源",
+              "blocks": [
+                {
+                  "type": "evidence",
+                  "items": [
+                    {
+                      "referenceId": "reader_evidence_1",
+                      "title": "关于推动智能制造和机器人应用场景建设的政策",
+                      "readerSummary": "该政策用于支撑行业需求扩张判断。"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """
+    )
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="优必选", stock_code="09880"),
+        adapters=[GovPolicyAdapter(documents=[_policy_doc()])],
+        reader_writer=writer,
+    )
+
+    assert writer.calls
+    assert "优先跟踪政策与设备更新主线" in result.brief_markdown
+    assert "优先查看结构化表格中的机会主线排序" in result.brief_markdown
+    assert "关于推动智能制造和机器人应用场景建设的政策" in result.brief_markdown
+
+
+def test_reader_writer_rejects_unsupported_table_and_uncited_evidence():
+    writer = _FakeReaderWriter(
+        """
+        {
+          "sections": [
+            {
+              "id": "executive_summary",
+              "title": "执行摘要",
+              "blocks": [
+                {
+                  "type": "paragraph",
+                  "text": "这是凭空编造的结论。"
+                }
+              ]
+            },
+            {
+              "id": "opportunities",
+              "title": "机会信号",
+              "blocks": [
+                {
+                  "type": "tables",
+                  "items": [
+                    {
+                      "tableId": "invented_table",
+                      "title": "不存在的表格",
+                      "readerSummary": "这里引用了不存在的结构化表格。"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "evidence",
+              "title": "证据来源",
+              "blocks": [
+                {
+                  "type": "evidence",
+                  "items": [
+                    {
+                      "title": "不存在的来源",
+                      "readerSummary": "没有任何引用标识。"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """
+    )
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="优必选", stock_code="09880"),
+        adapters=[GovPolicyAdapter(documents=[_policy_doc()])],
+        reader_writer=writer,
+    )
+
+    assert writer.calls
+    assert "这是凭空编造的结论" not in result.brief_markdown
+    assert "不存在的表格" not in result.brief_markdown
+    assert "结构化表格" in result.brief_markdown
+    assert "机会主题" in result.brief_markdown
 
 
 def test_robotics_subagent_failure_after_run_creation_is_persisted(db_session):
@@ -1016,6 +1236,61 @@ def test_live_gov_policy_cache_persists_metadata_and_reuses_without_rag_rows(db_
     assert db_session.query(RagIndexJob).count() == 0
 
 
+def test_policy_cache_does_not_reuse_other_company_generic_policy_rows(db_session):
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    cache = RoboticsEvidenceCache(db_session, now_factory=lambda: now)
+    request_a = RoboticsInsightRequest(enterprise_name="石头科技", time_range="近30天", context="扫地机器人")
+    request_b = RoboticsInsightRequest(enterprise_name="埃斯顿", time_range="近30天", context="工业机器人")
+    adapter_a = CountingAdapter(
+        source_type="gov_policy",
+        documents=[
+            SourceDocument(
+                id="policy-a",
+                source_type="gov_policy",
+                source_name="国务院政策文件库",
+                title="关于推动服务机器人应用场景建设的意见",
+                content="政策鼓励服务机器人和清洁机器人应用。",
+                published_at="2026-04-01",
+                authority_score=0.95,
+                relevance_scope="industry",
+            )
+        ],
+    )
+    adapter_b = CountingAdapter(
+        source_type="gov_policy",
+        documents=[
+            SourceDocument(
+                id="policy-b",
+                source_type="gov_policy",
+                source_name="国务院政策文件库",
+                title="关于推动工业机器人标准化和设备更新的意见",
+                content="政策推动工业机器人标准化和设备更新。",
+                published_at="2026-04-02",
+                authority_score=0.95,
+                relevance_scope="industry",
+            )
+        ],
+    )
+
+    first = analyze_robotics_enterprise_risk_opportunity(
+        request_a,
+        adapters=[adapter_a],
+        evidence_cache=cache,
+    )
+    second = analyze_robotics_enterprise_risk_opportunity(
+        request_b,
+        adapters=[adapter_b],
+        evidence_cache=cache,
+    )
+
+    assert first.sources
+    assert second.sources
+    assert adapter_a.calls == 1
+    assert adapter_b.calls == 1
+    assert [source.title for source in second.sources] == ["关于推动工业机器人标准化和设备更新的意见"]
+    assert db_session.query(RoboticsPolicyDocument).count() == 2
+
+
 def test_metadata_only_gov_policy_is_attributed_and_limited():
     policy_url = "https://www.gov.cn/zhengce/zhengceku/gwywj/2026-04/01/content_meta.htm"
     search_html = f'<a href="{policy_url}">国务院办公厅关于机器人标准化工作的意见</a><span>2026-04-01</span>'
@@ -1162,6 +1437,35 @@ def test_bidding_market_demand_confidence_increases_with_policy_reinforcement():
     assert set(demand_signal.source_ids) & {"policy-bid-reinforce", "bid-reinforce"}
     assert demand_signal.confidence >= 0.75
     assert "验证" in demand_signal.reasoning
+
+
+def test_policy_timeline_deduplicates_same_document_rule_matches():
+    policy = SourceDocument(
+        id="policy-dedupe",
+        source_type="gov_policy",
+        source_name="国务院政策文件库",
+        title="关于推动机器人设备更新、政府采购和标准化建设的意见",
+        content="政策鼓励政府采购服务机器人，推动设备更新和智能制造，开放养老医疗应用场景，并提出标准化与数据安全要求。",
+        published_at="2026-04-01",
+        authority_score=0.95,
+        relevance_scope="industry",
+        metadata={"matchedSegments": ["服务机器人"], "sourceScope": "state_council"},
+    )
+
+    result = analyze_robotics_enterprise_risk_opportunity(
+        RoboticsInsightRequest(enterprise_name="石头科技", context="扫地机器人"),
+        adapters=[GovPolicyAdapter(documents=[policy])],
+    )
+
+    tables = {item["tableId"]: item for item in result.fact_tables}
+    timeline_rows = [row for row in tables["event_timeline"]["rows"] if not row.get("emptyState")]
+    timeline_chart = next(item for item in result.chart_candidates if item["chartId"] == "chart_event_timeline")
+
+    assert len(result.events) > 1
+    assert len(timeline_rows) == 1
+    assert timeline_rows[0]["cells"]["title"] == policy.title
+    assert len(timeline_rows[0]["traceRefs"]["eventIds"]) > 1
+    assert len(timeline_chart["series"]) == 1
 
 
 def test_stale_partial_cache_refreshes_only_affected_source(db_session):

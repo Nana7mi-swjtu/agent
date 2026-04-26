@@ -42,7 +42,7 @@ class RoboticsInsightRunRepository:
         *,
         run_id: str,
         result_payload: dict[str, Any],
-        handoff_payload: dict[str, Any],
+        display_payload: dict[str, Any],
         status: str = "done",
         completed_at: datetime | None = None,
     ) -> RoboticsInsightRun:
@@ -50,7 +50,7 @@ class RoboticsInsightRunRepository:
         now = completed_at or datetime.utcnow()
         row.status = status
         row.result_json = result_payload
-        row.handoff_json = handoff_payload
+        row.handoff_json = display_payload
         row.error_message = None
         row.completed_at = now
         row.updated_at = now
@@ -64,7 +64,7 @@ class RoboticsInsightRunRepository:
         run_id: str,
         error_message: str,
         result_payload: dict[str, Any] | None = None,
-        handoff_payload: dict[str, Any] | None = None,
+        display_payload: dict[str, Any] | None = None,
         completed_at: datetime | None = None,
     ) -> RoboticsInsightRun:
         row = self._require_run(run_id)
@@ -73,8 +73,8 @@ class RoboticsInsightRunRepository:
         row.error_message = str(error_message or "unknown error")[:2048]
         if result_payload is not None:
             row.result_json = result_payload
-        if handoff_payload is not None:
-            row.handoff_json = handoff_payload
+        if display_payload is not None:
+            row.handoff_json = display_payload
         row.completed_at = now
         row.updated_at = now
         self.db.commit()
@@ -103,8 +103,8 @@ class RoboticsInsightRunRepository:
 
 def run_to_payload(row: RoboticsInsightRun) -> dict[str, Any]:
     result_payload = row.result_json or {}
-    handoff_payload = row.handoff_json or {}
-    source_diagnostics = result_payload.get("sourceDiagnostics") or handoff_payload.get("sourceDiagnostics") or []
+    display_payload = row.handoff_json or {}
+    source_diagnostics = result_payload.get("sourceDiagnostics") or display_payload.get("sourceDiagnostics") or []
     return {
         "runId": row.run_id,
         "enterpriseName": row.enterprise_name,
@@ -112,7 +112,7 @@ def run_to_payload(row: RoboticsInsightRun) -> dict[str, Any]:
         "status": row.status,
         "request": row.request_json or {},
         "result": result_payload,
-        "documentHandoff": handoff_payload,
+        "displayHandoff": display_payload,
         "sourceDiagnostics": source_diagnostics,
         "errorMessage": row.error_message or "",
         "createdAt": _format_datetime(row.created_at),

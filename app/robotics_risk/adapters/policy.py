@@ -14,6 +14,8 @@ from ..policy_planning import PolicyQueryTerm, PolicySearchPlan, build_policy_se
 from ..schemas import EnterpriseProfile, RoboticsInsightRequest, SourceDocument, SourceRetrievalDiagnostic
 from .base import SourceCollectionResult, SourceUnavailableError
 
+_GENERIC_POLICY_TOKENS = {"政策", "意见", "通知", "方案", "工作", "建设", "关于", "推动", "推进"}
+
 
 @dataclass(frozen=True)
 class GovPolicyCandidate:
@@ -201,7 +203,9 @@ class GovPolicyAdapter:
             )
 
         documents: list[SourceDocument] = []
-        for candidate in candidates[: plan.detail_fetch_limit]:
+        for candidate in candidates:
+            if len(documents) >= plan.detail_fetch_limit:
+                break
             query_term = _candidate_query_term(candidate, plan)
             try:
                 page = self._client.fetch_detail_page(candidate.url)
@@ -220,6 +224,10 @@ class GovPolicyAdapter:
                     source_scope=candidate.source_scope,
                     raw_metadata={"status": "metadata_limited", "errorMessage": str(exc)},
                 )
+            if not _detail_matches_plan(detail=detail, candidate=candidate, plan=plan):
+                continue
+            if not _detail_within_plan_window(detail, plan):
+                continue
             if not detail.content.strip():
                 limitations.append(f"国务院政策文件库政策正文提取受限：{detail.title}")
             documents.append(_detail_to_document(detail, plan=plan, query_term=query_term, candidate=candidate))
@@ -274,7 +282,7 @@ class GovPolicyAdapter:
                     candidates.extend(page_candidates)
                     if not page_candidates:
                         break
-        candidates = _dedupe_candidates(candidates)
+        candidates = _filter_candidates_for_plan(_dedupe_candidates(candidates), plan)
         if candidates or not self._enable_list_fallback:
             return candidates, limitations, stats
 
@@ -303,7 +311,7 @@ class GovPolicyAdapter:
                     stats["parser_limited"] = True
                 stats["raw_count"] += len(page_candidates)
                 candidates.extend(page_candidates)
-        return _dedupe_candidates(candidates), limitations, stats
+        return _filter_candidates_for_plan(_dedupe_candidates(candidates), plan), limitations, stats
 
     def _fetch_json_list_candidates(self, *, page: GovPolicyPage, scope: str) -> list[GovPolicyCandidate]:
         candidates: list[GovPolicyCandidate] = []
@@ -522,13 +530,7 @@ def _detail_to_document(
 ) -> SourceDocument:
     source_scope = detail.source_scope or candidate.source_scope or "unknown"
     policy_id = detail.policy_id or candidate.policy_id or _hash_text(detail.url or detail.title)
-    matched_keywords = _dedupe([detail.title, *(plan.keywords if query_term is None else [query_term.keyword])])
-    matched_segments = _dedupe(
-        [
-            query_term.matched_segment if query_term else "",
-            str(candidate.metadata.get("matchedSegment") or ""),
-        ]
-    )
+    context = _match_policy_context(detail=detail, candidate=candidate, plan=plan, query_term=query_term)
     metadata = {
         **candidate.metadata,
         **detail.raw_metadata,
@@ -537,16 +539,11 @@ def _detail_to_document(
         "sourceScope": source_scope,
         "issuingAgency": detail.issuing_agency,
         "documentNumber": detail.document_number,
-        "matchedKeywords": matched_keywords,
-        "relevanceSegments": matched_segments,
-        "matchedSegments": matched_segments,
-        "matchedPolicyDomains": _dedupe(
-            [
-                query_term.policy_domain if query_term else "",
-                str(candidate.metadata.get("policyDomain") or ""),
-            ]
-        ),
-        "searchKeyword": query_term.keyword if query_term else str(candidate.metadata.get("searchKeyword") or ""),
+        "matchedKeywords": context["matched_keywords"],
+        "relevanceSegments": context["matched_segments"],
+        "matchedSegments": context["matched_segments"],
+        "matchedPolicyDomains": context["matched_policy_domains"],
+        "searchKeyword": context["search_keyword"],
         "attachments": list(detail.attachments),
         "attachmentFullTextParsed": False,
         "policySearchPlan": plan.to_metadata(),
@@ -571,7 +568,168 @@ def _candidate_query_term(candidate: GovPolicyCandidate, plan: PolicySearchPlan)
     for term in plan.query_terms:
         if term.keyword == keyword:
             return term
-    return plan.query_terms[0] if plan.query_terms else None
+    return None
+
+
+def _filter_candidates_for_plan(candidates: list[GovPolicyCandidate], plan: PolicySearchPlan) -> list[GovPolicyCandidate]:
+    filtered: list[GovPolicyCandidate] = []
+    for candidate in candidates:
+        if not _candidate_within_plan_window(candidate, plan):
+            continue
+        if not _candidate_matches_plan(candidate, plan):
+            continue
+        filtered.append(candidate)
+    return filtered
+
+
+def _candidate_matches_plan(candidate: GovPolicyCandidate, plan: PolicySearchPlan) -> bool:
+    search_keyword = str(candidate.metadata.get("searchKeyword") or "").strip()
+    if search_keyword and search_keyword in plan.keywords:
+        return True
+    return bool(
+        _matched_plan_context(
+            "\n".join(
+                [
+                    candidate.title,
+                    candidate.document_number,
+                    str(candidate.metadata.get("matchedSegment") or ""),
+                    str(candidate.metadata.get("policyDomain") or ""),
+                ]
+            ),
+            plan,
+        )["matched_keywords"]
+    )
+
+
+def _detail_matches_plan(*, detail: GovPolicyDetail, candidate: GovPolicyCandidate, plan: PolicySearchPlan) -> bool:
+    text = "\n".join(
+        [
+            candidate.title,
+            detail.title,
+            detail.content,
+            detail.document_number,
+            detail.issuing_agency,
+        ]
+    )
+    matches = _matched_plan_context(text, plan)
+    if matches["matched_keywords"]:
+        return True
+    search_keyword = str(candidate.metadata.get("searchKeyword") or "").strip()
+    return bool(search_keyword and _keyword_matches_text(search_keyword, text))
+
+
+def _candidate_within_plan_window(candidate: GovPolicyCandidate, plan: PolicySearchPlan) -> bool:
+    return _date_within_plan_window(candidate.published_at, plan, allow_missing=True)
+
+
+def _detail_within_plan_window(detail: GovPolicyDetail, plan: PolicySearchPlan) -> bool:
+    return _date_within_plan_window(detail.published_at, plan, allow_missing=False)
+
+
+def _date_within_plan_window(date_value: str, plan: PolicySearchPlan, *, allow_missing: bool) -> bool:
+    if not plan.start_date and not plan.end_date:
+        return True
+    normalized = _normalize_date(date_value)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized):
+        return allow_missing
+    if plan.start_date and normalized < plan.start_date:
+        return False
+    if plan.end_date and normalized > plan.end_date:
+        return False
+    return True
+
+
+def _match_policy_context(
+    *,
+    detail: GovPolicyDetail,
+    candidate: GovPolicyCandidate,
+    plan: PolicySearchPlan,
+    query_term: PolicyQueryTerm | None,
+) -> dict[str, list[str] | str]:
+    text = "\n".join(
+        [
+            candidate.title,
+            detail.title,
+            detail.content,
+            detail.document_number,
+            detail.issuing_agency,
+        ]
+    )
+    context = _matched_plan_context(text, plan)
+    if query_term is not None and _query_term_matches_text(query_term, text):
+        if query_term.keyword not in context["matched_keywords"]:
+            context["matched_keywords"].append(query_term.keyword)
+        if query_term.matched_segment and query_term.matched_segment not in context["matched_segments"]:
+            context["matched_segments"].append(query_term.matched_segment)
+        if query_term.policy_domain and query_term.policy_domain not in context["matched_policy_domains"]:
+            context["matched_policy_domains"].append(query_term.policy_domain)
+    search_keyword = ""
+    if query_term is not None and query_term.keyword in context["matched_keywords"]:
+        search_keyword = query_term.keyword
+    elif context["matched_keywords"]:
+        search_keyword = context["matched_keywords"][0]
+    return {
+        "matched_keywords": context["matched_keywords"],
+        "matched_segments": context["matched_segments"],
+        "matched_policy_domains": context["matched_policy_domains"],
+        "search_keyword": search_keyword,
+    }
+
+
+def _matched_plan_context(text: str, plan: PolicySearchPlan) -> dict[str, list[str]]:
+    matched_keywords: list[str] = []
+    matched_segments: list[str] = []
+    matched_policy_domains: list[str] = []
+    for term in plan.query_terms:
+        if not _query_term_matches_text(term, text):
+            continue
+        matched_keywords.append(term.keyword)
+        if term.matched_segment:
+            matched_segments.append(term.matched_segment)
+        if term.policy_domain:
+            matched_policy_domains.append(term.policy_domain)
+    return {
+        "matched_keywords": _dedupe(matched_keywords),
+        "matched_segments": _dedupe(matched_segments),
+        "matched_policy_domains": _dedupe(matched_policy_domains),
+    }
+
+
+def _query_term_matches_text(term: PolicyQueryTerm, text: str) -> bool:
+    if _keyword_matches_text(term.keyword, text):
+        return True
+    if term.matched_segment and _keyword_matches_text(term.matched_segment, text):
+        return True
+    if term.policy_domain and _keyword_matches_text(term.policy_domain, text):
+        return True
+    return False
+
+
+def _keyword_matches_text(keyword: str, text: str) -> bool:
+    normalized_text = _matchable_text(text)
+    normalized_keyword = _matchable_text(keyword)
+    if not normalized_keyword or not normalized_text:
+        return False
+    if normalized_keyword in normalized_text:
+        return True
+    tokens = _keyword_match_tokens(keyword)
+    return bool(tokens) and any(token in normalized_text for token in tokens)
+
+
+def _matchable_text(value: str) -> str:
+    return re.sub(r"\s+", "", _clean_text(value)).lower()
+
+
+def _keyword_match_tokens(keyword: str) -> list[str]:
+    tokens: list[str] = []
+    for raw_token in re.split(r"\s+", _clean_text(keyword)):
+        token = _clean_text(raw_token)
+        if not token or token in _GENERIC_POLICY_TOKENS:
+            continue
+        tokens.append(_matchable_text(token))
+        if "机器人" in token:
+            tokens.append("机器人")
+    return _dedupe(tokens)
 
 
 def _dedupe_candidates(candidates: list[GovPolicyCandidate]) -> list[GovPolicyCandidate]:

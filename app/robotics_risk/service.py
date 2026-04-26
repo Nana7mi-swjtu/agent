@@ -28,6 +28,7 @@ def analyze_robotics_enterprise_risk_opportunity(
     adapters: Iterable[EvidenceSourceAdapter] | None = None,
     evidence_cache: Any | None = None,
     company_resolver: Any | None = None,
+    reader_writer: Any | None = None,
 ) -> RoboticsInsightResult:
     normalized_request = _normalize_request(request)
     if not normalized_request.enterprise_name.strip():
@@ -39,8 +40,6 @@ def analyze_robotics_enterprise_risk_opportunity(
 
     analysis_scope = AnalysisScope(
         time_range=normalized_request.time_range or "近30天",
-        focus=normalized_request.focus or "综合",
-        dimensions=normalized_request.dimensions or ["政策", "公告", "招中标", "竞争"],
     )
     profile = build_enterprise_profile(normalized_request)
     if resolution is not None:
@@ -76,6 +75,7 @@ def analyze_robotics_enterprise_risk_opportunity(
         sources=documents,
         limitations=_dedupe(limitations),
         source_diagnostics=source_diagnostics,
+        reader_writer=reader_writer,
     )
 
 

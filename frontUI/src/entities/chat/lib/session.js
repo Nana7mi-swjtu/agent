@@ -18,7 +18,75 @@ const normalizeGraph = (raw) => {
 };
 const normalizeGraphMeta = (raw) => (raw && typeof raw === "object" ? raw : null);
 export const normalizeSelectedAnalysisModules = (raw) => normalizeAnalysisModuleIds(raw);
-
+const normalizeModuleArtifactArray = (raw) =>
+  Array.isArray(raw) ? raw.filter((item) => item && typeof item === "object") : [];
+const normalizeRenderStyles = (raw) =>
+  Array.isArray(raw)
+    ? raw
+        .filter((item) => item && typeof item === "object")
+        .map((item) => ({
+          id: String(item.id || "").trim(),
+          label: String(item.label || item.id || "").trim(),
+        }))
+        .filter((item) => item.id)
+    : [];
+const normalizeReportRegeneration = (raw) => {
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    allowed: raw.allowed !== false,
+    reportId: String(raw.reportId || "").trim(),
+    renderStyles: normalizeRenderStyles(raw.renderStyles),
+    defaultRenderStyle: String(raw.defaultRenderStyle || "professional").trim() || "professional",
+  };
+};
+const normalizeAnalysisReport = (raw) => {
+  if (!raw || typeof raw !== "object") return null;
+  const reportId = String(raw.reportId || "").trim();
+  if (!reportId) return null;
+  const downloadUrls = raw.downloadUrls && typeof raw.downloadUrls === "object" ? raw.downloadUrls : {};
+  return {
+    reportId,
+    title: String(raw.title || ""),
+    status: String(raw.status || ""),
+    preview: String(raw.preview || ""),
+    availableFormats: Array.isArray(raw.availableFormats) ? raw.availableFormats.map((item) => String(item)) : [],
+    downloadUrls: {
+      pdf: String(downloadUrls.pdf || ""),
+    },
+    previewUrl: String(raw.previewUrl || ""),
+    renderStyle: String(raw.renderStyle || "professional"),
+    bundleSchemaVersion: String(raw.bundleSchemaVersion || ""),
+    renderProfile: raw.renderProfile && typeof raw.renderProfile === "object" ? raw.renderProfile : null,
+    exportManifest: raw.exportManifest && typeof raw.exportManifest === "object" ? raw.exportManifest : null,
+    pageCount: Number.isInteger(raw.pageCount) ? raw.pageCount : 0,
+    regeneration: normalizeReportRegeneration(raw.regeneration),
+    limitations: Array.isArray(raw.limitations) ? raw.limitations.map((item) => String(item || "")).filter(Boolean) : [],
+  };
+};
+const normalizeAnalysisModuleArtifact = (raw) => {
+  if (!raw || typeof raw !== "object") return null;
+  const artifactId = String(raw.artifactId || "").trim();
+  if (!artifactId) return null;
+  return {
+    artifactId,
+    moduleId: String(raw.moduleId || "").trim(),
+    moduleRunId: String(raw.moduleRunId || "").trim(),
+    title: String(raw.title || "模块分析结果"),
+    status: String(raw.status || ""),
+    contentType: String(raw.contentType || "text/markdown"),
+    markdownBody: String(raw.markdownBody || ""),
+    displayComposition: raw.displayComposition && typeof raw.displayComposition === "object" ? raw.displayComposition : null,
+    executiveSummary: raw.executiveSummary && typeof raw.executiveSummary === "object" ? raw.executiveSummary : null,
+    readerPacket: raw.readerPacket && typeof raw.readerPacket === "object" ? raw.readerPacket : null,
+    evidenceReferences: normalizeModuleArtifactArray(raw.evidenceReferences),
+    factTables: normalizeModuleArtifactArray(raw.factTables),
+    chartCandidates: normalizeModuleArtifactArray(raw.chartCandidates),
+    renderedAssets: normalizeModuleArtifactArray(raw.renderedAssets),
+    visualSummaries: normalizeModuleArtifactArray(raw.visualSummaries),
+    analysisSession: raw.analysisSession && typeof raw.analysisSession === "object" ? raw.analysisSession : null,
+    metadata: raw.metadata && typeof raw.metadata === "object" ? raw.metadata : null,
+  };
+};
 export const normalizeChatMessage = (raw) => ({
   id: String(raw?.id || buildMessageId()),
   from: raw?.from === "agent" ? "agent" : "user",
@@ -31,6 +99,8 @@ export const normalizeChatMessage = (raw) => ({
   trace: normalizeTrace(raw?.trace),
   graph: normalizeGraph(raw?.graph),
   graphMeta: normalizeGraphMeta(raw?.graphMeta),
+  analysisModuleArtifact: normalizeAnalysisModuleArtifact(raw?.analysisModuleArtifact),
+  analysisReport: normalizeAnalysisReport(raw?.analysisReport),
   memoryInfo: raw?.memoryInfo && typeof raw.memoryInfo === "object" ? raw.memoryInfo : null,
   jobId: raw?.jobId ? String(raw.jobId) : "",
   jobStatus: typeof raw?.jobStatus === "string" ? raw.jobStatus : "",
@@ -52,6 +122,8 @@ export const serializeChatMessage = (message) => ({
   trace: normalizeTrace(message?.trace),
   graph: normalizeGraph(message?.graph),
   graphMeta: normalizeGraphMeta(message?.graphMeta),
+  analysisModuleArtifact: normalizeAnalysisModuleArtifact(message?.analysisModuleArtifact),
+  analysisReport: normalizeAnalysisReport(message?.analysisReport),
   memoryInfo: message?.memoryInfo && typeof message.memoryInfo === "object" ? message.memoryInfo : null,
   jobId: message?.jobId ? String(message.jobId) : "",
   jobStatus: typeof message?.jobStatus === "string" ? message.jobStatus : "",

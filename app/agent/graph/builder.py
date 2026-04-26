@@ -10,8 +10,10 @@ from .nodes import (
     compose_answer_node,
     mcp_subagent_node,
     plan_route_node,
+    report_generation_node,
     route_after_analysis_intake,
     route_after_analysis_modules,
+    route_after_report_generation,
     route_after_mcp,
     route_after_plan,
     route_after_search,
@@ -25,6 +27,7 @@ def build_graph():
     builder.add_node("plan_route", plan_route_node)
     builder.add_node("analysis_intake", analysis_intake_node)
     builder.add_node("analysis_modules", analysis_modules_node)
+    builder.add_node("report_generation", report_generation_node)
     builder.add_node("clarify", clarify_node)
     builder.add_node("search_subagent", search_subagent_node)
     builder.add_node("mcp_subagent", mcp_subagent_node)
@@ -49,6 +52,7 @@ def build_graph():
         {
             "clarify": "clarify",
             "analysis_modules": "analysis_modules",
+            "report_generation": "report_generation",
             "compose_answer": "compose_answer",
         },
     )
@@ -57,6 +61,14 @@ def build_graph():
         route_after_analysis_modules,
         {
             "clarify": "clarify",
+            "report_generation": "report_generation",
+            "compose_answer": "compose_answer",
+        },
+    )
+    builder.add_conditional_edges(
+        "report_generation",
+        route_after_report_generation,
+        {
             "compose_answer": "compose_answer",
         },
     )
