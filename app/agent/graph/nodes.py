@@ -8,10 +8,12 @@ from pydantic import BaseModel, Field
 from ...rag.errors import RAGContractError
 from ...rag.schemas import RetrievalHit
 from ...rag.service import build_cited_response
-from ..reporting import (
+from ...db import session_scope
+from ...report_agent import (
+    ReportRequestError,
     build_analysis_module_artifacts,
-    build_report_generation_request,
-    generate_analysis_report,
+    execute_report_request,
+    has_report_request,
     report_preview_metadata,
 )
 from .analysis_modules import (
@@ -193,6 +195,11 @@ def _analysis_module_inputs(state: AgentState) -> dict[str, dict[str, Any]]:
 
 def _analysis_session_state(state: AgentState) -> dict[str, Any]:
     value = state.get("analysis_session", {})
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _report_request(state: AgentState) -> dict[str, Any]:
+    value = state.get("report_request", {})
     return dict(value) if isinstance(value, dict) else {}
 
 
@@ -637,7 +644,7 @@ def _analysis_bundle_system_section(state: AgentState) -> str:
             lines.append(header)
             if summary:
                 lines.append(summary)
-            handoff = item.get("documentHandoff", {})
+            handoff = item.get("displayHandoff", {})
             if isinstance(handoff, dict):
                 executive_summary = handoff.get("executiveSummary", {})
                 if isinstance(executive_summary, dict):
@@ -685,7 +692,7 @@ def _analysis_module_source_count(module_result: dict[str, Any]) -> int:
     source_references = module_result.get("sourceReferences", [])
     if isinstance(source_references, list) and source_references:
         return len(source_references)
-    handoff = module_result.get("documentHandoff", {})
+    handoff = module_result.get("displayHandoff", {})
     if not isinstance(handoff, dict):
         return 0
     executive_summary = handoff.get("executiveSummary", {})
@@ -704,12 +711,48 @@ def plan_route_node(state: AgentState):
     user_message = str(state.get("user_message", "")).strip()
     entity = str(state.get("entity", "")).strip()
     graph_intent = str(state.get("graph_intent", "")).strip()
+    report_request = _report_request(state)
     enabled_analysis_modules = _enabled_analysis_modules(state)
     kg_enabled = bool(state.get("kg_enabled", False))
     rag_enabled = bool(state.get("rag_enabled", False))
     web_enabled = bool(state.get("web_enabled", False))
     mcp_enabled = bool(state.get("mcp_enabled", False))
     conversation_context = _conversation_context(state)
+
+    if has_report_request(report_request):
+        return {
+            "intent": "report_generation",
+            "needs_search": False,
+            "needs_mcp": False,
+            "needs_clarification": False,
+            "clarification_question": "",
+            "missing_fields": [],
+            "search_request": {},
+            "mcp_request": {},
+            "search_result": {},
+            "mcp_result": {},
+            "analysis_results": {},
+            "analysis_handoff_bundle": {},
+            "analysis_missing_fields": [],
+            "analysis_completed": False,
+            "analysis_unsupported_modules": [],
+            "analysis_module_artifacts": [],
+            "analysis_report": {},
+            "analysis_report_artifact": {},
+            "search_completed": False,
+            "mcp_completed": False,
+            "rag_chunks": [],
+            "rag_citations": [],
+            "rag_no_evidence": False,
+            "rag_debug": {},
+            "debug": {
+                **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
+                "reportPlanner": {
+                    "request": report_request,
+                    "conversationContextPresent": bool(conversation_context),
+                },
+            },
+        }
 
     if enabled_analysis_modules:
         return {
@@ -729,10 +772,8 @@ def plan_route_node(state: AgentState):
             "analysis_completed": False,
             "analysis_unsupported_modules": [],
             "analysis_module_artifacts": [],
-            "analysis_report_request": {},
             "analysis_report": {},
             "analysis_report_artifact": {},
-            "analysis_report_generated": False,
             "search_completed": False,
             "mcp_completed": False,
             "rag_chunks": [],
@@ -844,6 +885,8 @@ def plan_route_node(state: AgentState):
 def route_after_plan(state: AgentState) -> str:
     if state.get("needs_clarification", False):
         return "clarify"
+    if has_report_request(_report_request(state)):
+        return "report_generation"
     if _enabled_analysis_modules(state):
         return "analysis_intake"
     if state.get("needs_search", False) and not state.get("search_completed", False):
@@ -1099,7 +1142,6 @@ def analysis_modules_node(state: AgentState):
         "bundleLimitations": list(bundle.get("limitations", [])) if isinstance(bundle.get("limitations", []), list) else [],
     }
     module_artifacts: list[dict[str, Any]] = []
-    report_request: dict[str, Any] = {}
     if session["status"] == "completed" and not needs_clarification:
         module_artifacts = build_analysis_module_artifacts(
             analysis_session=session,
@@ -1107,15 +1149,7 @@ def analysis_modules_node(state: AgentState):
             module_ids=enabled_modules,
             composer_writer=state.get("main_llm"),
         )
-        report_request = build_report_generation_request(
-            analysis_session=session,
-            module_artifacts=module_artifacts,
-        )
-        debug_payload["moduleArtifactIds"] = [
-            str(item.get("artifactId", "")).strip()
-            for item in module_artifacts
-            if isinstance(item, dict) and str(item.get("artifactId", "")).strip()
-        ]
+        debug_payload["moduleArtifactCount"] = len(module_artifacts)
     return {
         "enabled_analysis_modules": enabled_modules,
         "analysis_session": session,
@@ -1125,10 +1159,8 @@ def analysis_modules_node(state: AgentState):
         "analysis_completed": not needs_clarification,
         "analysis_unsupported_modules": unsupported_modules,
         "analysis_module_artifacts": module_artifacts,
-        "analysis_report_request": report_request,
         "analysis_report": {},
         "analysis_report_artifact": {},
-        "analysis_report_generated": False,
         "needs_clarification": needs_clarification,
         "clarification_question": clarification_question,
         "missing_fields": ["analysis.modules"] if needs_clarification else [],
@@ -1140,30 +1172,42 @@ def analysis_modules_node(state: AgentState):
 
 
 def report_generation_node(state: AgentState):
-    module_results = state.get("analysis_results", {})
-    if not isinstance(module_results, dict):
-        module_results = {}
-    handoff_bundle = state.get("analysis_handoff_bundle", {})
-    if not isinstance(handoff_bundle, dict):
-        handoff_bundle = {}
-    analysis_session = _analysis_session_state(state)
+    report_request = _report_request(state)
     try:
-        artifact = generate_analysis_report(
-            analysis_session=analysis_session,
-            handoff_bundle=handoff_bundle,
-            module_results=module_results,
-            report_writer=state.get("main_llm"),
-        )
-    except Exception as exc:
+        if not has_report_request(report_request):
+            artifact = None
+        else:
+            with session_scope() as db:
+                artifact = execute_report_request(
+                    db,
+                    user_id=int(state.get("user_id", 0) or 0),
+                    workspace_id=str(state.get("workspace_id", "") or "").strip() or "default",
+                    request=report_request,
+                    report_writer=state.get("main_llm"),
+                )
+    except ReportRequestError as exc:
         return {
             "analysis_report": {},
             "analysis_report_artifact": {},
-            "analysis_report_generated": False,
             "debug": {
                 **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
                 "analysisReport": {
                     "status": "failed",
                     "error": str(exc),
+                    "request": report_request,
+                },
+            },
+        }
+    except Exception as exc:
+        return {
+            "analysis_report": {},
+            "analysis_report_artifact": {},
+            "debug": {
+                **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
+                "analysisReport": {
+                    "status": "failed",
+                    "error": str(exc),
+                    "request": report_request,
                 },
             },
         }
@@ -1171,7 +1215,6 @@ def report_generation_node(state: AgentState):
         return {
             "analysis_report": {},
             "analysis_report_artifact": {},
-            "analysis_report_generated": False,
             "debug": {
                 **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
                 "analysisReport": {"status": "skipped"},
@@ -1181,13 +1224,13 @@ def report_generation_node(state: AgentState):
     return {
         "analysis_report": metadata,
         "analysis_report_artifact": artifact,
-        "analysis_report_generated": True,
         "debug": {
             **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
             "analysisReport": {
                 "status": metadata.get("status", ""),
                 "reportId": metadata.get("reportId", ""),
                 "title": metadata.get("title", ""),
+                "request": report_request,
             },
         },
     }

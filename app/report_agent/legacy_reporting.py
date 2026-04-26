@@ -5,13 +5,13 @@ import html
 import json
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .display_composition import compose_display_markdown
+from ..agent.display_composition import compose_display_markdown
 from ..models import AnalysisModuleArtifact, AnalysisReport
 
 REPORT_ARTIFACT_SCHEMA_VERSION = "analysis_report_artifact.v1"
@@ -341,7 +341,7 @@ def generate_analysis_report(
         return None
 
     report_id = _new_report_id()
-    generated_at = _format_datetime(datetime.utcnow())
+    generated_at = _format_datetime(datetime.now(UTC))
     shared_summary = _dict_value(handoff_bundle.get("sharedInputSummary"))
     session_payload = _dict_value(handoff_bundle.get("analysisSession") or analysis_session)
     title = _report_title(shared_summary, included_results)
@@ -1687,28 +1687,6 @@ def build_analysis_module_artifacts(
     return artifacts
 
 
-def build_report_generation_request(
-    *,
-    analysis_session: dict[str, Any],
-    module_artifacts: list[dict[str, Any]],
-) -> dict[str, Any]:
-    artifact_ids = [_clean_text(item.get("artifactId")) for item in module_artifacts if isinstance(item, dict)]
-    artifact_ids = [item for item in artifact_ids if item]
-    if not artifact_ids:
-        return {}
-    session_payload = _dict_value(analysis_session)
-    return _drop_empty(
-        {
-            "requestId": f"rreq_{uuid.uuid4().hex[:24]}",
-            "analysisSessionId": _clean_text(session_payload.get("sessionId")),
-            "analysisSessionRevision": _safe_int(session_payload.get("revision"), default=0),
-            "moduleArtifactIds": artifact_ids,
-            "renderStyles": report_render_styles_metadata(),
-            "defaultRenderStyle": DEFAULT_REPORT_RENDER_STYLE,
-        }
-    )
-
-
 def save_analysis_module_artifacts(
     db: Session,
     *,
@@ -1721,7 +1699,7 @@ def save_analysis_module_artifacts(
 ) -> list[AnalysisModuleArtifact]:
     rows: list[AnalysisModuleArtifact] = []
     session_payload = _dict_value(analysis_session)
-    now = datetime.utcnow()
+    now = datetime.now(UTC).replace(tzinfo=None)
     for artifact in artifacts:
         if not isinstance(artifact, dict):
             continue
@@ -1818,60 +1796,6 @@ def get_analysis_module_artifacts_by_ids(
     return [row_by_id[artifact_id] for artifact_id in clean_ids if artifact_id in row_by_id]
 
 
-def generate_analysis_report_from_module_artifacts(
-    module_artifacts: list[AnalysisModuleArtifact],
-    *,
-    render_style: str = DEFAULT_REPORT_RENDER_STYLE,
-    report_writer: Any | None = None,
-) -> dict[str, Any] | None:
-    rows = [row for row in module_artifacts if row.markdown_body or row.text_body]
-    if not rows:
-        return None
-    clean_style = normalize_report_render_style(render_style)
-    restored_module_results = _restore_module_results_from_artifact_rows(rows)
-    restored_handoff_bundle = _restore_handoff_bundle_from_artifact_rows(rows)
-    missing_structured_inputs = _missing_structured_report_inputs(rows, restored_module_results)
-    if not missing_structured_inputs and restored_module_results and restored_handoff_bundle.get("enabledModules"):
-        artifact = generate_analysis_report(
-            analysis_session={
-                "sessionId": rows[0].analysis_session_id or "",
-                "revision": int(rows[0].analysis_session_revision or 0),
-                "enabledModules": restored_handoff_bundle.get("enabledModules", []),
-            },
-            handoff_bundle=restored_handoff_bundle,
-            module_results=restored_module_results,
-            report_writer=report_writer,
-            render_style=clean_style,
-        )
-        if artifact:
-            artifact["sourceModuleArtifactIds"] = [row.artifact_id for row in rows]
-    else:
-        artifact = _artifact_report_from_missing_structured_inputs(
-            rows,
-            missing_inputs=missing_structured_inputs,
-            render_style=clean_style,
-        )
-    if not artifact:
-        artifact = _artifact_report_from_missing_structured_inputs(
-            rows,
-            missing_inputs=missing_structured_inputs or [
-                {
-                    "artifactId": _clean_text(row.artifact_id),
-                    "moduleId": _clean_text(row.module_id),
-                    "title": _clean_text(row.title) or _clean_text(row.module_id) or "未命名模块",
-                    "reason": "missing_structured_sources",
-                }
-                for row in rows
-            ],
-            render_style=clean_style,
-        )
-    artifact["renderStyle"] = clean_style
-    artifact["sourceModuleArtifactIds"] = [row.artifact_id for row in rows]
-    artifact["downloadMetadata"] = report_download_metadata(_clean_text(artifact.get("reportId")))
-    artifact["preview"] = bounded_report_preview(_clean_text(artifact.get("markdownBody")))
-    return artifact
-
-
 def save_analysis_report_artifact(
     db: Session,
     *,
@@ -1887,7 +1811,7 @@ def save_analysis_report_artifact(
     if not report_id:
         return None
     scope = _dict_value(artifact.get("scope"))
-    now = datetime.utcnow()
+    now = datetime.now(UTC).replace(tzinfo=None)
     row = db.execute(select(AnalysisReport).where(AnalysisReport.report_id == report_id)).scalar_one_or_none()
     if row is None:
         row = AnalysisReport(
@@ -1933,6 +1857,7 @@ def get_analysis_report(
 
 def analysis_report_to_payload(row: AnalysisReport, *, include_body: bool = False) -> dict[str, Any]:
     artifact = _dict_value(row.artifact_json)
+    paginated_bundle = _dict_value(artifact.get("paginatedReportBundle"))
     metadata = normalized_report_download_metadata(row.report_id, _dict_value(row.download_metadata_json))
     render_style = normalize_report_render_style(artifact.get("renderStyle") or _dict_value(artifact.get("rendering")).get("style"))
     payload = _drop_empty(
@@ -1945,6 +1870,10 @@ def analysis_report_to_payload(row: AnalysisReport, *, include_body: bool = Fals
             "downloadUrls": metadata["downloadUrls"],
             "previewUrl": report_preview_url(row.report_id),
             "renderStyle": render_style,
+            "bundleSchemaVersion": _clean_text(paginated_bundle.get("schemaVersion")),
+            "renderProfile": _dict_value(paginated_bundle.get("renderProfile")),
+            "exportManifest": _dict_value(paginated_bundle.get("exportManifest")),
+            "pageCount": len(_list_of_dicts(paginated_bundle.get("pages"))) if paginated_bundle else 0,
             "regeneration": report_regeneration_metadata(row.report_id),
             "analysisSession": {
                 "sessionId": row.analysis_session_id,
@@ -2021,12 +1950,22 @@ def render_report_pdf(
     markdown_body: str | None = None,
     forbidden_values: list[str] | None = None,
 ) -> bytes:
+    artifact = _dict_value(artifact)
+    paginated_bundle = _dict_value(artifact.get("paginatedReportBundle"))
+    if paginated_bundle:
+        from ..report_agent.renderers import render_bundle_pdf
+
+        pdf_bytes = render_bundle_pdf(paginated_bundle)
+        validation_errors = validate_report_pdf_bytes(pdf_bytes, forbidden_values=forbidden_values)
+        if validation_errors:
+            raise PublishedReportValidationError("；".join(validation_errors[:5]))
+        return pdf_bytes
+
     try:
         import fitz
     except ImportError as exc:
         raise RuntimeError("pdf rendering requires pymupdf dependency") from exc
 
-    artifact = _dict_value(artifact)
     markdown_body = _clean_text(markdown_body if markdown_body is not None else artifact.get("markdownBody"))
     if not markdown_body:
         markdown_body = render_report_markdown(artifact)
@@ -3808,7 +3747,7 @@ def _artifact_report_from_missing_structured_inputs(
 ) -> dict[str, Any]:
     report_id = _new_report_id()
     title = "综合分析报告（结构化输入不足）"
-    generated_at = _format_datetime(datetime.utcnow())
+    generated_at = _format_datetime(datetime.now(UTC))
     shared_summary = _shared_summary_from_module_rows(rows)
     scope = {
         "targetCompany": shared_summary.get("enterpriseName", ""),

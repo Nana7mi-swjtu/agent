@@ -12,11 +12,11 @@ from .schemas import (
     SourceDocument,
 )
 
-HANDOFF_SCHEMA_VERSION = "robotics_document_handoff.v1"
+DISPLAY_HANDOFF_SCHEMA_VERSION = "robotics_display_handoff.v1"
 DOCUMENT_TYPE = "robotics_risk_opportunity_brief"
 
 
-def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
+def build_display_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
     reader_packet = result.reader_packet
     fact_tables = [dict(item) for item in result.fact_tables if isinstance(item, dict)]
     chart_candidates = [dict(item) for item in result.chart_candidates if isinstance(item, dict)]
@@ -69,7 +69,7 @@ def build_document_handoff(result: RoboticsInsightResult) -> dict[str, Any]:
 
     return _drop_empty(
         {
-            "schemaVersion": HANDOFF_SCHEMA_VERSION,
+            "schemaVersion": DISPLAY_HANDOFF_SCHEMA_VERSION,
             "documentType": DOCUMENT_TYPE,
             "recommendedFormat": "markdown",
             "title": f"{company_name}风险与机会洞察简报",

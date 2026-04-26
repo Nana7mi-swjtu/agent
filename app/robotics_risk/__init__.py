@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .document_handoff import build_document_handoff
+from .display_handoff import build_display_handoff
 from .schemas import RoboticsInsightRequest, RoboticsInsightResult, SourceRetrievalDiagnostic
 from .service import RoboticsInsightValidationError, analyze_robotics_enterprise_risk_opportunity
 from .subagent import (
@@ -23,6 +23,6 @@ __all__ = [
     "RoboticsSubagentEnterprise",
     "RoboticsSubagentSourceControls",
     "analyze_robotics_enterprise_risk_opportunity",
-    "build_document_handoff",
+    "build_display_handoff",
     "run_robotics_risk_subagent",
 ]

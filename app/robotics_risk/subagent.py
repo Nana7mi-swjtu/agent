@@ -13,7 +13,7 @@ from .adapters import (
     GovPolicyAdapter,
     SourceCollectionResult,
 )
-from .document_handoff import build_document_handoff
+from .display_handoff import build_display_handoff
 from .repository import SOURCE_BIDDING, SOURCE_CNINFO, SOURCE_POLICY
 from .run_repository import RoboticsInsightRunRepository
 from .schemas import RoboticsInsightRequest, RoboticsInsightResult
@@ -137,7 +137,7 @@ class RoboticsRiskSubagentOutput:
     run_id: str = ""
     target_company: dict[str, Any] = field(default_factory=dict)
     result: dict[str, Any] = field(default_factory=dict)
-    document_handoff: dict[str, Any] = field(default_factory=dict)
+    display_handoff: dict[str, Any] = field(default_factory=dict)
     limitations: list[str] = field(default_factory=list)
     source_references: list[dict[str, Any]] = field(default_factory=list)
     source_diagnostics: list[dict[str, Any]] = field(default_factory=list)
@@ -152,7 +152,7 @@ class RoboticsRiskSubagentOutput:
                 "runId": self.run_id,
                 "targetCompany": self.target_company,
                 "result": self.result,
-                "documentHandoff": self.document_handoff,
+                "displayHandoff": self.display_handoff,
                 "limitations": list(self.limitations),
                 "sourceReferences": list(self.source_references),
                 "sourceDiagnostics": list(self.source_diagnostics),
@@ -220,13 +220,13 @@ def run_robotics_risk_subagent(
         status = _result_status(result)
         result_payload = result.to_dict()
         result_payload["status"] = status
-        handoff_payload = build_document_handoff(result)
-        handoff_payload["runId"] = run_id
+        display_payload = build_display_handoff(result)
+        display_payload["runId"] = run_id
         if repository is not None:
             repository.complete_run(
                 run_id=run_id,
                 result_payload=result_payload,
-                handoff_payload=handoff_payload,
+                display_payload=display_payload,
                 status=status,
                 completed_at=_now(now_factory),
             )
@@ -235,7 +235,7 @@ def run_robotics_risk_subagent(
             run_id=run_id,
             target_company=dict(result.target_company),
             result=result_payload,
-            document_handoff=handoff_payload,
+            display_handoff=display_payload,
             limitations=list(result.limitations),
             source_references=_source_references(result),
             source_diagnostics=[item.to_dict() for item in result.source_diagnostics],
@@ -342,7 +342,7 @@ def _failed_output(
                 run_id=run_id,
                 error_message=error_message,
                 result_payload={"status": "failed", "limitations": limitations},
-                handoff_payload={"limitations": limitations},
+                display_payload={"limitations": limitations},
                 completed_at=_now(now_factory),
             )
         except Exception as persist_exc:

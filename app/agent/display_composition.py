@@ -32,7 +32,7 @@ def load_display_composition_prompt() -> str:
     if prompt_path.exists():
         return prompt_path.read_text(encoding="utf-8")
     return """
-你是一个展示编排 agent。你的唯一任务是基于输入的 `documentHandoff`，生成一份面向用户展示的 Markdown 文档。
+你是一个展示编排 agent。你的唯一任务是基于输入的 `displayHandoff`，生成一份面向用户展示的 Markdown 文档。
 
 你的职责是“编排展示”，不是“生成新信息”。
 你不是分析 agent，不是研究 agent，不是事实补全 agent。
@@ -40,8 +40,8 @@ def load_display_composition_prompt() -> str:
 
 【输入边界】
 
-- 你唯一可信的信息来源是 `documentHandoff`。
-- 你只能使用 `documentHandoff` 中已有的：
+- 你唯一可信的信息来源是 `displayHandoff`。
+- 你只能使用 `displayHandoff` 中已有的：
   - `executiveSummary`
   - `recommendedSections`
   - `opportunitySections`
@@ -132,18 +132,18 @@ def load_display_composition_prompt() -> str:
 
 
 def compose_display_markdown(
-    document_handoff: Any,
+    display_handoff: Any,
     *,
     writer: Any | None = None,
 ) -> dict[str, Any]:
-    handoff = _dict_value(document_handoff)
+    handoff = _dict_value(display_handoff)
     prompt_version = DISPLAY_COMPOSITION_PROMPT_VERSION
     if not handoff:
         return {
             "markdown": "",
             "displayComposition": {
                 "mode": "missing_handoff",
-                "source": "documentHandoff",
+                "source": "displayHandoff",
                 "promptVersion": prompt_version,
                 "validationErrors": ["missing_handoff"],
             },
@@ -159,7 +159,7 @@ def compose_display_markdown(
                     "markdown": composed_markdown,
                     "displayComposition": {
                         "mode": "composed",
-                        "source": "documentHandoff",
+                        "source": "displayHandoff",
                         "promptVersion": prompt_version,
                         "validationErrors": [],
                     },
@@ -172,7 +172,7 @@ def compose_display_markdown(
             "markdown": handoff_fallback,
             "displayComposition": {
                 "mode": "fallback_handoff",
-                "source": "documentHandoff",
+                "source": "displayHandoff",
                 "promptVersion": prompt_version,
                 "validationErrors": validation_errors,
             },
@@ -180,13 +180,13 @@ def compose_display_markdown(
     )
 
 
-def build_display_composition_packet(document_handoff: Any) -> dict[str, Any]:
-    handoff = _dict_value(document_handoff)
+def build_display_composition_packet(display_handoff: Any) -> dict[str, Any]:
+    handoff = _dict_value(display_handoff)
     fact_tables = _list_of_dicts(handoff.get("factTables"))
     rendered_assets = _list_of_dicts(handoff.get("renderedAssets"))
     return _drop_empty(
         {
-            "documentHandoff": {
+            "displayHandoff": {
                 "title": _clean_text(handoff.get("title")),
                 "executiveSummary": _drop_empty(
                     {
@@ -251,12 +251,12 @@ def build_display_composition_packet(document_handoff: Any) -> dict[str, Any]:
 
 def validate_display_markdown(
     markdown: str,
-    document_handoff: Any,
+    display_handoff: Any,
     *,
     allow_placeholders: bool = True,
 ) -> list[str]:
     clean = _clean_text(markdown)
-    handoff = _dict_value(document_handoff)
+    handoff = _dict_value(display_handoff)
     if not clean:
         return ["empty_output"]
     errors: list[str] = []
@@ -309,8 +309,8 @@ def _invoke_writer(writer: Any, packet: dict[str, Any]) -> str:
     return _strip_markdown_fence(text)
 
 
-def _handoff_text_fallback(document_handoff: dict[str, Any]) -> str:
-    handoff = _dict_value(document_handoff)
+def _handoff_text_fallback(display_handoff: dict[str, Any]) -> str:
+    handoff = _dict_value(display_handoff)
     if not handoff:
         return ""
     title = _clean_text(handoff.get("title")) or "模块分析结果"
