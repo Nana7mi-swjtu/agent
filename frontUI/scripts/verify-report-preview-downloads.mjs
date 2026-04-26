@@ -11,30 +11,33 @@ assert.match(messageItemSource, /import \{ buildApiUrl \} from "@\/shared\/api\/
 assert.match(messageItemSource, /const resolveReportDownloadUrl = \(url\) =>/);
 assert.match(messageItemSource, /cleanUrl\.startsWith\("\/api\/"\) \? buildApiUrl\(cleanUrl\) : cleanUrl/);
 assert.match(messageItemSource, /const reportPreviewUrl = \(message\) => resolveReportDownloadUrl\(reportForMessage\(message\)\?\.previewUrl\)/);
-assert.match(messageItemSource, /const reportRequestForMessage = \(message\) =>/);
-assert.match(messageItemSource, /renderStylesForRequest\(reportRequestForMessage\(message\)\)/);
-assert.match(messageItemSource, /runReportGeneration\(message\)/);
-assert.match(messageItemSource, /runReportRegeneration\(message\)/);
 assert.match(messageItemSource, /完整预览/);
 assert.match(messageItemSource, /下载 \{\{ item\.label \}\}/);
-assert.match(messageItemSource, /重新生成/);
 assert.match(messageItemSource, /\{ key: "pdf", label: "PDF", url: resolveReportDownloadUrl\(urls\.pdf\) \}/);
 assert.match(messageItemSource, /filter\(\(item\) => item\.url\)/);
+assert.doesNotMatch(messageItemSource, /analysisReportRequest|runReportGeneration|runReportRegeneration|重新生成/);
 assert.doesNotMatch(messageItemSource, /report type|reportType|structureOptions|sectionOptions|moduleSubset|tableOfContents/i);
 
 const workspaceApiSource = read("src/entities/workspace/api/index.js");
 assert.match(workspaceApiSource, /import \{ apiRequest, buildApiUrl, streamApiRequest \} from "@\/shared\/api\/client"/);
+assert.match(workspaceApiSource, /postWorkspaceReport = \(payload = \{\}\) =>/);
 assert.match(workspaceApiSource, /buildAnalysisReportDownloadUrl = \(reportId, format = "pdf", workspaceId = "default"\)/);
 assert.match(workspaceApiSource, /buildAnalysisReportPreviewUrl = \(reportId, format = "pdf", workspaceId = "default"\)/);
-assert.match(workspaceApiSource, /postAnalysisReportGeneration =/);
-assert.match(workspaceApiSource, /postAnalysisReportRegeneration =/);
+assert.doesNotMatch(workspaceApiSource, /postAnalysisReportGeneration =/);
+assert.doesNotMatch(workspaceApiSource, /postAnalysisReportRegeneration =/);
 assert.match(workspaceApiSource, /buildAnalysisReportDownloadUrl[\s\S]*buildApiUrl/);
 assert.match(workspaceApiSource, /buildAnalysisReportAssetDownloadUrl[\s\S]*buildApiUrl/);
 
 const messagingSource = read("src/features/chat/model/useChatMessaging.js");
 assert.match(messagingSource, /analysisModuleArtifacts/);
-assert.match(messagingSource, /reportGenerationRequest/);
-assert.match(messagingSource, /全部分析模块已完成。请选择渲染风格后生成综合报告。/);
+assert.doesNotMatch(messagingSource, /analysisReportRequest|runReportAction = async|全部分析模块已完成。请选择渲染风格后生成综合报告。/);
+
+const sessionSource = read("src/entities/chat/lib/session.js");
+assert.match(sessionSource, /bundleSchemaVersion: String\(raw\.bundleSchemaVersion \|\| ""\)/);
+assert.match(sessionSource, /renderProfile: raw\.renderProfile && typeof raw\.renderProfile === "object" \? raw\.renderProfile : null/);
+assert.match(sessionSource, /exportManifest: raw\.exportManifest && typeof raw\.exportManifest === "object" \? raw\.exportManifest : null/);
+assert.match(sessionSource, /pageCount: Number\.isInteger\(raw\.pageCount\) \? raw\.pageCount : 0/);
+assert.doesNotMatch(sessionSource, /analysisReportRequest/);
 
 const markdownSource = read("src/shared/lib/markdown.js");
 assert.match(markdownSource, /import \{ buildApiUrl \} from "@\/shared\/api\/client"/);

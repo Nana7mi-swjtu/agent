@@ -21,7 +21,7 @@ from app.robotics_risk import (
     RoboticsInsightRequest,
     RoboticsInsightValidationError,
     analyze_robotics_enterprise_risk_opportunity,
-    build_document_handoff,
+    build_display_handoff,
     run_robotics_risk_subagent,
 )
 from app.robotics_risk.adapters import SourceCollectionResult, SourceUnavailableError
@@ -655,7 +655,7 @@ def test_source_failures_degrade_independently_and_record_limitations():
     assert payload["opportunities"]
 
 
-def test_document_handoff_payload_contains_sections_citations_and_evidence():
+def test_display_handoff_payload_contains_sections_citations_and_evidence():
     result = analyze_robotics_enterprise_risk_opportunity(
         RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169"),
         adapters=[
@@ -664,7 +664,7 @@ def test_document_handoff_payload_contains_sections_citations_and_evidence():
         ],
     )
 
-    handoff = build_document_handoff(result)
+    handoff = build_display_handoff(result)
 
     assert handoff["documentType"] == "robotics_risk_opportunity_brief"
     assert handoff["title"] == "石头科技风险与机会洞察简报"
@@ -694,12 +694,12 @@ def test_document_handoff_payload_contains_sections_citations_and_evidence():
     assert "compactMarkdown" not in handoff
 
 
-def test_document_handoff_handles_empty_sections_and_metadata_limitations():
+def test_display_handoff_handles_empty_sections_and_metadata_limitations():
     empty_result = analyze_robotics_enterprise_risk_opportunity(
         RoboticsInsightRequest(enterprise_name="石头科技", stock_code="688169"),
         adapters=[],
     )
-    empty_handoff = build_document_handoff(empty_result)
+    empty_handoff = build_display_handoff(empty_result)
 
     assert empty_result.status == "no_evidence"
     assert not empty_result.opportunities
@@ -726,7 +726,7 @@ def test_document_handoff_handles_empty_sections_and_metadata_limitations():
         adapters=[BiddingProcurementAdapter(documents=[metadata_only])],
     )
 
-    handoff = build_document_handoff(result)
+    handoff = build_display_handoff(result)
 
     assert handoff["evidenceTable"][0]["metadataOnlyNote"] == "公告正文提取受限"
     assert handoff["evidenceTable"][0]["sourceId"] == "src_meta_001"
@@ -800,9 +800,9 @@ def test_robotics_subagent_valid_input_persists_run_and_handoff_without_rag_rows
 
     assert payload["status"] == "done"
     assert payload["runId"] == "run-subagent-001"
-    assert payload["documentHandoff"]["runId"] == "run-subagent-001"
+    assert payload["displayHandoff"]["runId"] == "run-subagent-001"
     assert payload["sourceDiagnostics"]
-    assert payload["documentHandoff"]["sourceDiagnostics"]
+    assert payload["displayHandoff"]["sourceDiagnostics"]
     assert payload["normalizedInput"]["upstreamEvidence"][0]["title"] == "搜索摘要"
     row = db_session.query(RoboticsInsightRun).filter_by(run_id="run-subagent-001").one()
     assert row.status == "done"
@@ -811,7 +811,7 @@ def test_robotics_subagent_valid_input_persists_run_and_handoff_without_rag_rows
     assert row.result_json["sourceDiagnostics"]
     assert row.handoff_json["documentType"] == "robotics_risk_opportunity_brief"
     stored = RoboticsInsightRunRepository(db_session).get_run_payload("run-subagent-001")
-    assert stored["documentHandoff"]["title"] == "石头科技风险与机会洞察简报"
+    assert stored["displayHandoff"]["title"] == "石头科技风险与机会洞察简报"
     assert stored["sourceDiagnostics"]
     assert RoboticsInsightRunRepository(db_session).get_run_payload("missing-run") is None
     assert db_session.query(RagDocument).count() == 0

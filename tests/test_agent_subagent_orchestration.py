@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 
 from app.agent.analysis_session import create_transient_analysis_session
@@ -28,18 +29,16 @@ from app.agent.graph.nodes import (
     search_subagent_node,
 )
 from app.agent.display_composition import DISPLAY_COMPOSITION_PROMPT_VERSION, load_display_composition_prompt
-from app.agent.reporting import (
+from app.report_agent import build_analysis_module_artifacts
+from app.report_agent.legacy_reporting import (
     ReportContributionValidationError,
-    build_analysis_module_artifacts,
     build_robotics_domain_analysis,
     build_robotics_report_contribution,
     generate_analysis_report,
-    generate_analysis_report_from_module_artifacts,
     normalize_visual_asset,
     render_report_pdf,
     validate_report_contribution_traceability,
 )
-from app.models import AnalysisModuleArtifact
 from app.robotics_risk.cache import RoboticsEvidenceCache
 
 
@@ -196,7 +195,7 @@ def test_partial_analysis_module_without_sources_summarizes_evidence_gap():
                     "risk": "未发现明确风险信号。",
                 }
             },
-            "documentHandoff": {"executiveSummary": {"sourceCount": 0}},
+            "displayHandoff": {"executiveSummary": {"sourceCount": 0}},
             "limitations": ["未检索到可用于风险机会洞察的来源文档。"],
             "sourceReferences": [],
         },
@@ -217,7 +216,7 @@ def test_analysis_bundle_system_section_blocks_no_evidence_inference():
                         "status": "partial",
                         "summary": "未检索到可用于风险机会洞察的来源文档。",
                         "sourceReferences": [],
-                        "documentHandoff": {"executiveSummary": {"sourceCount": 0}},
+                        "displayHandoff": {"executiveSummary": {"sourceCount": 0}},
                     }
                 ],
                 "limitations": ["未检索到可用于风险机会洞察的来源文档。"],
@@ -757,7 +756,7 @@ def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
                 "opportunities": [{"id": "sig_policy_001", "source_ids": ["src_policy_001"]}],
                 "events": [{"id": "evt_policy_001", "source_document_id": "src_policy_001"}],
             },
-            "documentHandoff": {
+            "displayHandoff": {
                 "title": "石头科技风险机会简报",
                 "executiveSummary": {"headline": "政策与订单是当前主线。"},
                 "readerPacket": {
@@ -856,12 +855,10 @@ def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
     assert bundle["analysisSession"]["revision"] == 2
     assert bundle["sharedInputSummary"]["enterpriseName"] == "石头科技"
     assert bundle["moduleRunIds"]["robotics_risk"] == "run-robotics-001"
-    assert bundle["documentHandoffs"]["robotics_risk"]["title"] == "石头科技风险机会简报"
+    assert bundle["displayHandoffs"]["robotics_risk"]["title"] == "石头科技风险机会简报"
     assert bundle["moduleReaderPackets"]["robotics_risk"]["schemaVersion"] == "robotics_reader_packet.v1"
     assert bundle["moduleTabularArtifacts"]["robotics_risk"]["factTables"][0]["tableId"] == "opportunity_themes"
     assert bundle["limitations"] == ["公告样本有限"]
-    assert result["analysis_results"]["robotics_risk"]["domainAnalysis"]["moduleId"] == "robotics_risk"
-    assert result["analysis_results"]["robotics_risk"]["reportContribution"]["moduleId"] == "robotics_risk"
     assert result["analysis_results"]["robotics_risk"]["readerPacket"]["schemaVersion"] == "robotics_reader_packet.v1"
     assert result["analysis_results"]["robotics_risk"]["evidenceReferences"][0]["title"] == "机器人产业支持政策"
     assert result["analysis_results"]["robotics_risk"]["factTables"][0]["tableId"] == "opportunity_themes"
@@ -869,7 +866,7 @@ def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
     assert result["analysis_results"]["robotics_risk"]["renderedAssets"][0]["assetId"] == "asset_chart_theme_001"
     assert result["analysis_results"]["robotics_risk"]["visualSummaries"][0]["title"] == "机会主题强度分布"
     assert result["analysis_results"]["robotics_risk"]["result"]["events"][0]["id"] == "evt_policy_001"
-    assert result["analysis_report_generated"] is False
+    assert result["analysis_report"] == {}
     assert result["analysis_report"] == {}
     assert result["analysis_module_artifacts"][0]["moduleId"] == "robotics_risk"
     assert result["analysis_module_artifacts"][0]["moduleRunId"] == "run-robotics-001"
@@ -879,9 +876,6 @@ def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
     assert result["analysis_module_artifacts"][0]["chartCandidates"][0]["chartId"] == "chart_theme_001"
     assert result["analysis_module_artifacts"][0]["renderedAssets"][0]["assetId"] == "asset_chart_theme_001"
     assert result["analysis_module_artifacts"][0]["visualSummaries"][0]["title"] == "机会主题强度分布"
-    assert result["analysis_report_request"]["moduleArtifactIds"] == [
-        result["analysis_module_artifacts"][0]["artifactId"]
-    ]
 
 
 def test_analysis_modules_node_passes_main_llm_to_module_runtime_input(monkeypatch):
@@ -949,7 +943,7 @@ def test_build_analysis_module_artifacts_uses_fixed_prompt_and_composed_snapshot
                 "runId": "run-display-001",
                 "summary": "政策与订单节奏需要联动跟踪。",
                 "result": {"briefMarkdown": "# 旧版模块 markdown\n\n旧版兜底正文。"},
-                "documentHandoff": {
+                "displayHandoff": {
                     "title": "石头科技风险与机会洞察简报",
                     "executiveSummary": {
                         "headline": "政策与订单是当前主线。",
@@ -1013,7 +1007,7 @@ def test_build_analysis_module_artifacts_falls_back_when_composed_snapshot_is_in
                 "status": "done",
                 "runId": "run-display-002",
                 "result": {"briefMarkdown": "# 旧版模块 markdown\n\n旧版兜底正文。"},
-                "documentHandoff": {
+                "displayHandoff": {
                     "title": "石头科技风险与机会洞察简报",
                     "factTables": [
                         {
@@ -1347,8 +1341,7 @@ def test_generate_analysis_report_cleans_polluted_subject_and_synthesizes_judgem
     assert "已识别 1 项需要关注的判断方向" in artifact["markdownBody"]
 
 
-def test_report_generation_node_passes_main_llm_to_report_writer():
-    inputs = _basic_report_inputs()
+def test_report_generation_node_generates_only_for_explicit_report_request(monkeypatch):
     writer = _FakeReportWriter(
         json.dumps(
             {
@@ -1369,21 +1362,37 @@ def test_report_generation_node_passes_main_llm_to_report_writer():
             ensure_ascii=False,
         )
     )
+    monkeypatch.setattr(
+        "app.agent.graph.nodes.execute_report_request",
+        lambda db, *, user_id, workspace_id, request, report_writer=None: {
+            "reportId": "arpt_test_001",
+            "title": "石头科技可下载报告",
+            "status": "completed",
+            "preview": "报告正文已由写作模型面向读者重写。",
+            "previewExcerpt": "报告正文已由写作模型面向读者重写。",
+        },
+    )
+    @contextmanager
+    def _fake_session_scope():
+        yield object()
+
+    monkeypatch.setattr("app.agent.graph.nodes.session_scope", _fake_session_scope)
 
     result = report_generation_node(
         {
-            "analysis_session": inputs["analysis_session"],
-            "analysis_handoff_bundle": inputs["handoff_bundle"],
-            "analysis_results": inputs["module_results"],
+            "user_id": 1,
+            "workspace_id": "ws-report",
+            "report_request": {
+                "sourceText": "石头科技近30天订单与政策观察。收入: 120亿元。订单机会增加。",
+            },
             "main_llm": writer,
             "debug": {},
         }
     )
 
-    assert writer.calls
-    assert result["analysis_report_generated"] is True
-    assert result["analysis_report"]["title"] == "石头科技可下载报告"
-    assert "报告正文已由写作模型面向读者重写" in result["analysis_report"]["preview"]
+    assert result["analysis_report"]["reportId"]
+    assert result["analysis_report"]["title"]
+    assert result["analysis_report"]["preview"]
 
 
 def test_generate_analysis_report_persists_dynamic_outline_and_render_style():
@@ -1396,46 +1405,6 @@ def test_generate_analysis_report_persists_dynamic_outline_and_render_style():
     assert artifact["semanticModel"]["chapterOutline"][2]["title"] == "关键发现"
     assert "外部环境与风险机会评估" in outline_titles
     assert artifact["document"]["chapterOutline"][3]["title"] == "外部环境与风险机会评估"
-
-
-def test_generate_analysis_report_from_module_artifacts_prefers_semantic_path():
-    inputs = _basic_report_inputs()
-    row = AnalysisModuleArtifact(
-        artifact_id="mart_semantic_001",
-        user_id=1,
-        workspace_id="ws-semantic",
-        role="investor",
-        conversation_id="conv-semantic",
-        analysis_session_id="asess_writer",
-        analysis_session_revision=3,
-        module_id="robotics_risk",
-        module_run_id="run-robotics-001",
-        title="机器人政策与订单分析",
-        status="completed",
-        content_type="text/markdown",
-        markdown_body="# 石头科技风险与机会洞察简报\n\n## 执行摘要\n\n展示快照只用于前端展示。\n\n{{table:opportunity_themes}}",
-        artifact_json={"fallbackMarkdown": "# 机器人政策与订单分析\n\n模块原文分析结果。"},
-        metadata_json={
-            "displayName": "机器人风险机会洞察",
-            "moduleResult": inputs["module_results"]["robotics_risk"],
-        },
-    )
-
-    artifact = generate_analysis_report_from_module_artifacts([row], render_style="dark_research")
-
-    assert artifact["renderStyle"] == "dark_research"
-    assert artifact["rendering"]["style"] == "dark_research"
-    assert artifact["document"]["renderStyle"] == "dark_research"
-    assert "模块原文分析结果" not in artifact["markdownBody"]
-    assert "展示快照只用于前端展示" not in artifact["markdownBody"]
-    assert "{{table:opportunity_themes}}" not in artifact["markdownBody"]
-    assert "政策支持与订单兑现存在联动机会" in artifact["markdownBody"]
-    assert "结构化表格" in artifact["markdownBody"]
-    assert "机会主题" in artifact["markdownBody"]
-    body_sections = artifact["document"]["pages"][2]["sections"]
-    grounded_tables = next(section for section in body_sections if section["id"] == "grounded_tables")
-    assert any(block["type"] == "table_block" for block in grounded_tables["blocks"])
-    assert all(flag["type"] != "structured_input_missing" for flag in artifact["qualityFlags"])
 
 
 def test_generate_analysis_report_uses_grounded_table_fallback_for_missing_visual_asset():
@@ -1490,33 +1459,6 @@ def test_generate_analysis_report_uses_grounded_table_fallback_for_missing_visua
     assert "机会主题强度分布" in artifact["htmlBody"]
     assert "图像资产不可用，已按关联结构化表格降级呈现" in artifact["htmlBody"]
     assert "政策与设备更新" in artifact["htmlBody"]
-
-
-def test_generate_analysis_report_from_module_artifacts_marks_degraded_fallback():
-    row = AnalysisModuleArtifact(
-        artifact_id="mart_fallback_001",
-        user_id=1,
-        workspace_id="ws-fallback",
-        role="investor",
-        conversation_id="conv-fallback",
-        analysis_session_id="asess_fallback",
-        analysis_session_revision=1,
-        module_id="robotics_risk",
-        module_run_id="run-fallback-001",
-        title="机器人政策与订单分析",
-        status="completed",
-        content_type="text/markdown",
-        markdown_body="# 机器人政策与订单分析\n\n模块原文分析结果。",
-        metadata_json={"displayName": "机器人风险机会洞察"},
-    )
-
-    artifact = generate_analysis_report_from_module_artifacts([row], render_style="professional")
-
-    assert artifact["status"] == "degraded"
-    assert "模块原文分析结果" not in artifact["markdownBody"]
-    assert "结构化输入" in artifact["markdownBody"]
-    assert "文本拼接回退路径" in artifact["markdownBody"]
-    assert any(flag["type"] == "structured_input_missing" for flag in artifact["qualityFlags"])
 
 
 def test_generate_analysis_report_blocks_published_internal_field_leakage():
@@ -1628,7 +1570,7 @@ def test_analysis_session_marks_stale_and_reruns_module_when_shared_slot_changes
                         "risk": f"{payload['timeRange']} 内的风险信号已汇总。",
                     }
                 },
-                "documentHandoff": {"title": f"{payload['enterpriseName']}-{payload['timeRange']}"},
+                "displayHandoff": {"title": f"{payload['enterpriseName']}-{payload['timeRange']}"},
             }
         ),
     )
