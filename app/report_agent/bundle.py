@@ -20,7 +20,7 @@ from .contracts import (
     utc_now_iso,
 )
 from .intake import intake_materials
-from .legacy_reporting import validate_published_report
+from .publication import validate_published_report
 from .normalization import normalize_materials
 from .prompts import load_default_prompts
 from .runtime import ReportRuntimeError, get_report_writer
@@ -37,7 +37,7 @@ ALLOWED_SECTION_IDS = {
     "recommendations",
 }
 PAGE_TYPE_LAYOUTS = {
-    "executive_summary": "summary_cards",
+    "executive_summary": "title_text",
     "insight": "title_text",
     "chart_analysis": "title_chart_notes",
     "table_analysis": "title_table_notes",
@@ -58,7 +58,7 @@ LEGACY_CHAPTER_BLUEPRINTS = {
     "executive_summary": {
         "title": "执行摘要",
         "pageType": "executive_summary",
-        "layout": "summary_cards",
+        "layout": "title_text",
         "sectionIds": ["executive_judgement"],
     },
     "key_findings": {
@@ -627,7 +627,7 @@ def _suggested_chapter_plan(semantic_model: dict[str, Any]) -> list[dict[str, An
                 "chapterId": "chapter_summary",
                 "title": "执行摘要",
                 "pageType": "executive_summary",
-                "layout": "summary_cards",
+                "layout": "title_text",
                 "sectionIds": ["executive_judgement"],
             }
         )
@@ -1203,24 +1203,6 @@ def _section_evidence_refs(section: dict[str, Any]) -> list[str]:
     return refs
 
 
-def _metric_cards(metrics: list[dict[str, Any]], *, limit: int = 4) -> list[dict[str, Any]]:
-    cards: list[dict[str, Any]] = []
-    for metric in metrics[:limit]:
-        value = metric.get("value")
-        if isinstance(value, float) and value.is_integer():
-            value = int(value)
-        cards.append(
-            drop_empty(
-                {
-                    "title": clean_text(metric.get("label"), limit=60) or "指标",
-                    "value": str(value),
-                    "unit": clean_text(metric.get("unit"), limit=20),
-                }
-            )
-        )
-    return cards
-
-
 def _writer_blocks_to_page_blocks(section: dict[str, Any], *, title_hint: str = "") -> list[dict[str, Any]]:
     page_blocks: list[dict[str, Any]] = []
     for block in as_list(section.get("blocks")):
@@ -1549,10 +1531,6 @@ def _compose_body_pages(
                 for ref in _section_evidence_refs(section):
                     if ref not in evidence_refs:
                         evidence_refs.append(ref)
-        if default_page_type == "executive_summary":
-            cards = _metric_cards(metrics)
-            if cards:
-                blocks = [{"type": "metric_cards", "items": cards}, *blocks]
         blocks = _ensure_chapter_narrative(blocks)
         if not blocks:
             continue

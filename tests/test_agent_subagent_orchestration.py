@@ -23,22 +23,12 @@ from app.agent.graph.nodes import (
     _analysis_bundle_system_section,
     analysis_intake_node,
     analysis_modules_node,
-    mcp_subagent_node,
     plan_route_node,
     report_generation_node,
     search_subagent_node,
 )
 from app.agent.display_composition import DISPLAY_COMPOSITION_PROMPT_VERSION, load_display_composition_prompt
 from app.report_agent import build_analysis_module_artifacts
-from app.report_agent.legacy_reporting import (
-    ReportContributionValidationError,
-    build_robotics_domain_analysis,
-    build_robotics_report_contribution,
-    generate_analysis_report,
-    normalize_visual_asset,
-    render_report_pdf,
-    validate_report_contribution_traceability,
-)
 from app.robotics_risk.cache import RoboticsEvidenceCache
 
 
@@ -118,7 +108,6 @@ def test_plan_route_requests_clarification_for_vague_search():
             "user_message": "搜索",
             "rag_enabled": True,
             "web_enabled": True,
-            "mcp_enabled": False,
         }
     )
     assert result["needs_clarification"] is True
@@ -135,7 +124,6 @@ def test_plan_route_prefers_analysis_intake_when_modules_enabled():
     )
     assert result["intent"] == "analysis"
     assert result["needs_search"] is False
-    assert result["needs_mcp"] is False
     assert result["analysis_completed"] is False
 
 
@@ -145,7 +133,6 @@ def test_plan_route_preserves_public_only_strategy_for_explicit_web_request():
             "user_message": "帮我上网搜索一下京东方这个公司的情况",
             "rag_enabled": True,
             "web_enabled": True,
-            "mcp_enabled": False,
         }
     )
     assert result["needs_search"] is True
@@ -878,7 +865,7 @@ def test_analysis_modules_node_builds_aggregate_bundle(monkeypatch):
     assert result["analysis_module_artifacts"][0]["visualSummaries"][0]["title"] == "机会主题强度分布"
 
 
-def test_analysis_modules_node_passes_main_llm_to_module_runtime_input(monkeypatch):
+def test_analysis_modules_node_passes_analysis_llm_to_module_runtime_input(monkeypatch):
     captured = {}
     writer = _FakeReportWriter("{}")
     contract = AnalysisModuleContract(
@@ -921,7 +908,8 @@ def test_analysis_modules_node_passes_main_llm_to_module_runtime_input(monkeypat
             "user_message": "请开始分析",
             "enabled_analysis_modules": ["robotics_risk"],
             "analysis_session": analysis_session,
-            "main_llm": writer,
+            "analysis_llm": writer,
+            "display_llm": writer,
             "debug": {},
         }
     )
@@ -1031,317 +1019,8 @@ def test_build_analysis_module_artifacts_falls_back_when_composed_snapshot_is_in
     assert "unknown_table:missing_table" in artifact["displayComposition"]["validationErrors"]
 
 
-def test_report_contribution_traceability_validation_rejects_unknown_refs():
-    contribution = {
-        "findings": [
-            {
-                "id": "finding_1",
-                "title": "未追溯发现",
-                "traceRefs": {"domainOutputIds": ["missing"]},
-            }
-        ]
-    }
-    domain_analysis = {"domainOutputs": [{"id": "known"}]}
-
-    try:
-        validate_report_contribution_traceability(contribution, domain_analysis)
-    except ReportContributionValidationError as exc:
-        assert "unknown trace ids" in str(exc)
-    else:
-        raise AssertionError("expected traceability validation error")
-
-
-def _basic_report_inputs():
-    return {
-        "analysis_session": {"sessionId": "asess_writer", "revision": 3, "enabledModules": ["robotics_risk"]},
-        "handoff_bundle": {
-            "analysisSession": {"sessionId": "asess_writer", "revision": 3},
-            "enabledModules": ["robotics_risk"],
-            "sharedInputSummary": {
-                "enterpriseName": "石头科技",
-                "stockCode": "688169",
-                "timeRange": "近30天",
-                "reportGoal": "形成可下载的风险机会报告",
-                "analysisFocusTags": ["政策", "订单"],
-            },
-            "moduleRunIds": {"robotics_risk": "run-robotics-001"},
-        },
-        "module_results": {
-            "robotics_risk": {
-                "moduleId": "robotics_risk",
-                "displayName": "机器人风险机会洞察",
-                "status": "done",
-                "runId": "run-robotics-001",
-                "summary": "政策支持和订单兑现节奏需要同步跟踪。",
-                "domainAnalysis": {
-                    "moduleId": "robotics_risk",
-                    "domainOutputs": [{"id": "domain_policy_order", "summary": "政策支持和订单兑现节奏需要同步跟踪。"}],
-                    "evidence": [{"id": "source_policy_001", "summary": "公开政策文件提及机器人应用支持。"}],
-                },
-                "documentHandoff": {
-                    "factTables": [
-                        {
-                            "tableId": "opportunity_themes",
-                            "title": "机会主题",
-                            "columns": [
-                                {"key": "theme", "label": "主题"},
-                                {"key": "impactScore", "label": "影响分"},
-                            ],
-                            "rows": [
-                                {
-                                    "rowId": "opp_theme_001",
-                                    "cells": {"theme": "政策与设备更新", "impactScore": 88},
-                                }
-                            ],
-                        }
-                    ]
-                },
-                "reportContribution": {
-                    "moduleId": "robotics_risk",
-                    "displayName": "机器人风险机会洞察",
-                    "status": "done",
-                    "findings": [
-                        {
-                            "id": "finding_policy_order",
-                            "kind": "opportunity",
-                            "title": "政策支持与订单兑现存在联动机会",
-                            "summary": "政策支持提升需求预期，但仍需观察订单兑现节奏。",
-                            "traceRefs": {"domainOutputIds": ["domain_policy_order"], "sourceIds": ["source_policy_001"]},
-                        }
-                    ],
-                    "evidence": [
-                        {
-                            "id": "source_policy_001",
-                            "title": "公开政策文件",
-                            "summary": "政策文件提及机器人应用支持方向。",
-                            "sourceType": "policy",
-                            "traceRefs": {"domainOutputIds": ["domain_policy_order"]},
-                        }
-                    ],
-                    "recommendationInputs": [
-                        {
-                            "id": "recommendation_policy_order",
-                            "title": "跟踪政策落地与订单兑现节奏",
-                            "summary": "围绕政策落地节点与订单公告建立复核清单。",
-                            "traceRefs": {"findingIds": ["finding_policy_order"], "sourceIds": ["source_policy_001"]},
-                        }
-                    ],
-                },
-            }
-        },
-    }
-
-
-def test_generate_analysis_report_omits_unselected_modules_and_renders_visuals():
-    visual_asset = normalize_visual_asset(
-        {
-            "assetId": "shap_001",
-            "type": "chart",
-            "subtype": "shap_summary_plot",
-            "title": "SHAP特征贡献",
-            "altText": "模型特征贡献图",
-            "renderPayload": {"text": "feature_a=0.42"},
-            "traceRefs": {"modelOutputIds": ["model_001"], "findingIds": ["bankruptcy_finding_1"]},
-            "limitations": ["模型贡献不等于现实因果。"],
-        },
-        module_id="bankruptcy_risk",
-    )
-    module_results = {
-        "bankruptcy_risk": {
-            "moduleId": "bankruptcy_risk",
-            "displayName": "企业破产风险分析",
-            "status": "done",
-            "runId": "bankruptcy_run_001",
-            "summary": "模型输出显示风险偏高。",
-            "domainAnalysis": {
-                "moduleId": "bankruptcy_risk",
-                "domainOutputs": [{"id": "domain_risk_score", "summary": "风险偏高"}],
-                "modelOutputs": [{"id": "model_001", "summary": "probability=0.78"}],
-                "visualAssets": [visual_asset],
-            },
-            "reportContribution": {
-                "moduleId": "bankruptcy_risk",
-                "displayName": "企业破产风险分析",
-                "status": "done",
-                "findings": [
-                    {
-                        "id": "bankruptcy_finding_1",
-                        "title": "破产风险偏高",
-                        "summary": "模型输出显示风险偏高。",
-                        "traceRefs": {"domainOutputIds": ["domain_risk_score"], "modelOutputIds": ["model_001"]},
-                    }
-                ],
-                "modelOutputs": [{"id": "model_001", "title": "破产概率", "summary": "probability=0.78"}],
-                "visualAssets": [visual_asset],
-                "limitations": ["模型贡献不等于现实因果。"],
-            },
-        },
-        "unselected_policy": {
-            "moduleId": "unselected_policy",
-            "displayName": "未选择政策分析",
-            "status": "done",
-            "summary": "不应进入报告。",
-        },
-    }
-
-    artifact = generate_analysis_report(
-        analysis_session={"sessionId": "asess_001", "revision": 4, "enabledModules": ["bankruptcy_risk"]},
-        handoff_bundle={
-            "analysisSession": {"sessionId": "asess_001", "revision": 4},
-            "enabledModules": ["bankruptcy_risk"],
-            "sharedInputSummary": {"enterpriseName": "测试公司", "reportGoal": "评估破产风险"},
-            "moduleRunIds": {"bankruptcy_risk": "bankruptcy_run_001"},
-        },
-        module_results=module_results,
-    )
-
-    assert artifact["status"] == "completed"
-    assert artifact["scope"]["enabledModules"] == ["bankruptcy_risk"]
-    assert artifact["semanticModel"]["schemaVersion"] == "report_semantic_model.v1"
-    assert artifact["semanticModel"]["keyFindings"][0]["title"] == "破产风险偏高"
-    assert artifact["semanticModel"]["modelExplanations"][0]["interpretationBoundary"]
-    assert artifact["semanticModel"]["visualNarratives"][0]["interpretationBoundary"]
-    assert artifact["internalTraceIndex"]["items"]
-    assert "破产风险偏高" in artifact["markdownBody"]
-    assert "未选择政策分析" not in artifact["markdownBody"]
-    assert "bankruptcy_risk" not in artifact["markdownBody"]
-    assert "企业破产风险分析" not in artifact["markdownBody"]
-    assert "moduleId" not in artifact["markdownBody"]
-    assert "domainOutputIds" not in artifact["markdownBody"]
-    assert "modelOutputIds" not in artifact["markdownBody"]
-    assert artifact["visualAssets"][0]["downloadUrl"].endswith("/assets/shap_001/download")
-    assert "模型贡献不等于现实因果" in artifact["markdownBody"]
-    assert artifact["document"]["schemaVersion"] == "analysis_report_document.v1"
-    assert [page["type"] for page in artifact["document"]["pages"]] == ["cover", "table_of_contents", "body"]
-    assert artifact["document"]["pages"][1]["items"][0]["title"] == "报告范围"
-
-
-def test_generate_analysis_report_uses_valid_llm_writer_content():
-    inputs = _basic_report_inputs()
-    writer = _FakeReportWriter(
-        json.dumps(
-            {
-                "title": "石头科技风险机会决策报告",
-                "sections": [
-                    {
-                        "id": "executive_judgement",
-                        "title": "核心判断",
-                        "blocks": [
-                            {
-                                "type": "paragraph",
-                                "text": "石头科技当前应把政策落地节奏与订单兑现作为同一条决策线索来跟踪。",
-                            }
-                        ],
-                    },
-                    {
-                        "id": "key_findings",
-                        "title": "关键发现",
-                        "blocks": [
-                            {
-                                "type": "items",
-                                "items": [
-                                    {
-                                        "title": "政策与订单节奏需要联动观察",
-                                        "readerSummary": "现有材料显示政策支持改善需求预期，但订单兑现仍需要持续核验。",
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "id": "evidence_verification",
-                        "title": "来源与核验",
-                        "blocks": [
-                            {
-                                "type": "evidence",
-                                "items": [
-                                    {
-                                        "title": "公开政策材料",
-                                        "readerSummary": "该材料用于支撑政策侧需求预期的判断。",
-                                        "verificationStatus": "已纳入本次分析，仍需后续事实更新复核。",
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "id": "recommendations",
-                        "title": "决策建议",
-                        "blocks": [
-                            {
-                                "type": "items",
-                                "items": [
-                                    {
-                                        "title": "建立政策与订单复核清单",
-                                        "readerSummary": "按政策落地节点、订单公告和收入兑现进度进行复核。",
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                ],
-            },
-            ensure_ascii=False,
-        )
-    )
-
-    artifact = generate_analysis_report(**inputs, report_writer=writer)
-
-    assert writer.calls
-    assert artifact["title"] == "石头科技风险机会决策报告"
-    assert "石头科技当前应把政策落地节奏" in artifact["markdownBody"]
-    assert "robotics_risk" not in artifact["markdownBody"]
-    assert "moduleId" not in artifact["markdownBody"]
-    assert any(flag["type"] == "llm_writer" for flag in artifact["qualityFlags"])
-
-
-def test_generate_analysis_report_rejects_unsafe_llm_writer_content():
-    inputs = _basic_report_inputs()
-    writer = _FakeReportWriter(
-        json.dumps(
-            {
-                "title": "石头科技报告",
-                "sections": [
-                    {
-                        "id": "executive_judgement",
-                        "title": "核心判断",
-                        "blocks": [{"type": "paragraph", "text": "moduleId=robotics_risk，run-robotics-001 表明可以新增事实。"}],
-                    },
-                    {
-                        "id": "key_findings",
-                        "title": "关键发现",
-                        "blocks": [{"type": "items", "items": [{"title": "新增事实", "readerSummary": "自行假设的判断。"}]}],
-                    },
-                ],
-            },
-            ensure_ascii=False,
-        )
-    )
-
-    artifact = generate_analysis_report(**inputs, report_writer=writer)
-
-    assert artifact["status"] == "completed"
-    assert "moduleId=robotics_risk" not in artifact["preview"]
-    assert "run-robotics-001" not in artifact["markdownBody"]
-    assert "自行假设" not in artifact["htmlBody"]
-    assert "政策支持与订单兑现存在联动机会" in artifact["markdownBody"]
-    assert any(flag["type"] == "llm_writer_fallback" for flag in artifact["qualityFlags"])
-
-
-def test_generate_analysis_report_cleans_polluted_subject_and_synthesizes_judgement():
-    inputs = _basic_report_inputs()
-    inputs["handoff_bundle"]["sharedInputSummary"]["enterpriseName"] = "石头科技 688169，时间范围近30天，报告目标是生成风险机会报告"
-
-    artifact = generate_analysis_report(**inputs)
-
-    assert artifact["title"] == "石头科技定制化分析报告"
-    assert artifact["scope"]["targetCompany"] == "石头科技"
-    assert "688169，时间范围" not in artifact["markdownBody"]
-    assert "核心发现包括" not in artifact["markdownBody"]
-    assert "已识别 1 项需要关注的判断方向" in artifact["markdownBody"]
-
-
 def test_report_generation_node_generates_only_for_explicit_report_request(monkeypatch):
+    captured = {}
     writer = _FakeReportWriter(
         json.dumps(
             {
@@ -1364,7 +1043,8 @@ def test_report_generation_node_generates_only_for_explicit_report_request(monke
     )
     monkeypatch.setattr(
         "app.agent.graph.nodes.execute_report_request",
-        lambda db, *, user_id, workspace_id, request, report_writer=None: {
+        lambda db, *, user_id, workspace_id, request, report_writer=None: captured.update({"report_writer": report_writer})
+        or {
             "reportId": "arpt_test_001",
             "title": "石头科技可下载报告",
             "status": "completed",
@@ -1385,160 +1065,14 @@ def test_report_generation_node_generates_only_for_explicit_report_request(monke
             "report_request": {
                 "sourceText": "石头科技近30天订单与政策观察。收入: 120亿元。订单机会增加。",
             },
-            "main_llm": writer,
             "debug": {},
         }
     )
 
+    assert captured["report_writer"] is None
     assert result["analysis_report"]["reportId"]
     assert result["analysis_report"]["title"]
     assert result["analysis_report"]["preview"]
-
-
-def test_generate_analysis_report_persists_dynamic_outline_and_render_style():
-    artifact = generate_analysis_report(**_basic_report_inputs(), render_style="brand_cover")
-
-    outline_titles = [item["title"] for item in artifact["sectionPlan"]]
-    assert artifact["renderStyle"] == "brand_cover"
-    assert artifact["rendering"]["style"] == "brand_cover"
-    assert artifact["document"]["renderStyle"] == "brand_cover"
-    assert artifact["semanticModel"]["chapterOutline"][2]["title"] == "关键发现"
-    assert "外部环境与风险机会评估" in outline_titles
-    assert artifact["document"]["chapterOutline"][3]["title"] == "外部环境与风险机会评估"
-
-
-def test_generate_analysis_report_uses_grounded_table_fallback_for_missing_visual_asset():
-    inputs = _basic_report_inputs()
-    module_result = inputs["module_results"]["robotics_risk"]
-    module_result["documentHandoff"] = {
-        "factTables": [
-            {
-                "tableId": "opportunity_themes",
-                "title": "机会主题",
-                "columns": [
-                    {"key": "theme", "label": "主题"},
-                    {"key": "impactScore", "label": "影响分"},
-                ],
-                "rows": [
-                    {
-                        "rowId": "opp_theme_001",
-                        "cells": {"theme": "政策与设备更新", "impactScore": 88},
-                    }
-                ],
-            }
-        ],
-        "chartCandidates": [
-            {
-                "chartId": "chart_theme_001",
-                "sourceTableId": "opportunity_themes",
-                "fallbackTableId": "opportunity_themes",
-                "chartType": "bar",
-                "title": "机会主题强度分布",
-                "caption": "用于比较当前机会主线的相对强弱。",
-                "interpretationBoundary": "图中分值用于相对排序。",
-                "series": [{"label": "政策与设备更新", "value": 88, "rowId": "opp_theme_001"}],
-            }
-        ],
-        "evidenceReferences": [
-            {
-                "id": "source_policy_001",
-                "title": "公开政策文件",
-                "readerSummary": "政策文件提及机器人应用支持方向。",
-            }
-        ],
-    }
-    module_result["domainAnalysis"] = build_robotics_domain_analysis(module_result)
-    module_result["reportContribution"] = build_robotics_report_contribution(
-        module_result,
-        module_result["domainAnalysis"],
-    )
-
-    artifact = generate_analysis_report(**inputs)
-
-    assert artifact["semanticModel"]["visualNarratives"][0]["fallbackTableId"] == "opportunity_themes"
-    assert "机会主题强度分布" in artifact["htmlBody"]
-    assert "图像资产不可用，已按关联结构化表格降级呈现" in artifact["htmlBody"]
-    assert "政策与设备更新" in artifact["htmlBody"]
-
-
-def test_generate_analysis_report_blocks_published_internal_field_leakage():
-    artifact = generate_analysis_report(
-        analysis_session={"sessionId": "asess_leak", "revision": 1, "enabledModules": ["leaky_module"]},
-        handoff_bundle={
-            "analysisSession": {"sessionId": "asess_leak", "revision": 1},
-            "enabledModules": ["leaky_module"],
-            "sharedInputSummary": {"enterpriseName": "测试公司", "reportGoal": "验证泄露校验"},
-            "moduleRunIds": {"leaky_module": "run_leak_001"},
-        },
-        module_results={
-            "leaky_module": {
-                "moduleId": "leaky_module",
-                "displayName": "泄露测试模块",
-                "status": "done",
-                "runId": "run_leak_001",
-                "domainAnalysis": {"domainOutputs": [{"id": "domain_001", "summary": "已知输出"}]},
-                "reportContribution": {
-                    "moduleId": "leaky_module",
-                    "displayName": "泄露测试模块",
-                    "status": "done",
-                    "findings": [
-                        {
-                            "id": "finding_001",
-                            "title": "moduleId 不应进入正文",
-                            "summary": "traceRefs 不应进入正文。",
-                            "traceRefs": {"domainOutputIds": ["domain_001"]},
-                        }
-                    ],
-                },
-            }
-        },
-    )
-
-    assert artifact["status"] == "failed"
-    assert "发布报告未通过内部字段泄露校验" in artifact["markdownBody"]
-    assert "moduleId 不应进入正文" not in artifact["markdownBody"]
-    assert any(flag["type"] == "published_output" for flag in artifact["qualityFlags"])
-
-
-def test_generate_analysis_report_marks_stale_modules_as_degraded():
-    artifact = generate_analysis_report(
-        analysis_session={"sessionId": "asess_stale", "revision": 2, "enabledModules": ["robotics_risk"]},
-        handoff_bundle={
-            "analysisSession": {"sessionId": "asess_stale", "revision": 2},
-            "enabledModules": ["robotics_risk"],
-            "sharedInputSummary": {"enterpriseName": "石头科技"},
-            "staleModules": ["robotics_risk"],
-            "limitations": ["输入已更新，模块结果过期。"],
-        },
-        module_results={
-            "robotics_risk": {
-                "moduleId": "robotics_risk",
-                "displayName": "机器人风险机会洞察",
-                "status": "stale",
-                "limitations": ["输入已更新，模块结果过期。"],
-            }
-        },
-    )
-
-    assert artifact["status"] == "degraded"
-    assert "报告只能作为降级快照使用" in artifact["markdownBody"]
-    assert "robotics_risk" not in artifact["markdownBody"]
-
-
-def test_render_report_pdf_uses_dedicated_cover_and_toc_pages_for_structured_reports():
-    artifact = generate_analysis_report(**_basic_report_inputs())
-
-    import fitz
-
-    pdf_bytes = render_report_pdf(artifact)
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
-        page_texts = [page.get_text("text") for page in document]
-
-    assert len(page_texts) >= 3
-    assert "石头科技定制化分析报告" in page_texts[0]
-    assert "目录" not in page_texts[0]
-    assert "目录" in page_texts[1]
-    assert "报告范围" in page_texts[2]
 
 
 def test_analysis_session_marks_stale_and_reruns_module_when_shared_slot_changes(monkeypatch):
@@ -1704,21 +1238,3 @@ def test_search_subagent_queries_knowledge_graph(app, monkeypatch):
     assert result["graph_data"]["nodes"][0]["label"] == "京东方"
     assert result["graph_meta"]["source"] == "knowledge_graph"
     assert result["search_result"]["status"] == "done"
-
-
-def test_mcp_subagent_requests_server_clarification_when_ambiguous(app):
-    app.config["AGENT_MCP_ENABLED"] = True
-    app.config["AGENT_MCP_SERVERS_JSON"] = '{"alpha":{"endpoint":"http://127.0.0.1:8080/a"},"beta":{"endpoint":"http://127.0.0.1:8080/b"}}'
-    with app.app_context():
-        result = mcp_subagent_node(
-            {
-                "user_message": "列出mcp工具",
-                "user_id": 1,
-                "workspace_id": "ws-1",
-                "mcp_request": {"request": "列出mcp工具"},
-                "debug": {},
-            }
-        )
-    assert result["mcp_completed"] is True
-    assert result["needs_clarification"] is True
-    assert "server" in result["clarification_question"].lower()

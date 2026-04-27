@@ -605,7 +605,6 @@ def test_rag_graph_decision_and_citation_contract():
             "user_message": "请根据文档回答",
             "rag_enabled": True,
             "web_enabled": False,
-            "mcp_enabled": False,
         }
     )
     assert decision["needs_search"] is True
@@ -615,7 +614,6 @@ def test_rag_graph_decision_and_citation_contract():
             "user_message": "文件里现在全球科技股的情况怎么样",
             "rag_enabled": True,
             "web_enabled": True,
-            "mcp_enabled": False,
         }
     )
     assert file_decision["needs_search"] is True

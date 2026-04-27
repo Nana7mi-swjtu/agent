@@ -117,7 +117,6 @@ const traceTitleMap = {
   rag_lookup: "agentTraceStepRagLookup",
   web_lookup: "agentTraceStepWebLookup",
   merge_results: "agentTraceStepMergeResults",
-  mcp_subagent: "agentTraceStepMcpSubagent",
   compose_answer: "agentTraceStepComposeAnswer",
   citations: "agentTraceStepCitations",
 };

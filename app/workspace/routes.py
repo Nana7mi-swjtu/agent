@@ -31,6 +31,7 @@ from ..report_agent import (
     inline_asset_response_payload,
     normalize_report_request,
     persist_report_artifact_result,
+    render_failure_report_pdf,
     render_report_pdf,
     report_row_forbidden_values,
     safe_report_filename,
@@ -266,11 +267,9 @@ def _report_pdf_response(row, *, report_format: str, disposition: str) -> Respon
             forbidden_values=report_row_forbidden_values(row),
         )
     except PublishedReportValidationError:
-        body = render_report_pdf(
-            {
-                "title": "报告生成失败",
-                "markdownBody": "# 报告生成失败\n\n下载版报告未通过发布校验，请重新生成或联系管理员复核。\n",
-            }
+        body = render_failure_report_pdf(
+            "报告生成失败",
+            "下载版报告未通过发布校验，请重新生成或联系管理员复核。",
         )
     except RuntimeError:
         logger.exception("Report PDF rendering failed for %s", row.report_id)

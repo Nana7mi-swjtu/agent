@@ -29,7 +29,7 @@ def _hex_to_rgb(value: Any) -> tuple[float, float, float]:
 def _paint_page_background(page: Any, meta: dict[str, Any], *, fitz_module: Any) -> None:
     if meta.get("pageType") != "cover":
         return
-    cover_fill = _hex_to_rgb("#D8ECFF")
+    cover_fill = _hex_to_rgb("#06111F")
     page.draw_rect(fitz_module.Rect(0, 0, PDF_PAGE_WIDTH, PDF_PAGE_HEIGHT), color=None, fill=cover_fill)
 
 

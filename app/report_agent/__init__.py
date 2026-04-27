@@ -12,6 +12,7 @@ from .module_artifacts import (
 )
 from .renderers import render_bundle_html, render_bundle_markdown, render_bundle_pdf
 from .runtime import reset_report_runtime_for_tests
+from .publication import render_failure_report_pdf
 from .service import (
     DEFAULT_REPORT_RENDER_STYLE,
     REPORT_REQUEST_GENERATE,
@@ -67,6 +68,7 @@ __all__ = [
     "render_bundle_html",
     "render_bundle_markdown",
     "render_bundle_pdf",
+    "render_failure_report_pdf",
     "render_report_pdf",
     "reset_report_runtime_for_tests",
     "report_preview_metadata",

@@ -16,6 +16,7 @@
 - 任何带有 chartRefs 的章节，pageType 应使用 chart_analysis；仅带 tableRefs 且没有 chartRefs 的章节，pageType 应使用 table_analysis。
 - 不要因为材料里出现正负面表述，就机械地拆成“风险”“机会”独立章节；优先用更中性的 reader-facing 章节名组织内容。
 - 不要输出“逻辑拆解”“边界与限制”“来源与核验”这类面向内部流程或审校的尾章标题。
+- 执行摘要优先使用 title_text，避免 summary_cards 这类卡片化布局；报告正文应像连续研究报告，而不是卡片拼贴。
 - 图表和表格应服务读者理解，不要把每一张图或每一张表都机械地拆成独立章节；只有信息密度过高时才拆页。
 - 章节数量以材料本身为准，不要为了形式强凑固定章数。
 - 不要输出封面和目录，它们由系统固定生成。
@@ -28,7 +29,7 @@
       "chapterId": "chapter_summary",
       "title": "执行摘要",
       "pageType": "executive_summary",
-      "layout": "summary_cards",
+      "layout": "title_text",
       "sectionIds": ["executive_judgement"],
       "chartRefs": [],
       "tableRefs": [],

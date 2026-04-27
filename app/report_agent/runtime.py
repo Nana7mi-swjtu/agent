@@ -29,27 +29,11 @@ def _config_value(key: str, fallback: str = "") -> Any:
 
 
 def report_llm_config() -> dict[str, Any]:
-    provider = str(
-        _config_value("AGENT_REPORT_AI_PROVIDER")
-        or _config_value("AI_PROVIDER")
-        or ""
-    ).strip().lower()
-    model = str(
-        _config_value("AGENT_REPORT_AI_MODEL")
-        or _config_value("AI_MODEL")
-        or ""
-    ).strip()
-    api_key = str(
-        _config_value("AGENT_REPORT_AI_API_KEY")
-        or _config_value("AI_API_KEY")
-        or ""
-    ).strip()
-    base_url = str(
-        _config_value("AGENT_REPORT_AI_BASE_URL")
-        or _config_value("AI_BASE_URL")
-        or ""
-    ).strip()
-    raw_timeout = _config_value("AGENT_REPORT_AI_TIMEOUT_SECONDS") or _config_value("AI_TIMEOUT_SECONDS") or 60
+    provider = str(_config_value("AGENT_REPORT_AI_PROVIDER") or "").strip().lower()
+    model = str(_config_value("AGENT_REPORT_AI_MODEL") or "").strip()
+    api_key = str(_config_value("AGENT_REPORT_AI_API_KEY") or "").strip()
+    base_url = str(_config_value("AGENT_REPORT_AI_BASE_URL") or "").strip()
+    raw_timeout = _config_value("AGENT_REPORT_AI_TIMEOUT_SECONDS") or 60
     try:
         timeout = int(raw_timeout)
     except (TypeError, ValueError):

@@ -10,16 +10,22 @@ from ..models import AnalysisReport
 from .agent import generate_report_artifact_from_source_documents
 from .bundle import ReportGenerationError
 from .contracts import DEFAULT_RENDER_STYLE, as_dict, clean_text, drop_empty
-from .legacy_reporting import (
+from .publication import (
     REPORT_DOWNLOAD_FORMAT,
     SUPPORTED_REPORT_DOWNLOAD_FORMATS,
     PublishedReportValidationError,
-    find_report_asset as _find_report_asset,
-    get_analysis_report as _get_analysis_report,
-    inline_asset_response_payload as _inline_asset_response_payload,
     render_report_pdf,
-    report_row_forbidden_values as _report_row_forbidden_values,
-    safe_report_filename as _safe_report_filename,
+)
+from .storage import (
+    analysis_report_to_payload,
+    bounded_report_preview,
+    find_report_asset,
+    get_analysis_report as _get_analysis_report,
+    inline_asset_response_payload,
+    report_download_metadata,
+    report_preview_url,
+    report_row_forbidden_values,
+    safe_report_filename,
     save_analysis_report_artifact as _save_analysis_report_artifact,
 )
 
@@ -46,32 +52,6 @@ def _clean_source_text(value: Any) -> str:
         except Exception:
             return str(value).replace("\x00", "").strip()
     return str(value).replace("\x00", "").strip()
-
-
-def _report_download_metadata(report_id: str) -> dict[str, Any]:
-    clean_report_id = clean_text(report_id)
-    if not clean_report_id:
-        return {"availableFormats": [REPORT_DOWNLOAD_FORMAT], "downloadUrls": {}}
-    return {
-        "availableFormats": [REPORT_DOWNLOAD_FORMAT],
-        "downloadUrls": {
-            REPORT_DOWNLOAD_FORMAT: f"/api/workspace/reports/{clean_report_id}/download?format={REPORT_DOWNLOAD_FORMAT}",
-        },
-    }
-
-
-def _report_preview_url(report_id: str) -> str:
-    clean_report_id = clean_text(report_id)
-    if not clean_report_id:
-        return ""
-    return f"/api/workspace/reports/{clean_report_id}/preview?format={REPORT_DOWNLOAD_FORMAT}"
-
-
-def _bounded_report_preview(markdown_body: str, *, limit: int = REPORT_PREVIEW_LIMIT) -> str:
-    clean = str(markdown_body or "").strip()
-    if len(clean) <= limit:
-        return clean
-    return clean[: max(0, limit - 1)].rstrip() + "…"
 
 
 def _normalize_report_documents(value: Any) -> list[dict[str, Any]]:
@@ -238,9 +218,9 @@ def report_preview_metadata(artifact: dict[str, Any]) -> dict[str, Any]:
     preview_excerpt = (
         clean_text(artifact.get("previewExcerpt"))
         or clean_text(artifact.get("preview"))
-        or _bounded_report_preview(str(artifact.get("markdownBody") or ""))
+        or bounded_report_preview(str(artifact.get("markdownBody") or ""), limit=REPORT_PREVIEW_LIMIT)
     )
-    metadata = _report_download_metadata(report_id)
+    metadata = report_download_metadata(report_id)
     render_profile = as_dict(artifact.get("renderProfile"))
     return drop_empty(
         {
@@ -251,66 +231,11 @@ def report_preview_metadata(artifact: dict[str, Any]) -> dict[str, Any]:
             "preview": preview_excerpt,
             "availableFormats": metadata["availableFormats"],
             "downloadUrls": metadata["downloadUrls"],
-            "previewUrl": _report_preview_url(report_id),
+            "previewUrl": report_preview_url(report_id),
             "renderStyle": clean_text(render_profile.get("style")) or DEFAULT_REPORT_RENDER_STYLE,
             "limitations": artifact.get("limitations") if isinstance(artifact.get("limitations"), list) else [],
         }
     )
-
-
-def analysis_report_to_payload(row: AnalysisReport, *, include_body: bool = False) -> dict[str, Any]:
-    artifact = as_dict(row.artifact_json)
-    paginated_bundle = as_dict(artifact.get("paginatedReportBundle"))
-    preview_excerpt = (
-        clean_text(artifact.get("previewExcerpt"))
-        or clean_text(artifact.get("preview"))
-        or _bounded_report_preview(row.markdown_body or "")
-    )
-    metadata = _report_download_metadata(row.report_id)
-    source_snapshot = as_dict(artifact.get("sourceSnapshot"))
-    source_documents = source_snapshot.get("documents") if isinstance(source_snapshot.get("documents"), list) else []
-    payload = drop_empty(
-        {
-            "reportId": row.report_id,
-            "title": row.title,
-            "status": row.status,
-            "previewExcerpt": preview_excerpt,
-            "preview": preview_excerpt,
-            "availableFormats": metadata["availableFormats"],
-            "downloadUrls": metadata["downloadUrls"],
-            "previewUrl": _report_preview_url(row.report_id),
-            "renderStyle": clean_text(as_dict(artifact.get("renderProfile")).get("style")) or DEFAULT_REPORT_RENDER_STYLE,
-            "bundleSchemaVersion": clean_text(paginated_bundle.get("schemaVersion")),
-            "renderProfile": as_dict(artifact.get("renderProfile") or paginated_bundle.get("renderProfile")),
-            "exportManifest": as_dict(artifact.get("exportManifest") or paginated_bundle.get("exportManifest")),
-            "pageCount": len(paginated_bundle.get("pages", [])) if isinstance(paginated_bundle.get("pages"), list) else 0,
-            "sourceDocumentCount": len([item for item in source_documents if isinstance(item, dict)]),
-            "limitations": (row.limitations_json or {}).get("items", []) if isinstance(row.limitations_json, dict) else [],
-            "createdAt": row.created_at.isoformat() if row.created_at else "",
-            "updatedAt": row.updated_at.isoformat() if row.updated_at else "",
-        }
-    )
-    if include_body:
-        payload["artifact"] = artifact
-        payload["markdownBody"] = row.markdown_body or ""
-        payload["htmlBody"] = row.html_body or ""
-    return payload
-
-
-def safe_report_filename(row: AnalysisReport, report_format: str) -> str:
-    return _safe_report_filename(row, report_format)
-
-
-def find_report_asset(row: AnalysisReport, asset_id: str) -> dict[str, Any] | None:
-    return _find_report_asset(row, asset_id)
-
-
-def inline_asset_response_payload(asset: dict[str, Any]) -> tuple[bytes, str, str] | None:
-    return _inline_asset_response_payload(asset)
-
-
-def report_row_forbidden_values(row: AnalysisReport) -> list[str]:
-    return _report_row_forbidden_values(row)
 
 
 def _bundle_backed_report_row(row: AnalysisReport | None) -> bool:

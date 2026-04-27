@@ -6,7 +6,8 @@ from typing import Any, TypedDict
 class AgentState(TypedDict):
     main_llm: Any
     search_llm: Any
-    mcp_llm: Any
+    analysis_llm: Any
+    display_llm: Any
     prompt_template: str
     role: str
     system_prompt: str
@@ -19,14 +20,11 @@ class AgentState(TypedDict):
     graph_intent: str
     intent: str
     needs_search: bool
-    needs_mcp: bool
     needs_clarification: bool
     clarification_question: str
     missing_fields: list[str]
     search_request: dict[str, Any]
     search_result: dict[str, Any]
-    mcp_request: dict[str, Any]
-    mcp_result: dict[str, Any]
     enabled_analysis_modules: list[str]
     analysis_shared_inputs: dict[str, Any]
     analysis_module_inputs: dict[str, dict[str, Any]]
@@ -41,11 +39,9 @@ class AgentState(TypedDict):
     analysis_report: dict[str, Any]
     analysis_report_artifact: dict[str, Any]
     search_completed: bool
-    mcp_completed: bool
     kg_enabled: bool
     rag_enabled: bool
     web_enabled: bool
-    mcp_enabled: bool
     rag_debug_enabled: bool
     rag_chunks: list[dict]
     rag_citations: list[dict]

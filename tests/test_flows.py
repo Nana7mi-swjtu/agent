@@ -425,7 +425,6 @@ def test_generate_reply_payload_routes_knowledge_graph_through_search_subagent(a
     app.config["AGENT_KNOWLEDGE_GRAPH_ENABLED"] = True
     app.config["RAG_ENABLED"] = False
     app.config["AGENT_WEBSEARCH_ENABLED"] = False
-    app.config["AGENT_MCP_ENABLED"] = False
     app.config["AI_PROVIDER"] = "openai"
     app.config["AI_MODEL"] = "test-model"
     app.config["AI_API_KEY"] = "test-key"
@@ -505,7 +504,6 @@ def test_generate_reply_payload_runs_robotics_through_analysis_orchestration(app
     app.config["AGENT_KNOWLEDGE_GRAPH_ENABLED"] = False
     app.config["RAG_ENABLED"] = False
     app.config["AGENT_WEBSEARCH_ENABLED"] = False
-    app.config["AGENT_MCP_ENABLED"] = False
     app.config["AI_PROVIDER"] = "openai"
     app.config["AI_MODEL"] = "test-model"
     app.config["AI_API_KEY"] = "test-key"
@@ -946,39 +944,15 @@ def test_get_analysis_report_deletes_legacy_non_bundle_rows(db_session):
     assert deleted is None
 
 
-def test_render_report_pdf_embeds_images_and_keeps_reader_facing_text():
-    image_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yS3cAAAAASUVORK5CYII="
-    artifact = {
-        "title": "PDF 图表测试报告",
-        "markdownBody": (
-            "# PDF 图表测试报告\n\n"
-            "## 图表与模型输出\n\n"
-            "![风险矩阵](/api/workspace/reports/arpt_pdf/assets/chart_png/download)\n\n"
-            "- **趋势图**：用于说明订单变化。\n"
-        ),
-        "visualAssets": [
+def test_render_report_pdf_rejects_non_bundle_artifact():
+    with pytest.raises(ValueError, match="paginated report bundle is required"):
+        render_report_pdf(
             {
-                "assetId": "chart_png",
-                "downloadUrl": "/api/workspace/reports/arpt_pdf/assets/chart_png/download",
-                "type": "image",
-                "title": "风险矩阵",
-                "caption": "图像图表说明。",
-                "contentType": "image/png",
-                "inlineContent": f"data:image/png;base64,{image_data}",
+                "title": "PDF 图表测试报告",
+                "markdownBody": "# PDF 图表测试报告\n\n旧版 markdown artifact 不应再被渲染。\n",
+                "visualAssets": [{"assetId": "chart_png"}],
             }
-        ],
-    }
-
-    pdf_bytes = render_report_pdf(artifact)
-
-    import fitz
-
-    with fitz.open(stream=pdf_bytes, filetype="pdf") as document:
-        pdf_text = "\n".join(page.get_text("text") for page in document)
-    assert "PDF 图表测试报告" in pdf_text
-    assert "风险矩阵" in pdf_text
-    assert "趋势图" in pdf_text
-    assert "robotics_risk" not in pdf_text
+        )
 
 
 def test_workspace_chat_restores_persisted_analysis_session_between_turns(client, db_session, monkeypatch):
@@ -1499,8 +1473,10 @@ def test_workspace_chat_supports_role_specific_agent_models(client, app, db_sess
     app.config["AGENT_MAIN_AI_API_KEY"] = "main-key"
     app.config["AGENT_SEARCH_AI_MODEL"] = "search-model"
     app.config["AGENT_SEARCH_AI_API_KEY"] = "search-key"
-    app.config["AGENT_MCP_AI_MODEL"] = "mcp-model"
-    app.config["AGENT_MCP_AI_API_KEY"] = "mcp-key"
+    app.config["AGENT_ANALYSIS_AI_MODEL"] = "analysis-model"
+    app.config["AGENT_ANALYSIS_AI_API_KEY"] = "analysis-key"
+    app.config["AGENT_DISPLAY_AI_MODEL"] = "display-model"
+    app.config["AGENT_DISPLAY_AI_API_KEY"] = "display-key"
     monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
 
     response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
@@ -1508,7 +1484,7 @@ def test_workspace_chat_supports_role_specific_agent_models(client, app, db_sess
 
     response = client.post("/api/workspace/chat", json=_chat_payload("hello"), headers=headers)
     assert response.status_code == 200
-    assert created_models == ["main-model", "search-model", "mcp-model"]
+    assert created_models == ["main-model", "search-model", "analysis-model", "display-model"]
 
 
 def test_workspace_chat_includes_semantic_segment_context(client, app, db_session, monkeypatch):
@@ -1609,11 +1585,12 @@ def test_workspace_chat_allows_non_openai_provider_config(client, app, db_sessio
     db_session.commit()
     headers = _auth_headers(client, user.id)
 
-    app.config["AI_PROVIDER"] = "qwen-compatible"
-    app.config["AI_MODEL"] = "test-model"
-    app.config["AI_API_KEY"] = "test-key"
-    app.config["AI_TIMEOUT_SECONDS"] = 10
-    app.config["AI_BASE_URL"] = ""
+    for agent_key in ("MAIN", "SEARCH", "ANALYSIS", "DISPLAY"):
+        app.config[f"AGENT_{agent_key}_AI_PROVIDER"] = "qwen-compatible"
+        app.config[f"AGENT_{agent_key}_AI_MODEL"] = f"test-{agent_key.lower()}-model"
+        app.config[f"AGENT_{agent_key}_AI_API_KEY"] = f"test-{agent_key.lower()}-key"
+        app.config[f"AGENT_{agent_key}_AI_TIMEOUT_SECONDS"] = 10
+        app.config[f"AGENT_{agent_key}_AI_BASE_URL"] = ""
     monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
 
     response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
@@ -1651,11 +1628,12 @@ def test_workspace_chat_returns_502_when_agent_config_missing(client, app, db_se
     db_session.add(user)
     db_session.commit()
     headers = _auth_headers(client, user.id)
-    app.config["AI_PROVIDER"] = "openai"
-    app.config["AI_MODEL"] = ""
-    app.config["AI_API_KEY"] = ""
-    app.config["AI_TIMEOUT_SECONDS"] = 10
-    app.config["AI_BASE_URL"] = ""
+    for agent_key in ("MAIN", "SEARCH", "ANALYSIS", "DISPLAY"):
+        app.config[f"AGENT_{agent_key}_AI_PROVIDER"] = "openai"
+        app.config[f"AGENT_{agent_key}_AI_MODEL"] = ""
+        app.config[f"AGENT_{agent_key}_AI_API_KEY"] = ""
+        app.config[f"AGENT_{agent_key}_AI_TIMEOUT_SECONDS"] = 10
+        app.config[f"AGENT_{agent_key}_AI_BASE_URL"] = ""
 
     response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
     assert response.status_code == 200
@@ -1732,69 +1710,6 @@ def test_workspace_chat_search_subagent_with_websearch(client, app, db_session, 
     search_step = steps[1]
     assert [child["id"] for child in search_step["children"]] == ["web_lookup", "merge_results"]
     assert called["count"] == 1
-
-
-def test_workspace_chat_mcp_subagent_with_mcp(client, app, db_session, monkeypatch):
-    class _FakeResponse:
-        def __init__(self, content: str):
-            self.content = content
-
-    class _FakeChatOpenAI:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def invoke(self, messages):
-            return _FakeResponse("mcp-subagent reply")
-
-    user = User(email="chat-auto-mcp@example.com", nickname="ChatAutoMCP", password_hash=generate_password_hash("password123"))
-    db_session.add(user)
-    db_session.commit()
-    headers = _auth_headers(client, user.id)
-
-    app.config["AI_PROVIDER"] = "openai"
-    app.config["AI_MODEL"] = "test-model"
-    app.config["AI_API_KEY"] = "test-key"
-    app.config["AI_TIMEOUT_SECONDS"] = 10
-    app.config["AI_BASE_URL"] = ""
-    app.config["AGENT_MCP_ENABLED"] = True
-    app.config["AGENT_TRACE_VISUALIZATION_ENABLED"] = True
-    app.config["AGENT_TRACE_DEBUG_DETAILS_ENABLED"] = True
-    app.config["AGENT_MCP_SERVERS_JSON"] = '{"local":{"endpoint":"http://127.0.0.1:8080/mcp"}}'
-    monkeypatch.setattr(agent_services, "ChatOpenAI", _FakeChatOpenAI)
-    called = {"count": 0}
-
-    def _fake_mcp_urlopen(request, timeout=0):
-        called["count"] += 1
-        class _DummyResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def read(self):
-                return json.dumps({"jsonrpc": "2.0", "id": "list-tools", "result": {"tools": []}}).encode("utf-8")
-
-        return _DummyResponse()
-
-    monkeypatch.setattr("app.agent.tools.mcp.urlopen", _fake_mcp_urlopen)
-
-    response = client.patch("/api/workspace/context", json={"role": "investor"}, headers=headers)
-    assert response.status_code == 200
-
-    response = client.post("/api/workspace/chat", json=_chat_payload("列出mcp工具"), headers=headers)
-    assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["ok"] is True
-    assert payload["data"]["reply"] == "mcp-subagent reply"
-    steps = payload["data"]["trace"]["steps"]
-    assert [step["id"] for step in steps] == ["planner", "mcp_subagent", "compose_answer", "citations"]
-    assert "details" in steps[0]
-    assert "details" in steps[1]
-    assert steps[1]["details"]["artifactKeys"] == ["tools"]
-    assert called["count"] == 1
-
-
 def test_non_chat_endpoint_still_available_without_agent_config(client):
     response = client.get("/health")
     assert response.status_code == 200

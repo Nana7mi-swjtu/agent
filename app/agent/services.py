@@ -181,12 +181,8 @@ def _planner_summary(output: dict[str, Any]) -> str:
         return "Entered module-gated analysis intake."
     if bool(output.get("needs_clarification", False)):
         return "Requested clarification before continuing."
-    if bool(output.get("needs_search", False)) and bool(output.get("needs_mcp", False)):
-        return "Delegated to Search Subagent, then continued with MCP Subagent."
     if bool(output.get("needs_search", False)):
         return "Delegated to Search Subagent."
-    if bool(output.get("needs_mcp", False)):
-        return "Delegated to MCP Subagent."
     return "Answered directly without delegation."
 
 
@@ -197,7 +193,6 @@ def _planner_details(output: dict[str, Any]) -> dict[str, Any]:
         if isinstance(output.get("report_request"), dict)
         else {},
         "needsSearch": bool(output.get("needs_search", False)),
-        "needsMcp": bool(output.get("needs_mcp", False)),
         "needsClarification": bool(output.get("needs_clarification", False)),
         "enabledAnalysisModules": list(output.get("enabled_analysis_modules", []))
         if isinstance(output.get("enabled_analysis_modules"), list)
@@ -342,30 +337,6 @@ def _search_step(output: dict[str, Any], *, include_details: bool) -> dict[str, 
     )
 
 
-def _mcp_step(output: dict[str, Any], *, include_details: bool) -> dict[str, Any]:
-    mcp_result = output.get("mcp_result", {})
-    if not isinstance(mcp_result, dict):
-        mcp_result = {}
-    artifacts = mcp_result.get("artifacts", {})
-    if not isinstance(artifacts, dict):
-        artifacts = {}
-    details = None
-    if include_details:
-        details = {
-            "status": str(mcp_result.get("status", "")),
-            "artifactKeys": sorted(artifacts.keys()),
-            "followUpQuestion": str(mcp_result.get("follow_up_question", "")),
-        }
-    return _trace_step(
-        step_id="mcp_subagent",
-        step_type="subagent",
-        title="MCP Subagent",
-        summary=str(mcp_result.get("summary", "")).strip() or "Completed MCP execution.",
-        status=str(mcp_result.get("status", "done") or "done"),
-        details=details,
-    )
-
-
 def _compose_step(output: dict[str, Any], *, include_details: bool) -> dict[str, Any]:
     details = None
     if include_details:
@@ -377,7 +348,6 @@ def _compose_step(output: dict[str, Any], *, include_details: bool) -> dict[str,
         details = {
             "replyLength": len(str(output.get("reply", ""))),
             "usedSearch": bool(output.get("search_completed", False)),
-            "usedMcp": bool(output.get("mcp_completed", False)),
             "usedAnalysis": bool(enabled_analysis_modules),
             "analysisModuleCount": len(enabled_analysis_modules) if isinstance(enabled_analysis_modules, list) else 0,
             "analysisCompleted": bool(output.get("analysis_completed", False)),
@@ -601,8 +571,6 @@ def _build_trace_payload(output: dict[str, Any], *, include_details: bool) -> di
         return {"steps": steps}
     if bool(output.get("search_completed", False)):
         steps.append(_search_step(output, include_details=include_details))
-    if bool(output.get("mcp_completed", False)):
-        steps.append(_mcp_step(output, include_details=include_details))
     if bool(output.get("analysis_report")):
         steps.append(_analysis_report_step(output, include_details=include_details))
     if bool(output.get("needs_clarification", False)):
@@ -735,22 +703,15 @@ def _load_chat_prompt() -> str:
 
 def _agent_llm_config(agent_key: str) -> dict[str, Any]:
     normalized = agent_key.strip().upper()
-    provider = str(
-        current_app.config.get(f"AGENT_{normalized}_AI_PROVIDER") or current_app.config.get("AI_PROVIDER", "")
-    ).strip().lower()
-    model = str(
-        current_app.config.get(f"AGENT_{normalized}_AI_MODEL") or current_app.config.get("AI_MODEL", "")
-    ).strip()
-    api_key = str(
-        current_app.config.get(f"AGENT_{normalized}_AI_API_KEY") or current_app.config.get("AI_API_KEY", "")
-    ).strip()
-    base_url = str(
-        current_app.config.get(f"AGENT_{normalized}_AI_BASE_URL") or current_app.config.get("AI_BASE_URL", "")
-    ).strip()
-    timeout = int(
-        current_app.config.get(f"AGENT_{normalized}_AI_TIMEOUT_SECONDS")
-        or current_app.config.get("AI_TIMEOUT_SECONDS", 30)
-    )
+    provider = str(current_app.config.get(f"AGENT_{normalized}_AI_PROVIDER", "")).strip().lower()
+    model = str(current_app.config.get(f"AGENT_{normalized}_AI_MODEL", "")).strip()
+    api_key = str(current_app.config.get(f"AGENT_{normalized}_AI_API_KEY", "")).strip()
+    base_url = str(current_app.config.get(f"AGENT_{normalized}_AI_BASE_URL", "")).strip()
+    raw_timeout = current_app.config.get(f"AGENT_{normalized}_AI_TIMEOUT_SECONDS", 30)
+    try:
+        timeout = int(raw_timeout)
+    except (TypeError, ValueError):
+        timeout = 30
     return {
         "provider": provider,
         "model": model,
@@ -804,7 +765,8 @@ def _build_runtime() -> dict[str, Any]:
     try:
         main_llm = _create_llm("MAIN")
         search_llm = _create_llm("SEARCH")
-        mcp_llm = _create_llm("MCP")
+        analysis_llm = _create_llm("ANALYSIS")
+        display_llm = _create_llm("DISPLAY")
         graph = build_graph()
         prompt_template = _load_chat_prompt()
     except Exception as exc:
@@ -814,7 +776,8 @@ def _build_runtime() -> dict[str, Any]:
     return {
         "main_llm": main_llm,
         "search_llm": search_llm,
-        "mcp_llm": mcp_llm,
+        "analysis_llm": analysis_llm,
+        "display_llm": display_llm,
         "graph": graph,
         "prompt_template": prompt_template,
     }
@@ -916,7 +879,8 @@ def generate_reply_payload(
         state = {
             "main_llm": runtime["main_llm"],
             "search_llm": runtime["search_llm"],
-            "mcp_llm": runtime["mcp_llm"],
+            "analysis_llm": runtime["analysis_llm"],
+            "display_llm": runtime["display_llm"],
             "prompt_template": runtime["prompt_template"],
             "role": role,
             "system_prompt": system_prompt,
@@ -942,20 +906,15 @@ def generate_reply_payload(
             "analysis_report": {},
             "analysis_report_artifact": {},
             "needs_search": False,
-            "needs_mcp": False,
             "needs_clarification": False,
             "clarification_question": "",
             "missing_fields": [],
             "search_request": {},
             "search_result": {},
-            "mcp_request": {},
-            "mcp_result": {},
             "search_completed": False,
-            "mcp_completed": False,
             "kg_enabled": bool(current_app.config.get("AGENT_KNOWLEDGE_GRAPH_ENABLED", False)),
             "rag_enabled": bool(current_app.config.get("RAG_ENABLED", False)),
             "web_enabled": bool(current_app.config.get("AGENT_WEBSEARCH_ENABLED", False)),
-            "mcp_enabled": bool(current_app.config.get("AGENT_MCP_ENABLED", False)),
             "rag_debug_enabled": bool(rag_debug_enabled),
             "rag_decision": "skip",
             "rag_chunks": [],

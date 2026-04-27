@@ -41,6 +41,7 @@ TOKEN_COLORS = {
     "muted": {"accent": "#64748B", "soft": "#F3F6FA", "panel": "#FAFBFC", "line": "#D5DFEA", "deep": "#334155"},
 }
 
+
 def _text(value: Any) -> str:
     return html.escape(clean_text(value))
 
@@ -189,6 +190,44 @@ def _panel_style(theme: dict[str, str]) -> str:
     return f"border-color:{theme['line']};background:{theme['panel']};"
 
 
+def _chinese_section_number(value: int) -> str:
+    digits = {0: "零", 1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八", 9: "九", 10: "十"}
+    if value <= 10:
+        return digits.get(value, str(value))
+    if value < 20:
+        return "十" + digits.get(value % 10, "")
+    tens, ones = divmod(value, 10)
+    prefix = digits.get(tens, str(tens)) + "十"
+    return prefix + (digits.get(ones, "") if ones else "")
+
+
+def _numbered_title(index: int, title: Any) -> str:
+    text = clean_text(title)
+    if not text:
+        return ""
+    return f"{_chinese_section_number(index)}、{text}"
+
+
+def _bundle_toc_index_map(bundle: dict[str, Any]) -> dict[str, int]:
+    for page in as_list(bundle.get("pages")):
+        if not isinstance(page, dict):
+            continue
+        if clean_text(page.get("pageType") or page.get("type")).lower() != "table_of_contents":
+            continue
+        items = [item for item in as_list(page.get("items")) if isinstance(item, dict)]
+        return {clean_text(item.get("id")): index for index, item in enumerate(items, start=1) if clean_text(item.get("id"))}
+    return {}
+
+
+def _page_display_title(page: dict[str, Any], *, toc_index_map: dict[str, int]) -> str:
+    page_id = clean_text(page.get("id"))
+    title = clean_text(page.get("tocTitle") or page.get("title"))
+    index = toc_index_map.get(page_id)
+    if index and title:
+        return _numbered_title(index, title)
+    return title
+
+
 def _section_label_html(title: Any, *, theme: dict[str, str]) -> str:
     text = clean_text(title)
     if not text:
@@ -243,34 +282,19 @@ def _items_html(
     if not valid_items:
         return ""
     title_html = _section_label_html(title, theme=theme)
-    if target == PDF_TARGET:
-        rows = []
-        for index, item in enumerate(valid_items, start=1):
-            rows.append(
-                "<tr>"
-                f"<td class='report-item-ordinal' style='color:{theme['accent']};'>{index:02d}</td>"
-                "<td class='report-item-main'>"
-                f"<div class='report-item-head'>{_text(item.get('title'))}</div>"
-                f"<div class='report-item-body'>{_text(item.get('summary') or item.get('value'))} {_text(item.get('unit'))}</div>"
-                "</td></tr>"
-            )
-        return (
-            f"<section class='report-panel {list_class}' style='{_panel_style(theme)}'>"
-            f"{title_html}<table class='report-item-table'>{''.join(rows)}</table></section>"
-        )
-    cards = []
+    title_html = f"<h3 class='report-section-title' style='color:{theme['deep']};'>{_text(title)}</h3>" if clean_text(title) else ""
+    rows = []
     for index, item in enumerate(valid_items, start=1):
-        cards.append(
-            "<li class='report-item-card'>"
-            f"<div class='report-item-index' style='background:{theme['soft']};color:{theme['accent']};'>{index:02d}</div>"
-            "<div class='report-item-copy'>"
-            f"<h3>{_text(item.get('title'))}</h3>"
-            f"<p>{_text(item.get('summary') or item.get('value'))} {_text(item.get('unit'))}</p>"
-            "</div></li>"
+        rows.append(
+            "<tr>"
+            f"<td class='report-item-ordinal' style='color:{theme['accent']};'>{index:02d}</td>"
+            f"<td class='report-item-head'>{_text(item.get('title'))}</td>"
+            f"<td class='report-item-body'>{_text(item.get('summary') or item.get('value'))} {_text(item.get('unit'))}</td>"
+            "</tr>"
         )
     return (
-        f"<section class='report-panel {list_class}' style='{_panel_style(theme)}'>"
-        f"{title_html}<ul class='report-item-list'>{''.join(cards)}</ul></section>"
+        f"<section class='report-flow-section {list_class}'>"
+        f"{title_html}<table class='report-item-table'>{''.join(rows)}</table></section>"
     )
 
 
@@ -278,32 +302,15 @@ def _metric_cards_html(items: list[dict[str, Any]], *, target: str, theme: dict[
     valid_items = [item for item in items if isinstance(item, dict)]
     if not valid_items:
         return ""
-    if target == PDF_TARGET:
-        cells = []
-        for item in valid_items[:3]:
-            cells.append(
-                "<td class='report-metric-cell' style='border-color:"
-                + theme["line"]
-                + ";background:"
-                + theme["soft"]
-                + ";'>"
-                + f"<div class='report-metric-label' style='color:{theme['deep']};'>{_text(item.get('title'))}</div>"
-                + f"<div class='report-metric-value' style='color:{theme['accent']};'>{_text(item.get('value'))}</div>"
-                + "</td>"
-            )
-        return f"<table class='report-metric-table'><tr>{''.join(cells)}</tr></table>"
-    cards = "".join(
-        "<li class='report-metric-card' style='border-color:"
-        + theme["line"]
-        + ";background:"
-        + theme["soft"]
-        + ";'>"
-        + f"<span>{_text(item.get('title'))}</span>"
-        + f"<strong style='color:{theme['accent']};'>{_text(item.get('value'))}</strong>"
-        + "</li>"
-        for item in valid_items[:3]
+    entries = "".join(
+        "<span class='report-metric-inline'>"
+        f"<span>{_text(item.get('title'))}</span>"
+        f"<strong style='color:{theme['accent']};'>{_text(item.get('value'))}</strong>"
+        f"<em>{_text(item.get('unit'))}</em>"
+        "</span>"
+        for item in valid_items[:4]
     )
-    return f"<ul class='report-metrics'>{cards}</ul>"
+    return f"<div class='report-metric-strip'>{entries}</div>"
 
 
 def _table_block_html(block: dict[str, Any], *, theme: dict[str, str]) -> str:
@@ -318,7 +325,7 @@ def _table_block_html(block: dict[str, Any], *, theme: dict[str, str]) -> str:
         for row in rows
     )
     return (
-        f"<section class='report-panel report-table-wrap' style='{_panel_style(theme)}'>"
+        "<section class='report-flow-section report-table-wrap'>"
         f"{_section_label_html(block.get('title'), theme=theme)}"
         f"<div class='report-table-shell'><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></div>"
         "</section>"
@@ -347,7 +354,11 @@ def _cover_html(page: dict[str, Any], *, target: str) -> str:
             f"<article class='report-page report-page-cover report-page-pdf' data-page-type='cover' data-page-number='{_text(page.get('pageNumber'))}'>"
             "<div class='report-page-surface'>"
             "<div class='report-cover-pdf-shell'>"
+            "<div class='report-cover-mark'>ANALYSIS REPORT</div>"
+            "<div class='report-cover-rule'></div>"
             f"<h1 class='report-cover-pdf-title'>{_text(hero)}</h1>"
+            "<p class='report-cover-pdf-subtitle'>基于材料证据生成的结构化分析报告</p>"
+            "<div class='report-cover-pdf-footer'>STRATEGIC INTELLIGENCE · PDF EDITION</div>"
             "</div>"
             "</div></article>"
         )
@@ -355,74 +366,74 @@ def _cover_html(page: dict[str, Any], *, target: str) -> str:
         f"<article class='report-page report-page-cover' data-page-type='cover' data-page-number='{_text(page.get('pageNumber'))}'>"
         "<div class='report-page-surface'>"
         "<div class='report-cover-shell'>"
-        "<div class='report-cover-wash report-cover-wash-a'></div><div class='report-cover-wash report-cover-wash-b'></div>"
+        "<div class='report-cover-grid'></div>"
+        "<div class='report-cover-band'></div>"
+        "<div class='report-cover-orb report-cover-orb-a'></div><div class='report-cover-orb report-cover-orb-b'></div>"
         "<div class='report-cover-content'>"
+        "<div class='report-cover-mark'>ANALYSIS REPORT</div>"
+        "<div class='report-cover-rule'></div>"
         f"<h1 class='report-cover-title'>{_text(hero)}</h1>"
-        "</div></div></div></article>"
+        "<p class='report-cover-subtitle'>基于材料证据生成的结构化分析报告</p>"
+        "</div><div class='report-cover-footer'><span>STRATEGIC INTELLIGENCE</span><span>PDF READY</span></div></div></div></article>"
     )
 
 
 def _body_header_html(page: dict[str, Any], *, target: str, theme: dict[str, str]) -> str:
-    title = _text(page.get("title"))
-    kicker = html.escape(theme["kicker"])
-    folio = _folio(page.get("pageNumber"))
+    display_title = clean_text(page.get("displayTitle") or page.get("title"))
+    title = html.escape(display_title)
+    kicker_text = clean_text(theme["kicker"])
+    kicker = html.escape(kicker_text)
+    kicker_html = ""
+    if kicker_text and kicker_text not in display_title:
+        if target == PDF_TARGET:
+            kicker_html = f"<div class='report-page-kicker' style='color:{theme['accent']};'>{kicker}</div>"
+        else:
+            kicker_html = f"<span class='report-page-kicker' style='color:{theme['accent']};'>{kicker}</span>"
     if target == PDF_TARGET:
         return (
-            f"<div class='report-band' style='background:{theme['accent']};'></div>"
-            "<table class='report-header-table'><tr>"
-            "<td class='report-header-main'>"
-            f"<div class='report-page-kicker' style='color:{theme['accent']};'>{kicker}</div>"
-            f"<div class='report-page-title'>{title}</div>"
-            "</td>"
-            f"<td class='report-page-folio'>{folio}</td>"
-            "</tr></table>"
+            "<section class='report-page-header'>"
+            f"{kicker_html}<div class='report-page-title'>{title}</div>"
+            "</section>"
         )
     return (
-        f"<div class='report-band' style='background:{theme['accent']};'></div>"
         "<header class='report-page-header'>"
         "<div class='report-page-header-main'>"
-        f"<span class='report-page-kicker' style='color:{theme['accent']};'>{kicker}</span>"
-        f"<h2 class='report-page-title'>{title}</h2>"
+        f"{kicker_html}<h2 class='report-page-title'>{title}</h2>"
         "</div>"
-        f"<div class='report-page-folio'>{folio}</div>"
         "</header>"
+    )
+
+
+def _body_footer_html(page: dict[str, Any], *, theme: dict[str, str]) -> str:
+    folio = _folio(page.get("pageNumber"))
+    return (
+        "<footer class='report-page-footer'>"
+        f"<span class='report-page-footer-rule' style='background:{theme['accent']};'></span>"
+        "<span class='report-page-footer-label'>PAGINATED REPORT</span>"
+        f"<span class='report-page-folio'>{folio}</span>"
+        "</footer>"
     )
 
 
 def _toc_html(page: dict[str, Any], *, target: str, theme: dict[str, str]) -> str:
     header = _body_header_html(page, target=target, theme=theme)
     items = [item for item in as_list(page.get("items")) if isinstance(item, dict)]
-    if target == PDF_TARGET:
-        rows = []
-        for index, item in enumerate(items, start=1):
-            rows.append(
-                "<tr>"
-                f"<td class='report-toc-ordinal' style='color:{theme['accent']};'>{index:02d}</td>"
-                f"<td class='report-toc-title'>{_text(item.get('title'))}</td>"
-                f"<td class='report-toc-page'>{_text(item.get('pageNumber'))}</td>"
-                "</tr>"
-            )
-        return (
-            f"<article class='report-page report-page-table_of_contents report-page-pdf' data-page-type='table_of_contents' data-page-number='{_text(page.get('pageNumber'))}'>"
-            "<div class='report-page-surface'>"
-            f"{header}<section class='report-panel report-panel-toc' style='{_panel_style(theme)}'>"
-            f"<table class='report-toc-table'>{''.join(rows)}</table>"
-            "</section></div></article>"
-        )
     rows = []
     for index, item in enumerate(items, start=1):
+        title = _numbered_title(index, item.get("title"))
         rows.append(
-            "<li class='report-toc-row'>"
-            f"<span class='report-toc-ordinal' style='color:{theme['accent']};'>{index:02d}</span>"
-            f"<span class='report-toc-title'>{_text(item.get('title'))}</span>"
-            "<span class='report-toc-dots'></span>"
-            f"<strong class='report-toc-page'>{_text(item.get('pageNumber'))}</strong>"
-            "</li>"
+            "<tr>"
+            f"<td class='report-toc-ordinal' style='color:{theme['accent']};'>{index}.</td>"
+            f"<td class='report-toc-title'>{html.escape(title)}</td>"
+            "<td class='report-toc-dots'></td>"
+            f"<td class='report-toc-page'>{_text(item.get('pageNumber'))}</td>"
+            "</tr>"
         )
+    classes = "report-page report-page-table_of_contents report-page-pdf" if target == PDF_TARGET else "report-page report-page-table_of_contents"
     return (
-        f"<article class='report-page report-page-table_of_contents' data-page-type='table_of_contents' data-page-number='{_text(page.get('pageNumber'))}'>"
+        f"<article class='{classes}' data-page-type='table_of_contents' data-page-number='{_text(page.get('pageNumber'))}'>"
         "<div class='report-page-surface'>"
-        f"{header}<section class='report-panel report-panel-toc' style='{_panel_style(theme)}'><ol class='report-toc-list'>{''.join(rows)}</ol></section>"
+        f"{header}<section class='report-panel report-panel-toc' style='{_panel_style(theme)}'><table class='report-toc-table'>{''.join(rows)}</table></section>{_body_footer_html(page, theme=theme)}"
         "</div></article>"
     )
 
@@ -438,7 +449,7 @@ def _block_html(
     if block_type == "section_intro":
         return f"<p class='report-intro' style='border-color:{theme['line']};background:{theme['soft']};'>{_text(block.get('text'))}</p>"
     if block_type == "paragraph":
-        return f"<section class='report-panel report-copy' style='{_panel_style(theme)}'><p class='report-paragraph'>{_text(block.get('text'))}</p></section>"
+        return f"<p class='report-paragraph'>{_text(block.get('text'))}</p>"
     if block_type == "callout":
         return _callout_html(block, theme=theme)
     if block_type == "meta_grid":
@@ -455,7 +466,7 @@ def _block_html(
         chart = as_dict(block.get("chartSpec"))
         svg = _chart_svg(chart, table_lookup=table_lookup, theme=theme)
         return (
-            f"<section class='report-panel report-chart-wrap' style='{_panel_style(theme)}'>"
+            "<section class='report-flow-section report-chart-wrap'>"
             f"{_section_label_html(chart.get('title') or block.get('title') or '图表分析', theme=theme)}"
             f"<figure class='report-chart'>{svg}</figure></section>"
         )
@@ -484,6 +495,7 @@ def _body_page_html(
         "<div class='report-page-surface'>"
         f"{_body_header_html(page, target=target, theme=theme)}"
         f"<div class='report-page-content'>{''.join(blocks_html)}</div>"
+        f"{_body_footer_html(page, theme=theme)}"
         "</div></article>"
     )
 
@@ -495,7 +507,9 @@ def _page_html(
     table_lookup: dict[str, dict[str, Any]],
     palette: dict[str, Any],
     target: str,
+    toc_index_map: dict[str, int],
 ) -> tuple[str, dict[str, Any]]:
+    page = {**page, "displayTitle": _page_display_title(page, toc_index_map=toc_index_map)}
     page_type = clean_text(page.get("pageType") or page.get("type")).lower() or "insight"
     theme = _page_theme(page, palette)
     if page_type == "cover":
@@ -516,64 +530,74 @@ def _screen_css(bundle: dict[str, Any]) -> str:
     return f"""
 body{{
   font-family:{font_stack};
-  background:radial-gradient(circle at top,#f6f9fc 0%,#eaf0f6 52%,#dde6f0 100%);
+  background:linear-gradient(180deg,#f7f9fc 0%,#eef3f8 100%);
   color:{text};
   margin:0;
   padding:28px 24px 36px;
-  line-height:1.68;
+  line-height:1.72;
 }}
 .report-page{{width:210mm;min-height:297mm;margin:0 auto 26px;background:{background};box-shadow:0 26px 70px rgba(15,23,42,.14);border-radius:26px;overflow:hidden;page-break-after:always;break-after:page}}
 .report-page:last-child{{page-break-after:auto;break-after:auto}}
-.report-page-surface{{position:relative;min-height:261mm;padding:18mm 16mm 16mm}}
+.report-page-surface{{position:relative;min-height:261mm;padding:18mm 16mm 19mm}}
 .report-page-cover .report-page-surface{{padding:0;min-height:297mm}}
-.report-cover-shell{{position:relative;min-height:297mm;padding:28mm 22mm;background:linear-gradient(160deg,#dff0ff 0%,#c9e4ff 58%,#b8d9fb 100%);color:#14324d;overflow:hidden}}
-.report-cover-wash{{position:absolute;border-radius:999px;opacity:.8}}
-.report-cover-wash-a{{width:320px;height:320px;right:-70px;top:-90px;background:rgba(255,255,255,.72)}}
-.report-cover-wash-b{{width:280px;height:280px;left:-90px;bottom:-120px;background:rgba(191,220,246,.65)}}
-.report-cover-content{{position:relative;z-index:2;display:flex;align-items:center;min-height:241mm;max-width:72%}}
-.report-cover-title{{font-size:48px;line-height:1.08;margin:0;color:#14324d;letter-spacing:.01em}}
+.report-cover-shell{{position:relative;min-height:297mm;padding:30mm 24mm;background:radial-gradient(circle at 82% 16%,rgba(45,212,191,.28),transparent 24%),linear-gradient(135deg,#06111f 0%,#0f2747 48%,#082f49 100%);color:#f8fafc;overflow:hidden}}
+.report-cover-grid{{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.07) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.07) 1px,transparent 1px);background-size:34px 34px;mask-image:linear-gradient(90deg,transparent 0%,#000 18%,#000 72%,transparent 100%);opacity:.42}}
+.report-cover-band{{position:absolute;right:-18mm;top:34mm;width:72mm;height:238mm;background:linear-gradient(180deg,rgba(20,184,166,.9),rgba(29,78,216,.28));transform:skewX(-14deg);box-shadow:0 34px 90px rgba(20,184,166,.18)}}
+.report-cover-orb{{position:absolute;border-radius:999px;filter:blur(2px)}}
+.report-cover-orb-a{{width:210px;height:210px;right:36px;top:54px;background:rgba(96,165,250,.22)}}
+.report-cover-orb-b{{width:280px;height:280px;left:-120px;bottom:-120px;background:rgba(20,184,166,.16)}}
+.report-cover-content{{position:relative;z-index:2;display:flex;min-height:218mm;max-width:78%;flex-direction:column;justify-content:center}}
+.report-cover-mark{{display:inline-block;width:max-content;margin-bottom:18px;padding:7px 11px;border:1px solid rgba(125,211,252,.36);border-radius:999px;background:rgba(15,23,42,.34);color:#a7f3d0;font-size:11px;font-weight:700;letter-spacing:.18em}}
+.report-cover-rule{{width:72px;height:3px;margin-bottom:24px;background:linear-gradient(90deg,#2dd4bf,#60a5fa);border-radius:999px}}
+.report-cover-title{{font-size:54px;line-height:1.06;margin:0;color:#ffffff;letter-spacing:-.035em;text-shadow:0 18px 44px rgba(0,0,0,.28)}}
+.report-cover-subtitle{{max-width:520px;margin:24px 0 0;color:#cbd5e1;font-size:18px;line-height:1.7}}
+.report-cover-footer{{position:absolute;z-index:2;left:24mm;right:24mm;bottom:22mm;display:flex;justify-content:space-between;border-top:1px solid rgba(226,232,240,.22);padding-top:14px;color:#93c5fd;font-size:11px;font-weight:700;letter-spacing:.16em}}
 .report-meta-grid{{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}}
 .report-meta-card{{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.2);border-radius:18px;padding:14px 16px;backdrop-filter:blur(10px)}}
 .report-meta-card span{{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.8;margin-bottom:6px}}
 .report-meta-card strong{{font-size:15px;line-height:1.45}}
-.report-band{{width:84px;height:8px;border-radius:999px;margin-bottom:16px}}
-.report-page-header{{display:grid;grid-template-columns:1fr auto;gap:18px;align-items:end;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid #d9e2ec}}
-.report-page-kicker{{display:block;font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;margin-bottom:8px}}
-.report-page-title{{margin:0;font-size:30px;line-height:1.18;color:#0f172a}}
-.report-page-folio{{font-size:40px;line-height:1;font-weight:700;color:#9aacbf}}
-.report-page-content>*+*{{margin-top:14px}}
-.report-intro{{margin:0;padding:14px 16px;border:1px solid #dbe6f0;border-radius:16px;font-size:15px;color:#334155}}
-.report-panel{{border:1px solid #dbe6f0;border-radius:18px;padding:16px 18px}}
-.report-panel-title{{font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:12px}}
-.report-copy p,.report-paragraph{{margin:0;font-size:14px;color:#1f2937}}
-.report-callout{{margin:0;padding:14px 16px;border-left:4px solid {accent};border-radius:16px}}
+.report-page-header{{position:relative;margin-bottom:22px;padding:0 0 16px;border-bottom:1px solid #d7e1ec}}
+.report-page-header:after{{content:"";position:absolute;left:0;bottom:-1px;width:76px;height:3px;background:linear-gradient(90deg,{primary},{accent});border-radius:999px}}
+.report-page-kicker{{display:block;font-size:11px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;margin-bottom:9px}}
+.report-page-title{{margin:0;max-width:86%;font-size:34px;line-height:1.13;color:#0f2747;letter-spacing:-.025em}}
+.report-page-footer{{position:absolute;left:16mm;right:16mm;bottom:9mm;display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;color:#64748b;font-size:10px;font-weight:800;letter-spacing:.14em}}
+.report-page-footer-rule{{width:34px;height:2px;border-radius:999px}}
+.report-page-footer-label{{color:#94a3b8}}
+.report-page-folio{{font-size:13px;line-height:1;font-weight:800;color:#0f2747;letter-spacing:.08em}}
+.report-page-content>*+*{{margin-top:16px}}
+.report-intro{{margin:0;padding:14px 16px;border:0;border-left:4px solid {accent};border-radius:14px;font-size:15px;color:#334155;background:linear-gradient(90deg,#eefcff 0%,#f8fbff 100%)}}
+.report-panel{{border:1px solid #e3eaf3;border-radius:12px;padding:16px 18px;background:#ffffff}}
+.report-flow-section{{margin:0;padding:0}}
+.report-section-title,.report-panel-title{{font-size:17px;font-weight:800;letter-spacing:-.01em;margin:0 0 9px;color:#0f2747}}
+.report-paragraph{{margin:0;font-size:15px;line-height:1.82;color:#1f2937}}
+.report-callout{{margin:0;padding:15px 17px;border:1px solid #cde7ef;border-left:5px solid {primary};border-radius:16px;background:linear-gradient(135deg,#f8fbff 0%,#effdff 100%);box-shadow:0 12px 30px rgba(15,39,71,.05)}}
 .report-callout strong{{display:block;margin-bottom:6px}}
 .report-callout p{{margin:0;color:#334155}}
-.report-metrics{{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}}
-.report-metric-card{{padding:16px;border:1px solid #dbe6f0;border-radius:18px}}
-.report-metric-card span{{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#475569;margin-bottom:10px}}
-.report-metric-card strong{{display:block;font-size:34px;line-height:1.1}}
-.report-item-list{{list-style:none;padding:0;margin:0;display:grid;gap:12px}}
-.report-item-card{{display:grid;grid-template-columns:42px 1fr;gap:14px;align-items:start;padding-top:12px;border-top:1px solid rgba(148,163,184,.22)}}
-.report-item-card:first-child{{padding-top:0;border-top:0}}
-.report-item-index{{width:34px;height:34px;border-radius:999px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}}
-.report-item-copy h3{{margin:0 0 6px 0;font-size:17px;line-height:1.3;color:#0f172a}}
-.report-item-copy p{{margin:0;font-size:14px;color:#475569}}
+.report-metric-strip{{display:flex;flex-wrap:wrap;gap:8px 18px;margin:0;padding:10px 0;border-top:1px solid #d7e1ec;border-bottom:1px solid #d7e1ec}}
+.report-metric-inline{{display:inline-flex;align-items:baseline;gap:6px;color:#475569}}
+.report-metric-inline span{{font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}}
+.report-metric-inline strong{{font-size:22px;line-height:1;letter-spacing:-.03em}}
+.report-metric-inline em{{font-style:normal;font-size:11px;color:#64748b}}
+.report-item-table{{width:100%;border-collapse:collapse;table-layout:auto}}
+.report-item-table td{{padding:9px 10px;vertical-align:top;border:0;border-bottom:1px solid #e2e8f0;background:transparent}}
+.report-item-ordinal{{width:44px;font-size:12px;font-weight:800;text-align:center}}
+.report-item-head{{width:138px;min-width:138px;font-size:15px;font-weight:800;line-height:1.42;color:#0f2747;word-break:keep-all;white-space:normal}}
+.report-item-body{{font-size:14px;line-height:1.7;color:#334155;word-break:break-word}}
 .report-chart{{margin:0}}
 .report-chart svg{{display:block;width:100%;height:auto}}
 .chart-empty{{padding:26px 0;color:#64748b}}
-.report-table-shell{{overflow:hidden;border-radius:14px;border:1px solid rgba(148,163,184,.22);background:#fff}}
+.report-table-shell{{overflow:hidden;border-radius:14px;border:1px solid #d7e1ec;background:#fff}}
 .report-table-shell table{{width:100%;border-collapse:collapse;font-size:12px}}
-.report-table-shell th,.report-table-shell td{{padding:9px 10px;text-align:left;vertical-align:top;border-bottom:1px solid #e5edf5}}
-.report-table-shell th{{background:#f8fafc;font-weight:700;color:#334155}}
+.report-table-shell th,.report-table-shell td{{padding:9px 11px;text-align:left;vertical-align:top;border:0;border-bottom:1px solid #e2e8f0}}
+.report-table-shell th{{background:#0f2747;font-weight:800;color:#f8fafc}}
 .report-table-shell tbody tr:last-child td{{border-bottom:0}}
 .report-panel-toc{{padding:18px}}
-.report-toc-list{{list-style:none;padding:0;margin:0;display:grid;gap:12px}}
-.report-toc-row{{display:grid;grid-template-columns:auto auto 1fr auto;gap:12px;align-items:center;padding:12px 14px;border-radius:16px;background:#f8fbff;border:1px solid #dbe6f0}}
-.report-toc-ordinal{{font-size:12px;font-weight:700}}
-.report-toc-title{{font-size:15px;font-weight:600;color:#0f172a}}
-.report-toc-dots{{border-bottom:1px dashed #c1cedd;transform:translateY(1px)}}
-.report-toc-page{{font-size:15px;color:#475569}}
+.report-toc-table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+.report-toc-table td{{padding:8px 0;vertical-align:top;border:0}}
+.report-toc-ordinal{{width:42px;font-size:14px;font-weight:700}}
+.report-toc-title{{font-size:16px;font-weight:600;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.report-toc-dots{{border-bottom:2px dotted #94a3b8;transform:translateY(-6px)}}
+.report-toc-page{{width:40px;font-size:15px;color:#475569;text-align:right}}
 """.strip()
 
 
@@ -583,53 +607,59 @@ def _pdf_css(bundle: dict[str, Any]) -> str:
     font_stack = _font_stack(bundle)
     text = clean_text(palette.get("text")) or "#111827"
     return f"""
-body{{font-family:{font_stack};color:{text};margin:0;padding:0;line-height:1.54;font-size:11pt}}
+body{{font-family:{font_stack};color:{text};margin:0;padding:0;line-height:1.62;font-size:10.5pt}}
 .report-page{{page-break-after:always;break-after:page}}
 .report-page:last-child{{page-break-after:auto;break-after:auto}}
-.report-page-surface{{padding:0}}
-.report-page-pdf .report-band{{height:8px;margin:0 0 14px 0;border-radius:999px}}
-.report-header-table{{width:100%;border-collapse:collapse;margin:0 0 14px 0}}
-.report-header-main{{vertical-align:bottom}}
-.report-page-kicker{{font-size:9pt;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:6px}}
-.report-page-title{{font-size:22pt;font-weight:700;line-height:1.2;color:#0f172a}}
-.report-page-folio{{width:58px;text-align:right;vertical-align:bottom;font-size:28pt;font-weight:700;color:#94a3b8}}
-.report-intro{{margin:0 0 12px 0;padding:12px 14px;border:1px solid #dbe6f0;border-radius:10px;font-size:11pt}}
-.report-panel{{border:1px solid #dbe6f0;border-radius:10px;padding:12px 14px;margin:0 0 12px 0}}
-.report-panel-title{{font-size:9pt;font-weight:700;letter-spacing:1.1px;text-transform:uppercase;margin:0 0 8px 0}}
-.report-paragraph{{margin:0;font-size:11pt}}
-.report-callout{{margin:0 0 12px 0;padding:12px 14px;border-left:4px solid #1D4ED8;border-radius:10px}}
+.report-page-surface{{position:relative;padding:0 0 28px 0;min-height:760px}}
+.report-page-header{{margin:0 0 16px 0;padding:0 0 10px 0;border-bottom:1px solid #d7e1ec}}
+.report-page-kicker{{font-size:8.5pt;font-weight:700;letter-spacing:1.1px;margin-bottom:6px;text-transform:uppercase}}
+.report-page-title{{font-size:21pt;font-weight:700;line-height:1.16;color:#0f2747;letter-spacing:-.3px}}
+.report-page-footer{{position:absolute;left:0;right:0;bottom:0;border-top:1px solid #d7e1ec;padding-top:6px;color:#64748b;font-size:7.8pt;font-weight:700;letter-spacing:1.1px}}
+.report-page-footer-rule{{display:inline-block;width:24px;height:2px;margin-right:8px;vertical-align:middle}}
+.report-page-footer-label{{display:inline-block;color:#94a3b8}}
+.report-page-folio{{float:right;color:#0f2747;font-size:9pt;font-weight:700;letter-spacing:.8px}}
+.report-intro{{margin:0 0 12px 0;padding:10px 12px;border:0;border-left:4px solid #14B8A6;border-radius:8px;font-size:10.5pt;background:#f4fbff;color:#334155}}
+.report-panel{{border:1px solid #e0e8f2;border-radius:8px;padding:12px 14px;margin:0 0 12px 0;background:#fff}}
+.report-flow-section{{margin:0 0 12px 0;padding:0}}
+.report-section-title,.report-panel-title{{font-size:12pt;font-weight:700;margin:0 0 8px 0;color:#0f2747}}
+.report-paragraph{{margin:0;font-size:10.8pt;line-height:1.62;color:#1f2937}}
+.report-callout{{margin:0 0 12px 0;padding:10px 12px;border:1px solid #cde7ef;border-left:4px solid #1D4ED8;border-radius:9px;background:#f6fbff}}
 .report-callout strong{{display:block;margin-bottom:4px}}
 .report-callout p{{margin:0}}
-.report-metric-table{{width:100%;border-collapse:separate;border-spacing:0;margin:0 0 12px 0}}
-.report-metric-cell{{width:33.33%;padding:10px 12px;border:1px solid #dbe6f0;vertical-align:top}}
-.report-metric-label{{font-size:9pt;font-weight:700;line-height:1.45}}
-.report-metric-value{{margin-top:8px;font-size:22pt;font-weight:700;line-height:1}}
-.report-item-table{{width:100%;border-collapse:collapse}}
-.report-item-table td{{padding:10px 0;vertical-align:top;border-top:1px solid #e5edf5}}
-.report-item-table tr:first-child td{{border-top:0;padding-top:0}}
-.report-item-ordinal{{width:42px;font-size:10pt;font-weight:700}}
-.report-item-head{{font-size:12pt;font-weight:700;line-height:1.3;color:#0f172a;margin:0 0 4px 0}}
-.report-item-body{{font-size:11pt;line-height:1.56;color:#334155}}
+.report-metric-strip{{margin:0 0 12px 0;padding:7px 0;border-top:1px solid #d7e1ec;border-bottom:1px solid #d7e1ec}}
+.report-metric-inline{{display:inline-block;margin-right:16px;color:#475569}}
+.report-metric-inline span{{font-size:8pt;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-right:5px}}
+.report-metric-inline strong{{font-size:14pt;font-weight:700;margin-right:3px}}
+.report-metric-inline em{{font-style:normal;font-size:8pt;color:#64748b}}
+.report-item-table{{width:100%;border-collapse:collapse;table-layout:auto}}
+.report-item-table td{{padding:7px 8px;vertical-align:top;border:0;border-bottom:1px solid #e2e8f0;background:#fbfdff}}
+.report-item-ordinal{{width:38px;font-size:9.5pt;font-weight:700;text-align:center;color:#1d4ed8}}
+.report-item-head{{width:112px;min-width:112px;font-size:10.5pt;font-weight:700;line-height:1.4;color:#0f2747;word-break:keep-all;white-space:normal}}
+.report-item-body{{font-size:10.4pt;line-height:1.52;color:#334155;word-break:break-word}}
 .report-chart{{margin:0}}
 .report-chart svg{{width:100%;height:auto;display:block}}
 .chart-empty{{padding:22px 0;color:#64748b}}
 .report-table-shell table{{width:100%;border-collapse:collapse;font-size:9pt}}
-.report-table-shell th,.report-table-shell td{{padding:7px 8px;text-align:left;vertical-align:top;border:1px solid #dbe6f0}}
-.report-table-shell th{{background:#f8fafc;color:#334155}}
-.report-toc-table{{width:100%;border-collapse:collapse}}
-.report-toc-table td{{padding:10px 0;border-top:1px solid #e5edf5;vertical-align:top}}
-.report-toc-table tr:first-child td{{border-top:0;padding-top:0}}
-.report-toc-ordinal{{width:42px;font-size:10pt;font-weight:700}}
-.report-toc-title{{font-size:12pt;font-weight:700;color:#0f172a}}
-.report-toc-page{{width:36px;text-align:right;font-size:11pt;color:#475569}}
-.report-meta-table{{width:100%;border-collapse:separate;border-spacing:0;margin:0 0 14px 0}}
-.report-meta-cell{{width:50%;padding:10px 12px;border:1px solid #314761;background:#13233f;vertical-align:top}}
-.report-meta-cell-empty{{background:transparent;border:0}}
-.report-meta-label{{font-size:8.5pt;font-weight:700;letter-spacing:.7px;text-transform:uppercase;margin-bottom:5px;color:#cbd5e1}}
-.report-meta-value{{font-size:11pt;line-height:1.55;color:#f8fafc}}
+.report-table-shell th,.report-table-shell td{{padding:7px 8px;text-align:left;vertical-align:top;border:0;border-bottom:1px solid #e2e8f0}}
+.report-table-shell th{{background:#0f2747;color:#f8fafc}}
+.report-toc-table{{width:100%;border-collapse:collapse;table-layout:fixed}}
+.report-toc-table td{{padding:6px 0;vertical-align:top;border:0}}
+.report-toc-ordinal{{width:34px;font-size:9.5pt;font-weight:700}}
+.report-toc-title{{font-size:11pt;font-weight:700;color:#111827}}
+.report-toc-dots{{border-bottom:1px dotted #94a3b8;transform:translateY(-4px)}}
+.report-toc-page{{width:28px;text-align:right;font-size:10pt;color:#475569}}
+.report-meta-table{{width:100%;border-collapse:collapse;margin:0 0 14px 0;table-layout:fixed}}
+.report-meta-cell{{width:50%;padding:8px 10px;border:1px solid #d5dde8;vertical-align:top;background:#fff}}
+.report-meta-cell-empty{{background:#fff;border:1px solid #d5dde8}}
+.report-meta-label{{font-size:8.5pt;font-weight:700;margin-bottom:4px;color:#475569}}
+.report-meta-value{{font-size:10.5pt;line-height:1.5;color:#111827}}
 .report-page-cover.report-page-pdf .report-page-surface{{padding:0}}
-.report-cover-pdf-shell{{padding:92px 16px 0 18px}}
-.report-cover-pdf-title{{margin:0;font-size:28pt;line-height:1.18;font-weight:700;color:#14324d}}
+.report-cover-pdf-shell{{position:relative;padding:120px 44px 0 46px;background:#06111f;min-height:297mm;color:#f8fafc}}
+.report-cover-pdf-shell:before{{content:"";position:absolute;right:-56px;top:84px;width:178px;height:640px;background:#14b8a6;opacity:.55;transform:skewX(-14deg)}}
+.report-cover-pdf-shell:after{{content:"";position:absolute;left:46px;right:46px;bottom:72px;border-top:1px solid #334155}}
+.report-cover-pdf-title{{position:relative;z-index:2;margin:0;max-width:410px;font-size:34pt;line-height:1.08;font-weight:700;color:#ffffff;letter-spacing:-.02em}}
+.report-cover-pdf-subtitle{{position:relative;z-index:2;max-width:360px;margin:18px 0 0;font-size:11pt;line-height:1.7;color:#cbd5e1}}
+.report-cover-pdf-footer{{position:absolute;z-index:2;left:46px;bottom:44px;font-size:8.5pt;font-weight:700;letter-spacing:1.6px;color:#93c5fd}}
 """.strip()
 
 
@@ -640,11 +670,12 @@ def _bundle_css(bundle: dict[str, Any], *, target: str) -> str:
 def build_bundle_render_package(bundle: dict[str, Any], *, target: str = SCREEN_TARGET) -> dict[str, Any]:
     table_lookup = _table_lookup(bundle)
     palette = as_dict(as_dict(bundle.get("renderProfile")).get("palette"))
+    toc_index_map = _bundle_toc_index_map(bundle)
     page_entries = []
     for page in as_list(bundle.get("pages")):
         if not isinstance(page, dict):
             continue
-        page_html, meta = _page_html(page, bundle=bundle, table_lookup=table_lookup, palette=palette, target=target)
+        page_html, meta = _page_html(page, bundle=bundle, table_lookup=table_lookup, palette=palette, target=target, toc_index_map=toc_index_map)
         page_entries.append({"html": page_html, **meta})
     return {
         "title": clean_text(bundle.get("title")) or "分析报告",

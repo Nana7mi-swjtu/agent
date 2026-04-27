@@ -40,13 +40,11 @@ from .analysis_slots import (
     parse_answer_for_group,
     slot_label,
 )
-from .mcp import build_mcp_graph
 from .search import build_search_graph
 from .source_intent import has_explicit_public_web_intent, has_fresh_public_info_intent, has_mixed_source_intent
 from .state import AgentState
 
 _search_graph = build_search_graph()
-_mcp_graph = build_mcp_graph()
 
 _KNOWLEDGE_HINTS = (
     "根据",
@@ -72,20 +70,11 @@ _GRAPH_HINTS = (
     "knowledge graph",
 )
 
-_MCP_HINTS = (
-    "mcp",
-    "server",
-    "列出mcp工具",
-    "列出工具",
-    "list tools",
-)
-
 _MAX_COMPOSE_HISTORY_MESSAGES = 8
 
 
 class PlannerOutput(BaseModel):
     needs_search: bool = Field(default=False)
-    needs_mcp: bool = Field(default=False)
     needs_clarification: bool = Field(default=False)
     clarification_question: str = Field(default="")
 
@@ -142,11 +131,6 @@ def _planner_prefers_search(message: str, *, rag_enabled: bool, web_enabled: boo
     if any(token in lowered for token in _KNOWLEDGE_HINTS):
         return bool(rag_enabled or web_enabled)
     return False
-
-
-def _planner_prefers_mcp(message: str, *, mcp_enabled: bool) -> bool:
-    lowered = message.lower()
-    return bool(mcp_enabled and any(token in lowered for token in _MCP_HINTS))
 
 
 def _search_strategy(message: str, *, rag_enabled: bool, web_enabled: bool) -> str:
@@ -716,21 +700,17 @@ def plan_route_node(state: AgentState):
     kg_enabled = bool(state.get("kg_enabled", False))
     rag_enabled = bool(state.get("rag_enabled", False))
     web_enabled = bool(state.get("web_enabled", False))
-    mcp_enabled = bool(state.get("mcp_enabled", False))
     conversation_context = _conversation_context(state)
 
     if has_report_request(report_request):
         return {
             "intent": "report_generation",
             "needs_search": False,
-            "needs_mcp": False,
             "needs_clarification": False,
             "clarification_question": "",
             "missing_fields": [],
             "search_request": {},
-            "mcp_request": {},
             "search_result": {},
-            "mcp_result": {},
             "analysis_results": {},
             "analysis_handoff_bundle": {},
             "analysis_missing_fields": [],
@@ -740,7 +720,6 @@ def plan_route_node(state: AgentState):
             "analysis_report": {},
             "analysis_report_artifact": {},
             "search_completed": False,
-            "mcp_completed": False,
             "rag_chunks": [],
             "rag_citations": [],
             "rag_no_evidence": False,
@@ -758,14 +737,11 @@ def plan_route_node(state: AgentState):
         return {
             "intent": "analysis",
             "needs_search": False,
-            "needs_mcp": False,
             "needs_clarification": False,
             "clarification_question": "",
             "missing_fields": [],
             "search_request": {},
-            "mcp_request": {},
             "search_result": {},
-            "mcp_result": {},
             "analysis_results": {},
             "analysis_handoff_bundle": {},
             "analysis_missing_fields": [],
@@ -775,7 +751,6 @@ def plan_route_node(state: AgentState):
             "analysis_report": {},
             "analysis_report_artifact": {},
             "search_completed": False,
-            "mcp_completed": False,
             "rag_chunks": [],
             "rag_citations": [],
             "rag_no_evidence": False,
@@ -793,7 +768,6 @@ def plan_route_node(state: AgentState):
         return {
             "intent": "clarify",
             "needs_search": False,
-            "needs_mcp": False,
             "needs_clarification": True,
             "clarification_question": "请先提供你的问题或任务目标。",
             "missing_fields": ["user_message"],
@@ -803,7 +777,6 @@ def plan_route_node(state: AgentState):
     if kg_enabled and (entity or graph_intent or any(token in user_message.lower() for token in _GRAPH_HINTS)):
         heuristic_needs_search = True
     needs_search = heuristic_needs_search
-    needs_mcp = _planner_prefers_mcp(user_message, mcp_enabled=mcp_enabled)
     needs_clarification = False
     clarification_question = ""
     llm = state.get("main_llm")
@@ -816,7 +789,7 @@ def plan_route_node(state: AgentState):
                         "role": "system",
                         "content": (
                             "You route user requests for a main agent. Decide whether the request needs "
-                            "search evidence, MCP action execution, or clarification before proceeding."
+                            "search evidence or clarification before proceeding."
                             + (f"\n\nConversation memory:\n{conversation_context}" if conversation_context else "")
                         ),
                     },
@@ -826,7 +799,6 @@ def plan_route_node(state: AgentState):
                             f"message={user_message}\n"
                             f"rag_enabled={rag_enabled}\n"
                             f"web_enabled={web_enabled}\n"
-                            f"mcp_enabled={mcp_enabled}\n"
                         ),
                     },
                 ]
@@ -834,7 +806,6 @@ def plan_route_node(state: AgentState):
             # The model can broaden tool usage, but should not disable deterministic
             # evidence lookup when the request is clearly asking about uploaded knowledge.
             needs_search = heuristic_needs_search or (bool(response.needs_search) and bool(rag_enabled or web_enabled))
-            needs_mcp = bool(response.needs_mcp) and mcp_enabled
             needs_clarification = bool(response.needs_clarification)
             clarification_question = str(response.clarification_question).strip()
         except Exception:
@@ -849,17 +820,12 @@ def plan_route_node(state: AgentState):
     intent = "answer"
     if needs_clarification:
         intent = "clarify"
-    elif needs_search and needs_mcp:
-        intent = "hybrid"
     elif needs_search:
         intent = "search"
-    elif needs_mcp:
-        intent = "act"
 
     return {
         "intent": intent,
         "needs_search": needs_search,
-        "needs_mcp": needs_mcp,
         "needs_clarification": needs_clarification,
         "clarification_question": clarification_question,
         "missing_fields": missing_fields,
@@ -869,11 +835,8 @@ def plan_route_node(state: AgentState):
             "entity": entity,
             "graph_intent": graph_intent,
         },
-        "mcp_request": {"request": user_message},
         "search_result": {},
-        "mcp_result": {},
         "search_completed": False,
-        "mcp_completed": False,
         "rag_chunks": [],
         "rag_citations": [],
         "rag_no_evidence": False,
@@ -891,20 +854,10 @@ def route_after_plan(state: AgentState) -> str:
         return "analysis_intake"
     if state.get("needs_search", False) and not state.get("search_completed", False):
         return "search_subagent"
-    if state.get("needs_mcp", False) and not state.get("mcp_completed", False):
-        return "mcp_subagent"
     return "compose_answer"
 
 
 def route_after_search(state: AgentState) -> str:
-    if state.get("needs_clarification", False):
-        return "clarify"
-    if state.get("needs_mcp", False) and not state.get("mcp_completed", False):
-        return "mcp_subagent"
-    return "compose_answer"
-
-
-def route_after_mcp(state: AgentState) -> str:
     if state.get("needs_clarification", False):
         return "clarify"
     return "compose_answer"
@@ -1057,7 +1010,7 @@ def analysis_modules_node(state: AgentState):
     context = {
         "conversationContext": _conversation_context(state),
         "userMessage": str(state.get("user_message", "")).strip(),
-        "readerWriter": state.get("main_llm"),
+        "readerWriter": state.get("analysis_llm"),
     }
     results: dict[str, dict[str, Any]] = _dict_payload(session.get("moduleResults"))
     needs_clarification = False
@@ -1147,7 +1100,7 @@ def analysis_modules_node(state: AgentState):
             analysis_session=session,
             module_results=results,
             module_ids=enabled_modules,
-            composer_writer=state.get("main_llm"),
+            composer_writer=state.get("display_llm"),
         )
         debug_payload["moduleArtifactCount"] = len(module_artifacts)
     return {
@@ -1183,7 +1136,6 @@ def report_generation_node(state: AgentState):
                     user_id=int(state.get("user_id", 0) or 0),
                     workspace_id=str(state.get("workspace_id", "") or "").strip() or "default",
                     request=report_request,
-                    report_writer=state.get("main_llm"),
                 )
     except ReportRequestError as exc:
         return {
@@ -1301,47 +1253,6 @@ def search_subagent_node(state: AgentState):
     return update
 
 
-def mcp_subagent_node(state: AgentState):
-    request = state.get("mcp_request", {})
-    if not isinstance(request, dict):
-        request = {}
-    result = _mcp_graph.invoke(
-        {
-            "llm": state.get("mcp_llm"),
-            "request": str(request.get("request", state.get("user_message", ""))).strip(),
-            "user_id": state["user_id"],
-            "workspace_id": state["workspace_id"],
-            "selected_server": "",
-            "selected_tool": "",
-            "tool_args": {},
-            "execution_result": {},
-            "status": "pending",
-            "summary": "",
-            "follow_up_question": "",
-            "artifacts": {},
-        }
-    )
-    mcp_result = {
-        "status": str(result.get("status", "")),
-        "summary": str(result.get("summary", "")),
-        "follow_up_question": str(result.get("follow_up_question", "")),
-        "artifacts": result.get("artifacts", {}) if isinstance(result.get("artifacts"), dict) else {},
-        "execution_result": result.get("execution_result", {}) if isinstance(result.get("execution_result"), dict) else {},
-    }
-    update: dict[str, Any] = {
-        "mcp_result": mcp_result,
-        "mcp_completed": True,
-        "debug": {
-            **(state.get("debug", {}) if isinstance(state.get("debug"), dict) else {}),
-            "mcp": mcp_result,
-        },
-    }
-    if mcp_result["status"] == "need_input" and mcp_result["follow_up_question"]:
-        update["needs_clarification"] = True
-        update["clarification_question"] = mcp_result["follow_up_question"]
-    return update
-
-
 def clarify_node(state: AgentState):
     question = str(state.get("clarification_question", "")).strip() or "请补充更多信息后再试。"
     return {"reply": question}
@@ -1408,11 +1319,6 @@ def _build_system_content(state: AgentState) -> str:
             ]
             system_content = f"{system_content}\n\n命中句所在语义段上下文：\n" + "\n\n".join(context_lines)
 
-    mcp_result = state.get("mcp_result", {})
-    if isinstance(mcp_result, dict) and mcp_result:
-        summary = str(mcp_result.get("summary", "")).strip()
-        if summary:
-            system_content = f"{system_content}\n\nMCP Subagent summary:\n{summary}"
     analysis_section = _analysis_bundle_system_section(state)
     if analysis_section:
         system_content = f"{system_content}\n\n{analysis_section}"

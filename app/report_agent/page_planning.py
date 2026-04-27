@@ -26,23 +26,6 @@ def _items_from_findings(findings: list[dict[str, Any]], *, limit: int = MAX_ITE
     return items
 
 
-def _metric_cards(metrics: list[dict[str, Any]], *, limit: int = 4) -> list[dict[str, Any]]:
-    cards = []
-    for metric in metrics[:limit]:
-        value = metric.get("value")
-        if isinstance(value, float) and value.is_integer():
-            value = int(value)
-        cards.append(
-            {
-                "title": clean_text(metric.get("label"), limit=60) or "指标",
-                "value": str(value),
-                "unit": clean_text(metric.get("unit")),
-                "evidenceRefs": [f"evidence_{clean_text(metric.get('sourceMaterialId'))}_1"],
-            }
-        )
-    return cards
-
-
 def _toc_items(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
@@ -76,9 +59,6 @@ def plan_pages(*, title: str, semantic_model: dict[str, Any], render_profile: di
     ]
     body_pages: list[dict[str, Any]] = []
     summary_blocks = []
-    metric_cards = _metric_cards(metrics)
-    if metric_cards:
-        summary_blocks.append(_block("metric_cards", items=metric_cards))
     summary_items = _items_from_findings(findings, limit=4)
     summary_blocks.append(
         _block(
@@ -94,7 +74,7 @@ def plan_pages(*, title: str, semantic_model: dict[str, Any], render_profile: di
             "type": "body",
             "title": "执行摘要",
             "tocEntry": True,
-            "layout": "summary_cards",
+            "layout": "title_text",
             "blocks": summary_blocks,
             "evidenceRefs": sorted({ref for item in summary_items for ref in as_list(item.get("evidenceRefs"))}),
             "styleTokens": {"accentColor": "primary"},

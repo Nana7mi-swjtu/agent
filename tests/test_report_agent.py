@@ -114,7 +114,7 @@ class _FakeReportWriter:
                     "chapterId": "chapter_summary",
                     "title": "执行摘要",
                     "pageType": "executive_summary",
-                    "layout": "summary_cards",
+                    "layout": "title_text",
                     "sectionIds": ["executive_judgement"],
                 }
             ]
