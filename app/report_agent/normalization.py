@@ -8,6 +8,32 @@ from .contracts import NORMALIZED_MATERIAL_SCHEMA_VERSION, as_dict, as_list, cle
 
 _DATE_RE = re.compile(r"(?:20\d{2}|19\d{2})(?:[-/.年]\d{1,2})?(?:[-/.月]\d{1,2}日?)?")
 _NUMBER_RE = re.compile(r"(?P<label>[\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z0-9_ -]{0,24})[:： ]+(?P<value>-?\d+(?:\.\d+)?)(?P<unit>%|亿元|万元|元|家|个|次|项)?")
+FIELD_LABELS = {
+    "quarter": "季度",
+    "period": "期间",
+    "year": "年份",
+    "month": "月份",
+    "date": "日期",
+    "region": "区域",
+    "area": "区域",
+    "market": "市场",
+    "revenue": "收入",
+    "sales": "销售额",
+    "orders": "订单量",
+    "order_count": "订单量",
+    "net_profit": "净利润",
+    "gross_profit": "毛利润",
+    "gross_margin": "毛利率",
+    "profit_margin": "利润率",
+    "sales_expense": "销售费用",
+    "sales_expense_rate": "销售费用率",
+    "rd_expense": "研发费用",
+    "rd_expense_rate": "研发费用率",
+    "yoy": "同比增速",
+    "mom": "环比增速",
+    "value": "数值",
+    "unit": "单位",
+}
 
 
 def _parse_json_text(text: str) -> Any:
@@ -15,6 +41,23 @@ def _parse_json_text(text: str) -> Any:
         return json.loads(text)
     except Exception:
         return None
+
+
+def _column_label(key: Any, label: Any = "") -> str:
+    key_text = clean_text(key)
+    label_text = clean_text(label)
+    normalized_key = key_text.lower().replace("-", "_").replace(" ", "_")
+    normalized_label = label_text.lower().replace("-", "_").replace(" ", "_")
+    mapped = FIELD_LABELS.get(normalized_key)
+    if mapped and (not label_text or normalized_label == normalized_key):
+        return mapped
+    if mapped and label_text == key_text:
+        return mapped
+    if label_text:
+        return label_text
+    if mapped:
+        return mapped
+    return key_text.replace("_", " ")
 
 
 def _table_from_content(content: Any) -> dict[str, Any] | None:
@@ -32,7 +75,7 @@ def _table_from_content(content: Any) -> dict[str, Any] | None:
             for key in row.keys():
                 if key not in keys:
                     keys.append(key)
-        columns = [{"key": clean_text(key), "label": clean_text(key)} for key in keys[:12]]
+        columns = [{"key": clean_text(key), "label": _column_label(key)} for key in keys[:12]]
     elif isinstance(content, dict):
         raw_rows = content.get("rows")
         raw_columns = content.get("columns")
@@ -43,13 +86,13 @@ def _table_from_content(content: Any) -> dict[str, Any] | None:
                 if isinstance(item, dict):
                     key = clean_text(item.get("key") or item.get("name") or item.get("label"))
                     if key:
-                        columns.append({"key": key, "label": clean_text(item.get("label") or key)})
+                        columns.append({"key": key, "label": _column_label(key, item.get("label"))})
                 else:
                     key = clean_text(item)
                     if key:
-                        columns.append({"key": key, "label": key})
+                        columns.append({"key": key, "label": _column_label(key)})
         if rows and not columns:
-            columns = [{"key": key, "label": key} for key in list(rows[0].keys())[:12]]
+            columns = [{"key": key, "label": _column_label(key)} for key in list(rows[0].keys())[:12]]
     if not rows or not columns:
         return None
     return {"columns": columns, "rows": rows}
@@ -109,6 +152,27 @@ def _material_text(material: dict[str, Any]) -> str:
     return clean_text(content)
 
 
+def _table_summary(table: dict[str, Any], *, title: str) -> str:
+    rows = [row for row in as_list(table.get("rows")) if isinstance(row, dict)]
+    columns = [col for col in as_list(table.get("columns")) if isinstance(col, dict)]
+    row_count = len(rows)
+    labels = [clean_text(col.get("label") or col.get("key")) for col in columns]
+    labels = [label for label in labels if label]
+    numeric_labels = []
+    for col in columns:
+        key = clean_text(col.get("key"))
+        label = clean_text(col.get("label") or key)
+        if key and any(isinstance(row.get(key), (int, float)) for row in rows):
+            numeric_labels.append(label)
+    subject = title or "该数据表"
+    parts = [f"{subject}包含{row_count}行数据"]
+    if labels:
+        parts.append(f"字段包括{'、'.join(labels[:6])}")
+    if numeric_labels:
+        parts.append(f"其中{'、'.join(numeric_labels[:4])}可用于趋势或结构对比")
+    return "，".join(parts) + "。"
+
+
 def normalize_materials(materials: list[dict[str, Any]]) -> dict[str, Any]:
     normalized_materials = []
     findings = []
@@ -126,14 +190,25 @@ def normalize_materials(materials: list[dict[str, Any]]) -> dict[str, Any]:
         table = _table_from_content(material.get("content"))
         if table:
             table_id = f"table_{material_id}_1"
+            table_title = clean_text(material.get("title"), limit=80) or "数据表"
             table_payload = {
                 "tableId": table_id,
-                "title": clean_text(material.get("title"), limit=80) or "数据表",
+                "title": table_title,
                 "columns": table["columns"],
                 "rows": table["rows"],
                 "sourceMaterialId": material_id,
             }
             tables.append(table_payload)
+            findings.append(
+                {
+                    "findingId": f"finding_{material_id}_table_1",
+                    "title": table_title,
+                    "summary": _table_summary(table, title=table_title),
+                    "sourceMaterialId": material_id,
+                    "evidenceRefs": [f"evidence_{material_id}_1"],
+                    "confidence": 0.82,
+                }
+            )
             numeric_columns = [c["key"] for c in table["columns"] if any(isinstance(row.get(c["key"]), (int, float)) for row in table["rows"])]
             if numeric_columns:
                 visual_opportunities.append(
@@ -148,7 +223,7 @@ def normalize_materials(materials: list[dict[str, Any]]) -> dict[str, Any]:
                 )
         material_metrics = _extract_metrics(text, material_id)
         metrics.extend(material_metrics)
-        material_findings = _extract_findings(text, material)
+        material_findings = [] if table else _extract_findings(text, material)
         findings.extend(material_findings)
         if material_findings or table or material_metrics:
             evidence_refs.append(

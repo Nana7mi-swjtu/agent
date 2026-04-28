@@ -303,6 +303,8 @@ def _normalize_reader_items(value: Any, *, prefix: str, default_title: str) -> l
             or item.get("text"),
             limit=320,
         )
+        if _looks_like_serialized_payload(summary):
+            summary = f"{title}包含结构化数据，适合在表格或图表页中核对关键字段、数值变化与结构差异。"
         if not summary:
             continue
         items.append(
@@ -1032,6 +1034,15 @@ def _visual_section_items(section: dict[str, Any]) -> list[dict[str, str]]:
                 }
             )
     return items
+
+
+def _looks_like_serialized_payload(value: str) -> bool:
+    text = clean_text(value, limit=500)
+    if not text:
+        return False
+    if (text.startswith("[") or text.startswith("{")) and any(marker in text for marker in ('":', "':")):
+        return True
+    return text.count('{"') >= 2 or text.count("}, {") >= 1
 
 
 def _validate_written_output(
