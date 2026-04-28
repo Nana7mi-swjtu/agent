@@ -8,6 +8,7 @@
 
 硬性约束：
 - tables、metrics、evidenceRefs、visualOpportunities 必须与输入 seed 保持 grounded。
+- 如果需要优化结构化表格的 reader-facing 中文列名，可以返回 `tableLabels`；但只能引用 seed 中已有的 `tableId` 和列 `key`，不能改动 rows、不能新增列、不能改 tableId。
 - `presentationDecisions.exposeEvidencePage` 默认为 false；只有当“来源本身需要面向读者单独展示”时才设为 true。
 - 禁止出现内部字段名、模块名、运行 id、数据库名。
 - 必须只返回一个 JSON 对象。
@@ -25,6 +26,7 @@
     "keyFindings": [{"title": "", "summary": "", "basisSummary": "", "evidenceRefs": []}],
     "recommendations": [{"title": "", "summary": "", "basisSummary": "", "interpretationBoundary": ""}],
     "visualNarratives": [{"title": "", "summary": "", "chartId": "", "dataRef": "", "interpretationBoundary": ""}],
+    "tableLabels": [{"tableId": "", "columns": [{"key": "", "label": ""}]}],
     "entities": [],
     "timeRanges": [],
     "visualOpportunities": [{"opportunityId": "", "type": "", "title": "", "dataRef": "", "sourceMaterialId": ""}],

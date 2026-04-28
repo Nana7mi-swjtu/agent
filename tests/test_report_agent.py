@@ -24,6 +24,7 @@ from app.report_agent.bundle import _review_block_snapshot
 from app.report_agent.contracts import PAGINATED_REPORT_BUNDLE_SCHEMA_VERSION
 from app.report_agent.intake import intake_materials
 from app.report_agent.renderers import render_bundle_html, render_bundle_markdown, render_bundle_pdf
+from app.report_agent.renderers.html import PDF_TARGET, build_bundle_render_package
 from app.report_agent.validation import validate_bundle
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -203,7 +204,11 @@ class _FakeReportWriter:
                     "title": chart_registry.get(ref, {}).get("title") or "趋势图",
                     "chartId": ref,
                     "dataRef": chart_registry.get(ref, {}).get("dataRef", ""),
-                    "readerSummary": f"{chart_registry.get(ref, {}).get('title') or '该图表'}用于概括当前材料中最关键的趋势与结构变化。",
+                    "readerSummary": (
+                        f"{chart_registry.get(ref, {}).get('title') or '该图表'}围绕当前材料中最关键的趋势与结构变化展开，"
+                        "先帮助读者识别主要上升、分化或波动区间，再把这些变化与正文判断对应起来。"
+                        "如果后续经营节奏、区域结构或产品表现继续偏离当前轨迹，读者应优先复核与该图相关的关键数字和阶段变化。"
+                    ),
                 }
                 for ref in planned_chart_refs[:4]
             ]
@@ -213,7 +218,11 @@ class _FakeReportWriter:
                     {
                         "title": table_registry.get(ref, {}).get("title") or "关键数据摘录",
                         "dataRef": ref,
-                        "readerSummary": f"{table_registry.get(ref, {}).get('title') or '该数据表'}补充了支撑当前判断的关键数值，可用于核对样本差异和变化幅度。",
+                        "readerSummary": (
+                            f"{table_registry.get(ref, {}).get('title') or '该数据表'}补充了支撑当前判断的关键数值，"
+                            "可以帮助读者核对样本差异、变化幅度以及图表中没有完全展开的明细字段。"
+                            "如果需要进一步确认结论边界，应优先回看这些数值在不同对象或时间段上的分布情况。"
+                        ),
                     }
                     for ref in planned_table_refs[:4]
                 ]
@@ -295,6 +304,50 @@ class _RetryingReportWriter(_FakeReportWriter):
                         block["items"] = [item for item in block.get("items", []) if not item.get("chartId")]
             return response
         return super().invoke(messages)
+
+
+class _TableLabelingReportWriter(_FakeReportWriter):
+    def invoke(self, messages):
+        payload = json.loads(messages[-1]["content"])
+        response = super().invoke(messages)
+        if payload["stageId"] != "normalization":
+            return response
+        tables = payload.get("seed", {}).get("semanticModel", {}).get("tables", [])
+        table_labels = []
+        for table in tables:
+            table_id = table.get("tableId")
+            if not table_id:
+                continue
+            columns = []
+            for column in table.get("columns", []):
+                key = column.get("key")
+                if key == "revenue_billion":
+                    columns.append({"key": key, "label": "收入（十亿）"})
+                elif key == "new_orders":
+                    columns.append({"key": key, "label": "新增订单量"})
+                elif key == "capacity_utilization_pct":
+                    columns.append({"key": key, "label": "产能利用率"})
+            if columns:
+                table_labels.append({"tableId": table_id, "columns": columns})
+        response.setdefault("semanticModel", {})["tableLabels"] = table_labels
+        return response
+
+
+class _SubsectionPlanningReportWriter(_FakeReportWriter):
+    def invoke(self, messages):
+        payload = json.loads(messages[-1]["content"])
+        response = super().invoke(messages)
+        if payload["stageId"] != "page_planning":
+            return response
+        for chapter in response.get("chapters", []):
+            if chapter.get("chapterId") != "chapter_data":
+                continue
+            chart_refs = chapter.get("chartRefs", [])
+            chapter["subsections"] = [
+                {"title": "月度经营趋势", "chartRefs": chart_refs[:1], "sectionIds": ["model_visual_interpretation"]},
+                {"title": "区域收入结构", "chartRefs": chart_refs[1:2], "sectionIds": ["model_visual_interpretation"]},
+            ]
+        return response
 
 
 @pytest.fixture
@@ -468,6 +521,27 @@ def test_generate_report_artifact_from_source_documents_keeps_structured_payload
     assert any(page["pageType"] == "chart_analysis" for page in bundle["pages"] if isinstance(page, dict))
 
 
+def test_semantic_normalizer_can_override_table_labels_with_model_translations():
+    artifact = generate_report_artifact_from_source_documents(
+        [
+            {
+                "sourceId": "source-trend",
+                "title": "月度经营趋势",
+                "contentType": "application/json",
+                "content": [
+                    {"month": "2025-01", "revenue_billion": 100, "new_orders": 80, "capacity_utilization_pct": 73.5},
+                    {"month": "2025-02", "revenue_billion": 112, "new_orders": 91, "capacity_utilization_pct": 76.1},
+                ],
+            }
+        ],
+        report_writer=_TableLabelingReportWriter(),
+    )
+
+    assert artifact is not None
+    columns = artifact["paginatedReportBundle"]["semanticModel"]["tables"][0]["columns"]
+    assert [column["label"] for column in columns] == ["月份", "收入（十亿）", "新增订单量", "产能利用率"]
+
+
 def test_generate_report_artifact_from_source_documents_persists_snapshot_and_review_metadata():
     artifact = generate_report_artifact_from_source_documents(
         [
@@ -636,6 +710,20 @@ def test_bundle_renderers_share_page_model_and_emit_svg_chart():
     assert pdf.startswith(b"%PDF")
 
 
+def test_paginated_renderers_reserve_footer_safe_area_for_non_cover_pages():
+    bundle = generate_paginated_report(
+        title="页脚安全区测试",
+        materials=[{"title": "材料", "content": [{"month": "1月", "orders": 12}, {"month": "2月", "orders": 16}]}],
+        report_writer=_writer(),
+    )
+
+    screen_package = build_bundle_render_package(bundle)
+    pdf_package = build_bundle_render_package(bundle, target=PDF_TARGET)
+
+    assert '.report-page:not(.report-page-cover) .report-page-surface::after{content:"";display:block;height:24mm}' in screen_package["css"]
+    assert '.report-page:not(.report-page-cover) .report-page-surface::after{content:"";display:block;height:56px}' in pdf_package["css"]
+
+
 def test_toc_uses_planned_chapters_instead_of_listing_each_chart_page():
     bundle = generate_paginated_report(
         title="章节规划测试",
@@ -653,6 +741,94 @@ def test_toc_uses_planned_chapters_instead_of_listing_each_chart_page():
     assert len(chart_pages) >= 2
     assert "趋势与结构观察" in toc_titles
     assert toc_titles.count("趋势与结构观察") == 1
+
+
+def test_toc_can_render_planner_defined_subsections():
+    bundle = generate_paginated_report(
+        title="目录二级标题测试",
+        materials=[
+            {"title": "月度收入", "content": [{"month": "1月", "revenue": 12}, {"month": "2月", "revenue": 16}, {"month": "3月", "revenue": 18}]},
+            {"title": "区域结构", "content": [{"region": "华东", "revenue": 10}, {"region": "华南", "revenue": 14}, {"region": "华北", "revenue": 18}]},
+            {"title": "产品结构", "content": [{"product": "A", "margin": 12}, {"product": "B", "margin": 16}, {"product": "C", "margin": 19}]},
+        ],
+        report_writer=_SubsectionPlanningReportWriter(),
+    )
+
+    toc_items = bundle["pages"][1]["items"]
+    html = render_bundle_html(bundle)
+    subsection_items = [item for item in toc_items if item.get("level") == 2]
+    chart_pages = [page for page in bundle["pages"] if page.get("pageType") == "chart_analysis"]
+
+    assert [item["title"] for item in subsection_items] == ["月度经营趋势", "区域收入结构"]
+    assert [item["numberLabel"] for item in subsection_items] == ["3.1", "3.2"]
+    assert [item["pageNumber"] for item in subsection_items] == [chart_pages[0]["pageNumber"], chart_pages[1]["pageNumber"]]
+    assert chart_pages[0].get("subsectionTitle") == "月度经营趋势"
+    assert chart_pages[0].get("subsectionNumberLabel") == "3.1"
+    assert chart_pages[1].get("subsectionTitle") == "区域收入结构"
+    assert chart_pages[1].get("subsectionNumberLabel") == "3.2"
+    assert "3.1" in html
+    assert "月度经营趋势" in html
+    assert "区域收入结构" in html
+    assert "<td class='report-toc-title'>执行摘要</td>" in html
+    assert "<td class='report-toc-title'>一、执行摘要</td>" not in html
+    assert ".report-toc-row-sub .report-toc-ordinal{width:58px;padding-left:22px}" in html
+    assert ".report-toc-row-sub .report-toc-title{padding-left:18px}" in html
+    assert "<h2 class='report-page-title'>1. 执行摘要</h2>" in html
+    assert "<h2 class='report-page-title'>一、执行摘要</h2>" not in html
+    assert "class='report-page-subtitle'" in html
+
+
+def test_chartable_data_prefers_chart_refs_over_duplicate_table_refs():
+    bundle = generate_paginated_report(
+        title="图表优先测试",
+        materials=[{"title": "收入表", "content": [{"year": 2024, "revenue": 100}, {"year": 2025, "revenue": 130}]}],
+        report_writer=_writer(),
+    )
+
+    visual_chapters = [chapter for chapter in bundle["chapterPlan"] if chapter.get("chartRefs") or chapter.get("tableRefs")]
+
+    assert visual_chapters
+    assert all(chapter.get("chartRefs") for chapter in visual_chapters)
+    assert all(not chapter.get("tableRefs") for chapter in visual_chapters)
+    assert all(page.get("pageType") != "table_analysis" for page in bundle["pages"])
+
+
+def test_each_chart_page_contains_only_one_chart_block():
+    bundle = generate_paginated_report(
+        title="单图分页测试",
+        materials=[
+            {"title": "月度收入", "content": [{"month": "1月", "revenue": 12}, {"month": "2月", "revenue": 16}, {"month": "3月", "revenue": 18}]},
+            {"title": "区域结构", "content": [{"region": "华东", "revenue": 10}, {"region": "华南", "revenue": 14}, {"region": "华北", "revenue": 18}]},
+            {"title": "产品结构", "content": [{"product": "A", "margin": 12}, {"product": "B", "margin": 16}, {"product": "C", "margin": 19}]},
+        ],
+        report_writer=_writer(),
+    )
+
+    chart_pages = [page for page in bundle["pages"] if page.get("pageType") == "chart_analysis"]
+
+    assert len(chart_pages) >= 3
+    assert all(sum(1 for block in page.get("blocks", []) if block.get("type") == "chart") == 1 for page in chart_pages)
+
+
+def test_continuation_pages_do_not_repeat_chapter_header_titles():
+    bundle = generate_paginated_report(
+        title="续页标题测试",
+        materials=[
+            {"title": "月度收入", "content": [{"month": "1月", "revenue": 12}, {"month": "2月", "revenue": 16}, {"month": "3月", "revenue": 18}]},
+            {"title": "区域结构", "content": [{"region": "华东", "revenue": 10}, {"region": "华南", "revenue": 14}, {"region": "华北", "revenue": 18}]},
+            {"title": "产品结构", "content": [{"product": "A", "margin": 12}, {"product": "B", "margin": 16}, {"product": "C", "margin": 19}]},
+        ],
+        report_writer=_writer(),
+    )
+
+    html = render_bundle_html(bundle)
+    chart_pages = [page for page in bundle["pages"] if page.get("pageType") == "chart_analysis"]
+
+    assert len(chart_pages) >= 3
+    assert chart_pages[0].get("showHeader") is True
+    assert any(page.get("showHeader") is False for page in chart_pages[1:])
+    assert html.count("<h2 class='report-page-title'>3. 趋势与结构观察</h2>") == 1
+    assert "趋势与结构观察（续）" not in html
 
 
 def test_review_snapshot_keeps_all_evidence_titles_needed_for_quality_review():
@@ -677,9 +853,9 @@ def test_table_pages_use_table_specific_prose_and_batch_small_tables():
     bundle = generate_paginated_report(
         title="表格续页测试",
         materials=[
-            {"title": "月度收入", "content": [{"month": "1月", "revenue": 12}, {"month": "2月", "revenue": 16}, {"month": "3月", "revenue": 18}]},
-            {"title": "区域结构", "content": [{"region": "华东", "revenue": 10}, {"region": "华南", "revenue": 14}, {"region": "华北", "revenue": 18}]},
-            {"title": "产品结构", "content": [{"product": "A", "margin": 12}, {"product": "B", "margin": 16}, {"product": "C", "margin": 19}]},
+            {"title": "项目状态", "content": [{"阶段": "立项", "状态": "完成", "责任人": "张三"}, {"阶段": "评审", "状态": "进行中", "责任人": "李四"}, {"阶段": "交付", "状态": "待开始", "责任人": "王五"}]},
+            {"title": "区域排期", "content": [{"区域": "华东", "排期": "已确认", "窗口": "五月上旬"}, {"区域": "华南", "排期": "待确认", "窗口": "五月中旬"}, {"区域": "华北", "排期": "已确认", "窗口": "五月下旬"}]},
+            {"title": "供应商备注", "content": [{"供应商": "A", "结论": "继续观察", "备注": "等待补件"}, {"供应商": "B", "结论": "保持合作", "备注": "交付稳定"}, {"供应商": "C", "结论": "重点跟进", "备注": "质量波动"}]},
         ],
         report_writer=_writer(),
     )
@@ -696,7 +872,7 @@ def test_generate_paginated_report_fails_when_table_bound_visual_prose_is_missin
     with pytest.raises(ReportGenerationError, match="table-bound prose"):
         generate_paginated_report(
             title="表格文案缺失",
-            materials=[{"title": "收入表", "content": [{"year": 2024, "revenue": 100}, {"year": 2025, "revenue": 130}]}],
+            materials=[{"title": "项目状态表", "content": [{"阶段": "立项", "状态": "完成", "责任人": "张三"}, {"阶段": "评审", "状态": "进行中", "责任人": "李四"}]}],
             report_writer=_FakeReportWriter(omit_table_visuals=True),
         )
 

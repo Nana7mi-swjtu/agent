@@ -204,6 +204,13 @@ def _numbered_title(index: int, title: Any) -> str:
     return f"{_chinese_section_number(index)}、{text}"
 
 
+def _decimal_numbered_title(index: int, title: Any) -> str:
+    text = clean_text(title)
+    if not text:
+        return ""
+    return f"{index}. {text}"
+
+
 def _bundle_toc_index_map(bundle: dict[str, Any]) -> dict[str, int]:
     for page in as_list(bundle.get("pages")):
         if not isinstance(page, dict):
@@ -211,7 +218,13 @@ def _bundle_toc_index_map(bundle: dict[str, Any]) -> dict[str, int]:
         if clean_text(page.get("pageType") or page.get("type")).lower() != "table_of_contents":
             continue
         items = [item for item in as_list(page.get("items")) if isinstance(item, dict)]
-        return {clean_text(item.get("id")): index for index, item in enumerate(items, start=1) if clean_text(item.get("id"))}
+        return {
+            clean_text(item.get("id")): index
+            for index, item in enumerate(
+                [item for item in items if clean_text(item.get("id")) and int(item.get("level") or 1) == 1],
+                start=1,
+            )
+        }
     return {}
 
 
@@ -220,7 +233,7 @@ def _page_display_title(page: dict[str, Any], *, toc_index_map: dict[str, int]) 
     title = clean_text(page.get("tocTitle") or page.get("title"))
     index = toc_index_map.get(page_id)
     if index and title:
-        return _numbered_title(index, title)
+        return _decimal_numbered_title(index, title)
     return title
 
 
@@ -375,6 +388,8 @@ def _cover_html(page: dict[str, Any], *, target: str) -> str:
 
 
 def _body_header_html(page: dict[str, Any], *, target: str, theme: dict[str, str]) -> str:
+    if page.get("showHeader") is False:
+        return ""
     display_title = clean_text(page.get("displayTitle") or page.get("title"))
     title = html.escape(display_title)
     if target == PDF_TARGET:
@@ -392,6 +407,15 @@ def _body_header_html(page: dict[str, Any], *, target: str, theme: dict[str, str
     )
 
 
+def _body_subtitle_html(page: dict[str, Any], *, theme: dict[str, str]) -> str:
+    subtitle = clean_text(page.get("subsectionTitle"), limit=120)
+    if not subtitle:
+        return ""
+    number_label = clean_text(page.get("subsectionNumberLabel"), limit=20)
+    text = f"{number_label} {subtitle}".strip()
+    return f"<div class='report-page-subtitle' style='color:{theme['deep']};'>{_text(text)}</div>"
+
+
 def _body_footer_html(page: dict[str, Any], *, theme: dict[str, str]) -> str:
     folio = _folio(page.get("pageNumber"))
     return (
@@ -407,12 +431,26 @@ def _toc_html(page: dict[str, Any], *, target: str, theme: dict[str, str]) -> st
     header = _body_header_html(page, target=target, theme=theme)
     items = [item for item in as_list(page.get("items")) if isinstance(item, dict)]
     rows = []
-    for index, item in enumerate(items, start=1):
-        title = _numbered_title(index, item.get("title"))
+    chapter_index = 0
+    for item in items:
+        level = int(item.get("level") or 1)
+        if level == 1:
+            chapter_index += 1
+            ordinal = f"{chapter_index}."
+            title = clean_text(item.get("title"))
+            row_class = "report-toc-row"
+            ordinal_class = "report-toc-ordinal"
+            title_class = "report-toc-title"
+        else:
+            ordinal = clean_text(item.get("numberLabel")) or ""
+            title = clean_text(item.get("title"))
+            row_class = "report-toc-row report-toc-row-sub"
+            ordinal_class = "report-toc-ordinal report-toc-ordinal-sub"
+            title_class = "report-toc-title report-toc-title-sub"
         rows.append(
-            "<tr>"
-            f"<td class='report-toc-ordinal' style='color:{theme['accent']};'>{index}.</td>"
-            f"<td class='report-toc-title'>{html.escape(title)}</td>"
+            f"<tr class='{row_class}'>"
+            f"<td class='{ordinal_class}' style='color:{theme['accent']};'>{html.escape(ordinal)}</td>"
+            f"<td class='{title_class}'>{html.escape(title)}</td>"
             "<td class='report-toc-dots'></td>"
             f"<td class='report-toc-page'>{_text(item.get('pageNumber'))}</td>"
             "</tr>"
@@ -472,6 +510,9 @@ def _body_page_html(
 ) -> str:
     page_type = clean_text(page.get("pageType") or page.get("type")) or "body"
     blocks_html = []
+    subtitle_html = _body_subtitle_html(page, theme=theme)
+    if subtitle_html:
+        blocks_html.append(subtitle_html)
     for block in as_list(page.get("blocks")):
         if isinstance(block, dict):
             rendered = _block_html(block, table_lookup=table_lookup, theme=theme, target=target)
@@ -548,6 +589,8 @@ body{{
 .report-page-header:after{{content:"";position:absolute;left:0;bottom:-1px;width:76px;height:3px;background:linear-gradient(90deg,{primary},{accent});border-radius:999px}}
 .report-page-kicker{{display:block;font-size:11px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;margin-bottom:9px}}
 .report-page-title{{margin:0;max-width:86%;font-size:34px;line-height:1.13;color:#0f2747;letter-spacing:-.025em}}
+.report-page-subtitle{{margin:0 0 14px;padding-left:2px;font-size:18px;font-weight:700;line-height:1.45;color:#334155}}
+.report-page:not(.report-page-cover) .report-page-surface::after{{content:"";display:block;height:24mm}}
 .report-page-footer{{position:absolute;left:16mm;right:16mm;bottom:9mm;display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;color:#64748b;font-size:10px;font-weight:800;letter-spacing:.14em}}
 .report-page-footer-rule{{width:34px;height:2px;border-radius:999px}}
 .report-page-footer-label{{color:#94a3b8}}
@@ -584,6 +627,10 @@ body{{
 .report-toc-table td{{padding:8px 0;vertical-align:top;border:0}}
 .report-toc-ordinal{{width:42px;font-size:14px;font-weight:700}}
 .report-toc-title{{font-size:16px;font-weight:600;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.report-toc-row-sub .report-toc-ordinal{{width:58px;padding-left:22px}}
+.report-toc-row-sub .report-toc-title{{padding-left:18px}}
+.report-toc-ordinal-sub{{font-size:12px;font-weight:700;padding-left:18px}}
+.report-toc-title-sub{{font-size:14px;font-weight:500;color:#334155;padding-left:24px}}
 .report-toc-dots{{border-bottom:2px dotted #94a3b8;transform:translateY(-6px)}}
 .report-toc-page{{width:40px;font-size:15px;color:#475569;text-align:right}}
 """.strip()
@@ -605,6 +652,8 @@ body{{font-family:{font_stack};color:{text};margin:0;padding:0;line-height:1.7;f
 .report-page-header{{position:relative;margin:0 0 22px 0;padding:0 0 14px 0;border-bottom:1px solid #d7e1ec}}
 .report-page-header:after{{content:"";position:absolute;left:0;bottom:-1px;width:76px;height:3px;background:{primary};border-radius:999px}}
 .report-page-title{{font-size:28pt;font-weight:800;line-height:1.14;color:#0f2747;letter-spacing:-.5px}}
+.report-page-subtitle{{margin:0 0 10px;padding-left:1px;font-size:12pt;font-weight:700;line-height:1.45;color:#334155}}
+.report-page:not(.report-page-cover) .report-page-surface::after{{content:"";display:block;height:56px}}
 .report-page-footer{{position:absolute;left:30px;right:30px;bottom:16px;border-top:1px solid #d7e1ec;padding-top:7px;color:#64748b;font-size:7.8pt;font-weight:800;letter-spacing:1.1px}}
 .report-page-footer-rule{{display:inline-block;width:34px;height:2px;margin-right:8px;vertical-align:middle}}
 .report-page-footer-label{{display:inline-block;color:#94a3b8}}
@@ -639,6 +688,10 @@ body{{font-family:{font_stack};color:{text};margin:0;padding:0;line-height:1.7;f
 .report-toc-table td{{padding:6px 0;vertical-align:top;border:0}}
 .report-toc-ordinal{{width:34px;font-size:9.5pt;font-weight:700}}
 .report-toc-title{{font-size:11pt;font-weight:700;color:#111827}}
+.report-toc-row-sub .report-toc-ordinal{{width:46px;padding-left:14px}}
+.report-toc-row-sub .report-toc-title{{padding-left:12px}}
+.report-toc-ordinal-sub{{font-size:8.5pt;font-weight:700;padding-left:12px}}
+.report-toc-title-sub{{font-size:9.5pt;font-weight:500;color:#334155;padding-left:16px}}
 .report-toc-dots{{border-bottom:1px dotted #94a3b8;transform:translateY(-4px)}}
 .report-toc-page{{width:28px;text-align:right;font-size:10pt;color:#475569}}
 .report-meta-table{{width:100%;border-collapse:collapse;margin:0 0 14px 0;table-layout:fixed}}

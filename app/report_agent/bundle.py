@@ -453,6 +453,46 @@ def _normalize_visual_opportunities(value: Any, *, tables: list[dict[str, Any]],
     return items or [dict(item) for item in fallback if isinstance(item, dict)]
 
 
+def _normalize_table_labels(value: Any, *, tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not tables:
+        return []
+    label_map: dict[str, dict[str, str]] = {}
+    for item in as_list(value):
+        if not isinstance(item, dict):
+            continue
+        table_id = clean_text(item.get("tableId"))
+        if not table_id:
+            continue
+        column_map: dict[str, str] = {}
+        for column in as_list(item.get("columns")):
+            if not isinstance(column, dict):
+                continue
+            key = clean_text(column.get("key"))
+            label = clean_text(column.get("label"), limit=60)
+            if key and label:
+                column_map[key] = label
+        if column_map:
+            label_map[table_id] = column_map
+    normalized_tables: list[dict[str, Any]] = []
+    for table in tables:
+        table_id = clean_text(table.get("tableId"))
+        column_map = label_map.get(table_id, {})
+        normalized_columns = []
+        for column in as_list(table.get("columns")):
+            if not isinstance(column, dict):
+                continue
+            key = clean_text(column.get("key"))
+            translated_label = clean_text(column_map.get(key), limit=60)
+            normalized_columns.append(
+                {
+                    **column,
+                    "label": translated_label or clean_text(column.get("label") or key, limit=60),
+                }
+            )
+        normalized_tables.append({**table, "columns": normalized_columns})
+    return normalized_tables
+
+
 def _normalize_semantic_stage(
     raw_output: dict[str, Any],
     *,
@@ -468,7 +508,8 @@ def _normalize_semantic_stage(
     if not semantic_payload:
         raise ReportGenerationError("semantic normalization stage returned no semantic model")
     seed_story = _semantic_seed_story(title, seed_semantic)
-    tables = [item for item in as_list(seed_semantic.get("tables")) if isinstance(item, dict)]
+    seed_tables = [item for item in as_list(seed_semantic.get("tables")) if isinstance(item, dict)]
+    tables = _normalize_table_labels(semantic_payload.get("tableLabels"), tables=seed_tables) or seed_tables
     metrics = [item for item in as_list(seed_semantic.get("metrics")) if isinstance(item, dict)]
     evidence_refs = [item for item in as_list(seed_semantic.get("evidenceRefs")) if isinstance(item, dict)]
     visual_opportunities = _normalize_visual_opportunities(
@@ -611,10 +652,46 @@ def _legacy_chapter_blueprint(
     return blueprint
 
 
+def _chart_ref_data_map(chart_specs: list[dict[str, Any]]) -> dict[str, str]:
+    return {
+        clean_text(item.get("chartId")): clean_text(item.get("dataRef"))
+        for item in chart_specs
+        if isinstance(item, dict) and clean_text(item.get("chartId")) and clean_text(item.get("dataRef"))
+    }
+
+
+def _select_visual_refs(
+    *,
+    chart_refs: list[str],
+    table_refs: list[str],
+    chart_data_by_ref: dict[str, str],
+) -> tuple[list[str], list[str]]:
+    selected_chart_refs: list[str] = []
+    selected_chart_data_refs: set[str] = set()
+    for ref in chart_refs:
+        clean_ref = clean_text(ref)
+        if not clean_ref or clean_ref in selected_chart_refs:
+            continue
+        selected_chart_refs.append(clean_ref)
+        data_ref = chart_data_by_ref.get(clean_ref, "")
+        if data_ref:
+            selected_chart_data_refs.add(data_ref)
+
+    selected_table_refs: list[str] = []
+    for ref in table_refs:
+        clean_ref = clean_text(ref)
+        if not clean_ref or clean_ref in selected_table_refs or clean_ref in selected_chart_data_refs:
+            continue
+        selected_table_refs.append(clean_ref)
+    return selected_chart_refs, selected_table_refs
+
+
 def _suggested_chapter_plan(semantic_model: dict[str, Any]) -> list[dict[str, Any]]:
+    chart_specs = [item for item in build_chart_specs(semantic_model) if isinstance(item, dict)]
+    chart_data_by_ref = _chart_ref_data_map(chart_specs)
     chart_refs = [
         clean_text(item.get("chartId"))
-        for item in build_chart_specs(semantic_model)
+        for item in chart_specs
         if isinstance(item, dict) and clean_text(item.get("chartId"))
     ]
     table_refs = [
@@ -622,6 +699,7 @@ def _suggested_chapter_plan(semantic_model: dict[str, Any]) -> list[dict[str, An
         for item in as_list(semantic_model.get("tables"))
         if isinstance(item, dict) and clean_text(item.get("tableId"))
     ]
+    chart_refs, table_refs = _select_visual_refs(chart_refs=chart_refs, table_refs=table_refs, chart_data_by_ref=chart_data_by_ref)
     plan: list[dict[str, Any]] = []
     if as_list(semantic_model.get("executiveJudgements")):
         plan.append(
@@ -681,10 +759,60 @@ def _suggested_chapter_plan(semantic_model: dict[str, Any]) -> list[dict[str, An
     return plan
 
 
+def _normalize_chapter_subsections(
+    value: Any,
+    *,
+    section_ids: list[str],
+    chart_refs: list[str],
+    table_refs: list[str],
+    chart_data_by_ref: dict[str, str],
+    chart_ref_aliases: dict[str, str],
+) -> list[dict[str, Any]]:
+    allowed_sections = set(section_ids)
+    allowed_chart_refs = set(chart_refs)
+    allowed_table_refs = set(table_refs)
+    subsections: list[dict[str, Any]] = []
+    seen_titles: set[str] = set()
+    for item in as_list(value):
+        if not isinstance(item, dict):
+            continue
+        title = clean_text(item.get("title"), limit=80)
+        if not title or title in seen_titles:
+            continue
+        subsection_sections = [section_id for section_id in string_list(item.get("sectionIds")) if section_id in allowed_sections]
+        subsection_chart_refs: list[str] = []
+        for ref in string_list(item.get("chartRefs")):
+            mapped_ref = chart_ref_aliases.get(ref, "")
+            if mapped_ref and mapped_ref in allowed_chart_refs and mapped_ref not in subsection_chart_refs:
+                subsection_chart_refs.append(mapped_ref)
+        subsection_table_refs = [ref for ref in string_list(item.get("tableRefs")) if ref in allowed_table_refs]
+        subsection_chart_refs, subsection_table_refs = _select_visual_refs(
+            chart_refs=subsection_chart_refs,
+            table_refs=subsection_table_refs,
+            chart_data_by_ref=chart_data_by_ref,
+        )
+        if not (subsection_sections or subsection_chart_refs or subsection_table_refs):
+            continue
+        subsections.append(
+            drop_empty(
+                {
+                    "title": title,
+                    "notes": clean_text(item.get("notes"), limit=220),
+                    "sectionIds": subsection_sections,
+                    "chartRefs": subsection_chart_refs,
+                    "tableRefs": subsection_table_refs,
+                }
+            )
+        )
+        seen_titles.add(title)
+    return subsections
+
+
 def _normalize_chapter_plan(raw_output: dict[str, Any], *, semantic_model: dict[str, Any]) -> dict[str, Any]:
     suggested_plan = _suggested_chapter_plan(semantic_model)
     allow_evidence_chapter = _should_include_evidence_chapter(semantic_model)
     chart_specs = [item for item in build_chart_specs(semantic_model) if isinstance(item, dict)]
+    chart_data_by_ref = _chart_ref_data_map(chart_specs)
     chart_refs = [
         clean_text(item.get("chartId"))
         for item in chart_specs
@@ -725,6 +853,11 @@ def _normalize_chapter_plan(raw_output: dict[str, Any], *, semantic_model: dict[
             if mapped_ref and mapped_ref not in chapter_chart_refs:
                 chapter_chart_refs.append(mapped_ref)
         chapter_table_refs = [ref for ref in string_list(item.get("tableRefs")) or string_list(legacy.get("tableRefs")) if ref in table_refs]
+        chapter_chart_refs, chapter_table_refs = _select_visual_refs(
+            chart_refs=chapter_chart_refs,
+            table_refs=chapter_table_refs,
+            chart_data_by_ref=chart_data_by_ref,
+        )
         if not (section_ids or chapter_chart_refs or chapter_table_refs):
             continue
         if (chapter_chart_refs or chapter_table_refs) and "model_visual_interpretation" not in section_ids:
@@ -749,6 +882,14 @@ def _normalize_chapter_plan(raw_output: dict[str, Any], *, semantic_model: dict[
             title = f"章节 {len(chapters) + 1}"
         if title in FORBIDDEN_TAIL_CHAPTER_TITLES:
             continue
+        chapter_subsections = _normalize_chapter_subsections(
+            item.get("subsections"),
+            section_ids=section_ids,
+            chart_refs=chapter_chart_refs,
+            table_refs=chapter_table_refs,
+            chart_data_by_ref=chart_data_by_ref,
+            chart_ref_aliases=chart_ref_aliases,
+        )
         chapters.append(
             drop_empty(
                 {
@@ -760,6 +901,7 @@ def _normalize_chapter_plan(raw_output: dict[str, Any], *, semantic_model: dict[
                     "sectionIds": section_ids,
                     "chartRefs": chapter_chart_refs,
                     "tableRefs": chapter_table_refs,
+                    "subsections": chapter_subsections,
                 }
             )
         )
@@ -849,6 +991,7 @@ def _normalize_visual_stage(
     semantic_model: dict[str, Any],
 ) -> dict[str, Any]:
     chart_specs = _normalize_chart_specs(raw_output, semantic_model=semantic_model)
+    chart_data_by_ref = _chart_ref_data_map(chart_specs)
     tables = [item for item in as_list(semantic_model.get("tables")) if isinstance(item, dict)]
     default_designs = _default_page_designs(chapter_plan, chart_specs=chart_specs, tables=tables)
     default_lookup = {clean_text(item.get("chapterId")): item for item in default_designs}
@@ -865,20 +1008,25 @@ def _normalize_visual_stage(
             continue
         seen.add(chapter_id)
         style_tokens = as_dict(item.get("styleTokens")) or as_dict(base.get("styleTokens"))
+        chart_refs = [
+            ref for ref in string_list(item.get("chartRefs")) if ref in chart_ids
+        ] or [ref for ref in string_list(base.get("chartRefs")) if ref in chart_ids]
+        table_refs = [
+            ref for ref in string_list(item.get("tableRefs")) if ref in table_ids
+        ] or [ref for ref in string_list(base.get("tableRefs")) if ref in table_ids]
+        chart_refs, table_refs = _select_visual_refs(
+            chart_refs=chart_refs,
+            table_refs=table_refs,
+            chart_data_by_ref=chart_data_by_ref,
+        )
         page_designs.append(
             drop_empty(
                 {
                     **base,
                     "layout": _safe_layout(item.get("layout") or base.get("layout"), page_type=clean_text(base.get("pageType"), limit=40) or "insight"),
                     "styleTokens": style_tokens,
-                    "chartRefs": [
-                        ref for ref in string_list(item.get("chartRefs")) if ref in chart_ids
-                    ]
-                    or [ref for ref in string_list(base.get("chartRefs")) if ref in chart_ids],
-                    "tableRefs": [
-                        ref for ref in string_list(item.get("tableRefs")) if ref in table_ids
-                    ]
-                    or [ref for ref in string_list(base.get("tableRefs")) if ref in table_ids],
+                    "chartRefs": chart_refs,
+                    "tableRefs": table_refs,
                     "lead": clean_text(item.get("lead"), limit=220),
                     "caption": clean_text(item.get("caption"), limit=220),
                 }
@@ -1001,8 +1149,8 @@ def _section_has_paragraph(section: dict[str, Any]) -> bool:
     )
 
 
-def _visual_section_items(section: dict[str, Any]) -> list[dict[str, str]]:
-    items: list[dict[str, str]] = []
+def _visual_section_items(section: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
     for block in as_list(section.get("blocks")):
         if not isinstance(block, dict):
             continue
@@ -1024,6 +1172,7 @@ def _visual_section_items(section: dict[str, Any]) -> list[dict[str, str]]:
             )
             if not lead and not follow_up:
                 continue
+            prose = _join_report_sentences(lead, follow_up)
             items.append(
                 {
                     "title": _sanitize_item_title(normalized.get("title")) or "图表",
@@ -1031,6 +1180,8 @@ def _visual_section_items(section: dict[str, Any]) -> list[dict[str, str]]:
                     "dataRef": clean_text(normalized.get("dataRef")),
                     "summary": lead,
                     "followUp": follow_up,
+                    "proseLength": len(clean_text(prose, limit=1200)),
+                    "proseUnits": _prose_unit_count(prose),
                 }
             )
     return items
@@ -1093,6 +1244,20 @@ def _validate_written_output(
             for item in visual_items
             if clean_text(item.get("dataRef")) and not clean_text(item.get("chartId"))
         }
+        chart_quality = {
+            clean_text(item.get("chartId")): (
+                int(item.get("proseLength") or 0) >= 90 and int(item.get("proseUnits") or 0) >= 2
+            )
+            for item in visual_items
+            if clean_text(item.get("chartId"))
+        }
+        table_quality = {
+            clean_text(item.get("dataRef")): (
+                int(item.get("proseLength") or 0) >= 80 and int(item.get("proseUnits") or 0) >= 2
+            )
+            for item in visual_items
+            if clean_text(item.get("dataRef")) and not clean_text(item.get("chartId"))
+        }
         missing_chart_refs = [ref for ref in referenced_chart_refs if ref not in covered_chart_refs]
         missing_table_refs = [ref for ref in referenced_table_refs if ref not in covered_table_refs]
         if missing_chart_refs:
@@ -1102,6 +1267,16 @@ def _validate_written_output(
         if missing_table_refs:
             raise ReportGenerationError(
                 "narrative writing stage omitted table-bound prose for refs: " + ", ".join(missing_table_refs[:5])
+            )
+        short_chart_refs = [ref for ref in referenced_chart_refs if not chart_quality.get(ref, False)]
+        short_table_refs = [ref for ref in referenced_table_refs if not table_quality.get(ref, False)]
+        if short_chart_refs:
+            raise ReportGenerationError(
+                "narrative writing stage produced chart prose that is too short for refs: " + ", ".join(short_chart_refs[:5])
+            )
+        if short_table_refs:
+            raise ReportGenerationError(
+                "narrative writing stage produced table prose that is too short for refs: " + ", ".join(short_table_refs[:5])
             )
     errors = validate_published_report(
         _sections_markdown(title, sections),
@@ -1123,6 +1298,23 @@ def _chapter_packet(chapter_plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "sectionIds": [section_id for section_id in string_list(item.get("sectionIds")) if section_id in ALLOWED_SECTION_IDS],
                 "chartRefs": string_list(item.get("chartRefs")),
                 "tableRefs": string_list(item.get("tableRefs")),
+                "subsections": [
+                    drop_empty(
+                        {
+                            "title": clean_text(subsection.get("title"), limit=80),
+                            "notes": clean_text(subsection.get("notes"), limit=220),
+                            "sectionIds": [
+                                section_id
+                                for section_id in string_list(subsection.get("sectionIds"))
+                                if section_id in ALLOWED_SECTION_IDS
+                            ],
+                            "chartRefs": string_list(subsection.get("chartRefs")),
+                            "tableRefs": string_list(subsection.get("tableRefs")),
+                        }
+                    )
+                    for subsection in as_list(item.get("subsections"))
+                    if isinstance(subsection, dict)
+                ],
             }
         )
         for item in chapter_plan
@@ -1297,10 +1489,18 @@ def _join_report_sentences(*parts: str) -> str:
     return "。".join(sentences) + "。"
 
 
+def _prose_unit_count(text: str) -> int:
+    return len([item for item in re.split(r"[。；;！？!?]+", clean_text(text, limit=1200)) if clean_text(item)])
+
+
 def _batched(items: list[Any], size: int) -> list[list[Any]]:
     if size <= 0:
         return [items]
     return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _batched_charts(items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    return [[item] for item in items if isinstance(item, dict)]
 
 
 def _batched_tables(items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -1424,6 +1624,7 @@ def _compose_body_pages(
         design = as_dict(designs_by_chapter.get(chapter_id))
         chapter_title = clean_text(chapter.get("title"), limit=80) or "章节"
         default_page_type = clean_text(chapter.get("pageType")) or "insight"
+        section_ids = chapter_sections(chapter)
         base_page = {
             "type": "body",
             "chapterId": chapter_id,
@@ -1444,7 +1645,7 @@ def _compose_body_pages(
         chapter_pages: list[dict[str, Any]] = []
 
         if selected_charts:
-            for batch_index, chart_batch in enumerate(_batched(selected_charts, 2), start=1):
+            for batch_index, chart_batch in enumerate(_batched_charts(selected_charts), start=1):
                 blocks = [dict(block) for block in intro_blocks] if batch_index == 1 else []
                 evidence_refs: list[str] = []
                 for chart in chart_batch:
@@ -1466,9 +1667,13 @@ def _compose_body_pages(
                         "id": f"{chapter_id}_chart_{batch_index}",
                         "pageType": "chart_analysis",
                         "title": chapter_title if batch_index == 1 else f"{chapter_title}（续）",
+                        "showHeader": batch_index == 1,
                         "tocEntry": batch_index == 1,
                         "tocTitle": chapter_title,
                         "blocks": _ensure_chapter_narrative(blocks),
+                        "sectionIdsOnPage": list(section_ids),
+                        "chartRefsOnPage": [chart_id] if chart_id else [],
+                        "tableRefsOnPage": [],
                         "evidenceRefs": evidence_refs,
                     }
                 )
@@ -1506,9 +1711,13 @@ def _compose_body_pages(
                         "id": f"{chapter_id}_table_{batch_index}",
                         "pageType": "table_analysis",
                         "title": chapter_title if not chapter_pages else f"{chapter_title}（续）",
+                        "showHeader": not chapter_pages,
                         "tocEntry": not chapter_pages,
                         "tocTitle": chapter_title,
                         "blocks": _ensure_chapter_narrative(blocks),
+                        "sectionIdsOnPage": list(section_ids),
+                        "chartRefsOnPage": [],
+                        "tableRefsOnPage": [clean_text(item.get("tableId")) for item in table_batch if clean_text(item.get("tableId"))],
                         "evidenceRefs": evidence_refs,
                     }
                 )
@@ -1551,9 +1760,13 @@ def _compose_body_pages(
                 "id": f"page_{chapter_id}",
                 "pageType": default_page_type,
                 "title": chapter_title,
+                "showHeader": True,
                 "tocEntry": True,
                 "tocTitle": chapter_title,
                 "blocks": blocks,
+                "sectionIdsOnPage": list(section_ids),
+                "chartRefsOnPage": [],
+                "tableRefsOnPage": [],
                 "evidenceRefs": evidence_refs,
             }
         )
@@ -1598,6 +1811,66 @@ def _compose_bundle(
         sections=sections,
         semantic_model=semantic_model,
     )
+    chapter_plan_by_id = {
+        clean_text(item.get("chapterId")): item for item in chapter_plan if isinstance(item, dict) and clean_text(item.get("chapterId"))
+    }
+
+    def page_matches_subsection(page: dict[str, Any], subsection: dict[str, Any]) -> bool:
+        candidate_sections = set(string_list(page.get("sectionIdsOnPage")))
+        candidate_chart_refs = set(string_list(page.get("chartRefsOnPage")))
+        candidate_table_refs = set(string_list(page.get("tableRefsOnPage")))
+        subsection_sections = set(string_list(subsection.get("sectionIds")))
+        subsection_chart_refs = set(string_list(subsection.get("chartRefs")))
+        subsection_table_refs = set(string_list(subsection.get("tableRefs")))
+        if subsection_chart_refs:
+            return bool(candidate_chart_refs.intersection(subsection_chart_refs))
+        if subsection_table_refs:
+            return bool(candidate_table_refs.intersection(subsection_table_refs))
+        if subsection_sections:
+            return bool(candidate_sections.intersection(subsection_sections))
+        return False
+
+    toc_items: list[dict[str, Any]] = []
+    chapter_number = 0
+    for page in body_pages:
+        if not isinstance(page, dict) or not page.get("tocEntry"):
+            continue
+        page_id = clean_text(page.get("id"))
+        chapter_id = clean_text(page.get("chapterId"))
+        title = clean_text(page.get("tocTitle"), limit=80) or clean_text(page.get("title"))
+        if not title:
+            continue
+        chapter_number += 1
+        toc_items.append({"id": page_id, "title": title, "pageNumber": page.get("pageNumber"), "level": 1})
+        chapter = as_dict(chapter_plan_by_id.get(chapter_id))
+        subsection_number = 0
+        for subsection in as_list(chapter.get("subsections")):
+            if not isinstance(subsection, dict):
+                continue
+            subsection_title = clean_text(subsection.get("title"), limit=80)
+            if not subsection_title:
+                continue
+            matched_page = None
+            for candidate in body_pages:
+                if not isinstance(candidate, dict) or clean_text(candidate.get("chapterId")) != chapter_id:
+                    continue
+                if page_matches_subsection(candidate, subsection):
+                    matched_page = candidate
+                    break
+            if not isinstance(matched_page, dict):
+                continue
+            subsection_number += 1
+            matched_page["subsectionTitle"] = subsection_title
+            matched_page["subsectionNumberLabel"] = f"{chapter_number}.{subsection_number}"
+            toc_items.append(
+                {
+                    "id": f"{page_id}__subsection_{subsection_number}",
+                    "title": subsection_title,
+                    "pageNumber": matched_page.get("pageNumber"),
+                    "level": 2,
+                    "numberLabel": f"{chapter_number}.{subsection_number}",
+                }
+            )
     toc_page = {
         "id": "page_toc",
         "pageNumber": 2,
@@ -1606,15 +1879,7 @@ def _compose_bundle(
         "title": "目录",
         "tocEntry": False,
         "layout": "toc",
-        "items": [
-            {
-                "id": page.get("id"),
-                "title": clean_text(page.get("tocTitle"), limit=80) or clean_text(page.get("title")),
-                "pageNumber": page.get("pageNumber"),
-            }
-            for page in body_pages
-            if isinstance(page, dict) and page.get("tocEntry") and (clean_text(page.get("tocTitle"), limit=80) or clean_text(page.get("title")))
-        ],
+        "items": toc_items,
     }
     bundle = drop_empty(
         {

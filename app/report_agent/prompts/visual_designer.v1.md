@@ -11,6 +11,7 @@
 - pageDesigns 中的 chapterId 必须与输入 chapterPlan 中的 chapterId 对齐。
 - chartSpecs 必须引用输入中已有的 dataRef、xField、yField。
 - 不要默认把每张图都拆成单独章节；若同一章节下多张图可以连续阅读，应保留在同一 chapterId 下。
+- 不要让同一组数据同时以 chartRefs 和 tableRefs 两种形式进入同一版面；若某个 tableId 已经由 chartRef 承载，就不要再重复输出对应 tableRefs。
 - 必须只返回一个 JSON 对象。
 
 输出 JSON：
